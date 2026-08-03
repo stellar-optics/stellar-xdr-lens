@@ -1,0 +1,13 @@
+# Binaries
+/lens
+/dist/
+*.exe
+
+# Test and coverage output
+coverage.out
+coverage.html
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
