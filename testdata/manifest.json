@@ -1,0 +1,43 @@
+{
+  "source": "Stellar Mainnet (Horizon: https://horizon.stellar.org)",
+  "captured": "2026-08-03",
+  "note": "Real captured mainnet XDR. Used by table-driven tests. Do not regenerate casually: tests assert on decoded content.",
+  "fixtures": {
+    "tx_failed": {
+      "tx_hash": "a6e87c3d8e2ca78e026bf165cf8c3c6423f62c6133c54217804940c32b13e1fe",
+      "description": "failed transaction, single operation",
+      "successful": false,
+      "operation_count": 1,
+      "fee_bump": true,
+      "envelope_file": "tx_failed.env.txt",
+      "result_file": "tx_failed.res.txt"
+    },
+    "tx_success": {
+      "tx_hash": "cf2b315ff94457f7ac36426667e22d759b5f1801fbd1ec17e00d842f8ca80acb",
+      "description": "successful classic transaction",
+      "successful": true,
+      "operation_count": 1,
+      "fee_bump": false,
+      "envelope_file": "tx_success.env.txt",
+      "result_file": "tx_success.res.txt"
+    },
+    "tx_feebump": {
+      "tx_hash": "96251103ba86fc0053e844b443edded8da60ead1582bc3092c4ad93b5dd208c6",
+      "description": "fee-bump transaction envelope",
+      "successful": true,
+      "operation_count": 1,
+      "fee_bump": true,
+      "envelope_file": "tx_feebump.env.txt",
+      "result_file": "tx_feebump.res.txt"
+    },
+    "tx_soroban": {
+      "tx_hash": "0e2dc1efe2651d1aed41cd682d1668f59475a1d6eb63418085b618e5b0f33779",
+      "description": "Soroban invoke_host_function transaction",
+      "successful": true,
+      "operation_count": 1,
+      "fee_bump": true,
+      "envelope_file": "tx_soroban.env.txt",
+      "result_file": "tx_soroban.res.txt"
+    }
+  }
+}
