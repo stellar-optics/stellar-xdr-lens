@@ -12,10 +12,10 @@ import (
 )
 
 // ErrNoMatch is returned when a payload does not decode as any known XDR type.
-var ErrNoMatch = errors.New("lens: input did not decode as any known XDR type")
+var ErrNoMatch = errors.New("input did not decode as any known XDR type")
 
 // ErrUnknownType is returned when a caller names a type that is not registered.
-var ErrUnknownType = errors.New("lens: unknown XDR type")
+var ErrUnknownType = errors.New("unknown XDR type")
 
 // Value is a successfully decoded XDR payload.
 type Value struct {
@@ -132,7 +132,7 @@ func decodeInto(t xdrType, payload string) (*Value, error) {
 	rv := reflect.ValueOf(dest).Elem()
 	node := buildNode("", rv, 0)
 	if node == nil {
-		return nil, fmt.Errorf("lens: %s produced an empty tree", t.name)
+		return nil, fmt.Errorf("%s produced an empty tree", t.name)
 	}
 	node.TypeName = t.name
 	return &Value{Type: t.name, Node: node, Raw: dest}, nil
@@ -144,11 +144,11 @@ func decodeInto(t xdrType, payload string) (*Value, error) {
 func safeUnmarshal(payload string, dest any) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			err = fmt.Errorf("lens: decoder panicked on malformed input: %v", r)
+			err = fmt.Errorf("decoder panicked on malformed input: %v", r)
 		}
 	}()
 	if err := xdr.SafeUnmarshalBase64(payload, dest); err != nil {
-		return fmt.Errorf("lens: xdr decode: %w", err)
+		return fmt.Errorf("xdr decode: %w", err)
 	}
 	return nil
 }
@@ -163,11 +163,11 @@ func safeUnmarshal(payload string, dest any) (err error) {
 func Detect(payload string) ([]Candidate, error) {
 	payload = normalizeInput(payload)
 	if payload == "" {
-		return nil, fmt.Errorf("lens: empty input")
+		return nil, fmt.Errorf("empty input")
 	}
 	raw, err := base64.StdEncoding.DecodeString(payload)
 	if err != nil {
-		return nil, fmt.Errorf("lens: input is not valid base64: %w", err)
+		return nil, fmt.Errorf("input is not valid base64: %w", err)
 	}
 
 	var out []Candidate
@@ -234,13 +234,13 @@ func Decode(payload string) (*Value, error) {
 func DecodeAs(payload, typeName string) (*Value, error) {
 	payload = normalizeInput(payload)
 	if payload == "" {
-		return nil, fmt.Errorf("lens: empty input")
+		return nil, fmt.Errorf("empty input")
 	}
 	for _, t := range registry {
 		if strings.EqualFold(t.name, typeName) {
 			v, err := decodeInto(t, payload)
 			if err != nil {
-				return nil, fmt.Errorf("lens: input is not a valid %s: %w", t.name, err)
+				return nil, fmt.Errorf("input is not a valid %s: %w", t.name, err)
 			}
 			return v, nil
 		}

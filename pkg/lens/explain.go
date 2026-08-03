@@ -77,7 +77,7 @@ type Outcome struct {
 // XDR struct would be no better than the decoded tree.
 func Explain(v *Value) (*Summary, error) {
 	if v == nil {
-		return nil, fmt.Errorf("lens: nil value")
+		return nil, fmt.Errorf("nil value")
 	}
 	switch raw := v.Raw.(type) {
 	case *xdr.TransactionEnvelope:
@@ -85,7 +85,7 @@ func Explain(v *Value) (*Summary, error) {
 	case *xdr.TransactionResult:
 		return explainResult(raw)
 	default:
-		return nil, fmt.Errorf("lens: cannot explain %s; explain supports TransactionEnvelope and TransactionResult", v.Type)
+		return nil, fmt.Errorf("cannot explain %s; explain supports TransactionEnvelope and TransactionResult", v.Type)
 	}
 }
 
@@ -97,15 +97,15 @@ func Explain(v *Value) (*Summary, error) {
 // why did it fail" in one pass.
 func ExplainPair(envelope, result *Value) (*Summary, error) {
 	if envelope == nil || result == nil {
-		return nil, fmt.Errorf("lens: both an envelope and a result are required")
+		return nil, fmt.Errorf("both an envelope and a result are required")
 	}
 	env, ok := envelope.Raw.(*xdr.TransactionEnvelope)
 	if !ok {
-		return nil, fmt.Errorf("lens: first value must be a TransactionEnvelope, got %s", envelope.Type)
+		return nil, fmt.Errorf("first value must be a TransactionEnvelope, got %s", envelope.Type)
 	}
 	res, ok := result.Raw.(*xdr.TransactionResult)
 	if !ok {
-		return nil, fmt.Errorf("lens: second value must be a TransactionResult, got %s", result.Type)
+		return nil, fmt.Errorf("second value must be a TransactionResult, got %s", result.Type)
 	}
 	return explainEnvelope(env, res)
 }
@@ -244,7 +244,7 @@ func explainOperationResult(opRes xdr.OperationResult) Reason {
 func resultCodeName(res *xdr.TransactionResult) (string, error) {
 	name := safeString(res.Result.Code)
 	if name == "" {
-		return "", fmt.Errorf("lens: could not read transaction result code")
+		return "", fmt.Errorf("could not read transaction result code")
 	}
 	return name, nil
 }
