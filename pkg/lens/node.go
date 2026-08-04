@@ -149,7 +149,7 @@ func buildNode(name string, rv reflect.Value, depth int) *Node {
 
 	// Unwrap pointers and interfaces. A nil pointer means an absent union arm
 	// or optional field, which we prune entirely rather than render as null.
-	for rv.Kind() == reflect.Ptr || rv.Kind() == reflect.Interface {
+	for rv.Kind() == reflect.Pointer || rv.Kind() == reflect.Interface {
 		if rv.IsNil() {
 			return nil
 		}
