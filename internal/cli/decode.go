@@ -7,8 +7,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/Odusanya03/stellar-xdr-lens/pkg/lens"
-	"github.com/Odusanya03/stellar-xdr-lens/pkg/lens/format"
+	"github.com/stellar-xdr/stellar-xdr-lens/pkg/lens"
+	"github.com/stellar-xdr/stellar-xdr-lens/pkg/lens/format"
 )
 
 func newDecodeCmd(g *globalFlags, stdout io.Writer, stdin io.Reader) *cobra.Command {

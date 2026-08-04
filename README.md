@@ -2,9 +2,9 @@
 
 A Go CLI and library that explains Stellar and Soroban XDR in plain English, and diffs it structurally.
 
-[![CI](https://github.com/Odusanya03/stellar-xdr-lens/actions/workflows/ci.yml/badge.svg)](https://github.com/Odusanya03/stellar-xdr-lens/actions/workflows/ci.yml)
-[![Go Reference](https://pkg.go.dev/badge/github.com/Odusanya03/stellar-xdr-lens.svg)](https://pkg.go.dev/github.com/Odusanya03/stellar-xdr-lens)
-[![Go Report Card](https://goreportcard.com/badge/github.com/Odusanya03/stellar-xdr-lens)](https://goreportcard.com/report/github.com/Odusanya03/stellar-xdr-lens)
+[![CI](https://github.com/stellar-xdr/stellar-xdr-lens/actions/workflows/ci.yml/badge.svg)](https://github.com/stellar-xdr/stellar-xdr-lens/actions/workflows/ci.yml)
+[![Go Reference](https://pkg.go.dev/badge/github.com/stellar-xdr/stellar-xdr-lens.svg)](https://pkg.go.dev/github.com/stellar-xdr/stellar-xdr-lens)
+[![Go Report Card](https://goreportcard.com/badge/github.com/stellar-xdr/stellar-xdr-lens)](https://goreportcard.com/report/github.com/stellar-xdr/stellar-xdr-lens)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
 ## Why this exists
@@ -45,13 +45,13 @@ infrastructure are written in Go, and there was no Go library for any of this.
 ## Install
 
 ```sh
-go install github.com/Odusanya03/stellar-xdr-lens/cmd/lens@latest
+go install github.com/stellar-xdr/stellar-xdr-lens/cmd/lens@latest
 ```
 
 Requires Go 1.25 or later. Or build from source:
 
 ```sh
-git clone https://github.com/Odusanya03/stellar-xdr-lens
+git clone https://github.com/stellar-xdr/stellar-xdr-lens
 cd stellar-xdr-lens
 go build ./cmd/lens
 ```
@@ -182,7 +182,7 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/Odusanya03/stellar-xdr-lens/pkg/lens"
+	"github.com/stellar-xdr/stellar-xdr-lens/pkg/lens"
 )
 
 func main() {
@@ -209,7 +209,7 @@ func main() {
 }
 ```
 
-See the [API reference](https://pkg.go.dev/github.com/Odusanya03/stellar-xdr-lens/pkg/lens)
+See the [API reference](https://pkg.go.dev/github.com/stellar-xdr/stellar-xdr-lens/pkg/lens)
 and [docs/architecture.md](docs/architecture.md).
 
 ## A note on type detection

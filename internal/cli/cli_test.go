@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Odusanya03/stellar-xdr-lens/internal/cli"
+	"github.com/stellar-xdr/stellar-xdr-lens/internal/cli"
 )
 
 const fixtureDir = "../../testdata"

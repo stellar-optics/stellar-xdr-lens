@@ -6,7 +6,7 @@ easy to extend — the three most common contributions each touch a single file.
 ## Quick start
 
 ```sh
-git clone https://github.com/Odusanya03/stellar-xdr-lens
+git clone https://github.com/stellar-xdr/stellar-xdr-lens
 cd stellar-xdr-lens
 go build ./...
 go test ./...

@@ -10,7 +10,7 @@ import (
 	"io"
 	"os"
 
-	"github.com/Odusanya03/stellar-xdr-lens/pkg/lens"
+	"github.com/stellar-xdr/stellar-xdr-lens/pkg/lens"
 )
 
 // Formatter renders a decoded XDR value to a writer.

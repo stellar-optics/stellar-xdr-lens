@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/Odusanya03/stellar-xdr-lens/pkg/lens"
+	"github.com/stellar-xdr/stellar-xdr-lens/pkg/lens"
 )
 
 // JSONFormatter renders a value as JSON with a documented, stable shape
