@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/stellar-xdr/stellar-xdr-lens/pkg/lens"
+	"github.com/stellar-optics/stellar-xdr-lens/pkg/lens"
 )
 
 func TestDecodeDetectsFixtureTypes(t *testing.T) {

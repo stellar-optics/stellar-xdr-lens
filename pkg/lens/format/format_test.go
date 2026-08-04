@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/stellar-xdr/stellar-xdr-lens/pkg/lens"
-	"github.com/stellar-xdr/stellar-xdr-lens/pkg/lens/format"
+	"github.com/stellar-optics/stellar-xdr-lens/pkg/lens"
+	"github.com/stellar-optics/stellar-xdr-lens/pkg/lens/format"
 )
 
 const fixtureDir = "../../../testdata"

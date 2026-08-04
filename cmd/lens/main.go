@@ -10,14 +10,14 @@
 //	lens diff    <a> <b>             structurally compare two XDR values
 //	lens types                       list decodable XDR types
 //
-// See https://github.com/stellar-xdr/stellar-xdr-lens for full documentation.
+// See https://github.com/stellar-optics/stellar-xdr-lens for full documentation.
 package main
 
 import (
 	"fmt"
 	"os"
 
-	"github.com/stellar-xdr/stellar-xdr-lens/internal/cli"
+	"github.com/stellar-optics/stellar-xdr-lens/internal/cli"
 )
 
 func main() {

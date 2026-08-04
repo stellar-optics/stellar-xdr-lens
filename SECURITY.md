@@ -15,7 +15,7 @@ to `main`; older tags are not patched.
 **Please do not open a public issue for a security vulnerability.**
 
 Report it through
-[GitHub's private vulnerability reporting](https://github.com/stellar-xdr/stellar-xdr-lens/security/advisories/new),
+[GitHub's private vulnerability reporting](https://github.com/stellar-optics/stellar-xdr-lens/security/advisories/new),
 which opens a private channel with the maintainers.
 
 Please include:
