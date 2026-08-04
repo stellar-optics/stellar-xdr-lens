@@ -8,7 +8,7 @@ import (
 	"github.com/stellar/go-stellar-sdk/amount"
 	"github.com/stellar/go-stellar-sdk/xdr"
 
-	"github.com/odusanya03/stellar-xdr-lens/pkg/lens"
+	"github.com/Odusanya03/stellar-xdr-lens/pkg/lens"
 )
 
 // SummaryFormatter renders a lens.Summary as readable prose.

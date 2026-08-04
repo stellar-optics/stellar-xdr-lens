@@ -8,7 +8,7 @@ import (
 
 	"github.com/stellar/go-stellar-sdk/xdr"
 
-	"github.com/odusanya03/stellar-xdr-lens/pkg/lens"
+	"github.com/Odusanya03/stellar-xdr-lens/pkg/lens"
 )
 
 // resultCodeTypes lists every result-code enum in the protocol. A new enum

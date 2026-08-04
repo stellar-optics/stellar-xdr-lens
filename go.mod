@@ -1,4 +1,4 @@
-module github.com/odusanya03/stellar-xdr-lens
+module github.com/Odusanya03/stellar-xdr-lens
 
 go 1.25
 
