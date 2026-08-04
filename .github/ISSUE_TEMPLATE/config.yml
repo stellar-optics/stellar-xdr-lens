@@ -1,8 +1,8 @@
 blank_issues_enabled: false
 contact_links:
   - name: Security vulnerability
-    url: https://github.com/stellar-optics/stellar-xdr-lens/security/advisories/new
+    url: https://github.com/Stellar-optics/stellar-xdr-lens/security/advisories/new
     about: Report security issues privately, never in a public issue. See SECURITY.md.
   - name: Question or usage help
-    url: https://github.com/stellar-optics/stellar-xdr-lens/discussions
+    url: https://github.com/Stellar-optics/stellar-xdr-lens/discussions
     about: Ask how to use lens, or discuss an idea before opening an issue.

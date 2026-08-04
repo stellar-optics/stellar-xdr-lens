@@ -6,7 +6,7 @@ import (
 
 	"github.com/stellar/go-stellar-sdk/xdr"
 
-	"github.com/stellar-optics/stellar-xdr-lens/pkg/lens"
+	"github.com/Stellar-optics/stellar-xdr-lens/pkg/lens"
 )
 
 // Well-formed mainnet addresses, used to build synthetic envelopes. Real

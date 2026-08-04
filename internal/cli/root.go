@@ -14,7 +14,7 @@ import (
 
 // Version is the build version, overridden at release time via ldflags:
 //
-//	go build -ldflags "-X github.com/stellar-optics/stellar-xdr-lens/internal/cli.Version=v0.1.0"
+//	go build -ldflags "-X github.com/Stellar-optics/stellar-xdr-lens/internal/cli.Version=v0.1.0"
 var Version = "dev"
 
 // globalFlags holds options shared by every subcommand.

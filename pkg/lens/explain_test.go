@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/stellar-optics/stellar-xdr-lens/pkg/lens"
+	"github.com/Stellar-optics/stellar-xdr-lens/pkg/lens"
 )
 
 func TestExplainEnvelope(t *testing.T) {
