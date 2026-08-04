@@ -1,0 +1,151 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Cancel superseded runs on the same ref; the latest push is the one that matters.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: "1.25"
+
+jobs:
+  build:
+    name: Build and vet
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Verify go.mod is tidy
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum \
+            || { echo "::error::go.mod/go.sum are not tidy; run 'go mod tidy'"; exit 1; }
+
+      - name: Verify formatting
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "::error::These files are not gofmt'd:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+          args: --timeout=5m
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Test with race detector and coverage
+        run: |
+          go test -race -covermode=atomic \
+            -coverprofile=coverage.out \
+            -coverpkg=./pkg/...,./internal/... \
+            ./...
+
+      - name: Coverage summary
+        run: |
+          go tool cover -func=coverage.out | tail -1
+          {
+            echo "### Coverage"
+            echo '```'
+            go tool cover -func=coverage.out | tail -1
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload coverage profile
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage.out
+          if-no-files-found: error
+
+  cli:
+    name: CLI smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      # Exercises the built binary the way a user would, so a broken CLI
+      # cannot pass CI on the strength of unit tests alone.
+      - name: Build binary
+        run: go build -o lens ./cmd/lens
+
+      - name: decode
+        run: ./lens decode --file testdata/tx_success.env.txt | head -5
+
+      - name: decode --json is valid JSON
+        run: ./lens decode --json --file testdata/tx_success.env.txt | jq -e '.type == "TransactionEnvelope"'
+
+      - name: explain pairs envelope with result
+        run: |
+          ./lens explain \
+            --file testdata/tx_failed.env.txt \
+            --result-file testdata/tx_failed.res.txt \
+            | grep -q "failed at operation 0"
+
+      - name: explain --fail-on-error exits non-zero on failure
+        run: |
+          if ./lens explain --file testdata/tx_failed.env.txt \
+               --result-file testdata/tx_failed.res.txt --fail-on-error > /dev/null; then
+            echo "::error::--fail-on-error exited 0 for a failed transaction"
+            exit 1
+          fi
+
+      - name: diff --exit-code reports differences
+        run: |
+          if ./lens diff --exit-code \
+               testdata/tx_soroban.res.txt testdata/tx_failed.res.txt > /dev/null; then
+            echo "::error::--exit-code exited 0 for differing values"
+            exit 1
+          fi
+          ./lens diff --exit-code testdata/tx_failed.res.txt testdata/tx_failed.res.txt > /dev/null
+
+      - name: reads from stdin
+        run: cat testdata/tx_success.env.txt | ./lens decode - | head -3

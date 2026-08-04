@@ -1,0 +1,82 @@
+name: Feature request
+description: Suggest a capability, an XDR type, or a better explanation
+title: "feat: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the suggestion.
+
+        The most useful requests describe **what you were debugging** and where
+        the current output let you down. A concrete case is far more actionable
+        than an abstract feature.
+
+        Before opening: [docs/roadmap.md](../blob/main/docs/roadmap.md) lists
+        what is planned and what is deliberately out of scope.
+
+  - type: dropdown
+    id: kind
+    attributes:
+      label: What kind of request is this?
+      options:
+        - A new XDR type to support
+        - A better or missing result-code explanation
+        - A new output format
+        - A new command or flag
+        - Something else
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What were you trying to do?
+      description: >
+        Describe the actual debugging task. What did you have, what did you
+        need to find out, and where did `lens` fall short?
+      placeholder: |
+        I was debugging a failed liquidity pool deposit. `lens explain` told me
+        the code but not which of the two assets was underfunded.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would you like it to do?
+      description: The behaviour or output you would want instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: example
+    attributes:
+      label: Example
+      description: >
+        If you can, show the command and the output you would expect. For a new
+        XDR type, a sample base64 payload is ideal.
+      render: text
+    validations:
+      required: false
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you considered
+      description: >
+        Does another tool already do this well? `stellar xdr` covers a lot of
+        ground, and deferring to it is sometimes the right answer.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: contribute
+    attributes:
+      label: Would you like to implement this?
+      description: >
+        Adding an XDR type, an enricher or a result-code explanation is a
+        one-file change — see docs/architecture.md. Help is welcome.
+      options:
+        - label: I would be willing to open a pull request for this
+          required: false

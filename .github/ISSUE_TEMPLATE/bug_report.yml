@@ -1,0 +1,101 @@
+name: Bug report
+description: Something decoded, explained or diffed incorrectly, or crashed
+title: "fix: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report.
+
+        `lens` runs entirely offline and deterministically, so a base64 payload
+        plus the command you ran is almost always enough to reproduce a bug
+        exactly. Please include both.
+
+        ⚠️ Do not paste XDR containing anything sensitive. Envelopes are not
+        secret, but check before sharing a payload from a private system.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you see, and what did you expect instead?
+      placeholder: |
+        I ran `lens explain` on a failed payment and it reported the wrong
+        operation as the failing one.
+    validations:
+      required: true
+
+  - type: textarea
+    id: command
+    attributes:
+      label: Command you ran
+      description: The exact command, so it can be reproduced verbatim.
+      render: shell
+      placeholder: lens explain "AAAAAgAAAA..." --result "AAAAAAAAAG..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: xdr
+    attributes:
+      label: XDR that reproduces it
+      description: >
+        The base64 payload(s). If the bug involves a transaction result,
+        please include both the envelope and the result.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual-output
+    attributes:
+      label: Actual output
+      description: What `lens` printed. Paste it as-is rather than describing it.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected-output
+    attributes:
+      label: Expected output
+      description: What you expected instead, and why.
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: lens version
+      description: Output of `lens version`, or the commit you built from.
+      placeholder: v0.1.0
+    validations:
+      required: true
+
+  - type: input
+    id: go-version
+    attributes:
+      label: Go version
+      description: Output of `go version`.
+      placeholder: go version go1.25.0 linux/amd64
+    validations:
+      required: false
+
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: Ubuntu 24.04 / macOS 15 / Windows 11
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues for this bug
+          required: true
+        - label: The XDR above contains nothing I need to keep private
+          required: true
