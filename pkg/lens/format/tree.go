@@ -5,7 +5,7 @@ import (
 	"io"
 	"strings"
 
-	"github.com/Stellar-optics/stellar-xdr-lens/pkg/lens"
+	"github.com/stellar-optics/stellar-xdr-lens/pkg/lens"
 )
 
 // TreeFormatter renders a value as an indented, optionally colourised tree

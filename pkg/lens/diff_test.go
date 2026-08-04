@@ -6,7 +6,7 @@ import (
 
 	"github.com/stellar/go-stellar-sdk/xdr"
 
-	"github.com/Stellar-optics/stellar-xdr-lens/pkg/lens"
+	"github.com/stellar-optics/stellar-xdr-lens/pkg/lens"
 )
 
 // mustMarshal builds a base64 XDR payload from a concrete value. Constructing

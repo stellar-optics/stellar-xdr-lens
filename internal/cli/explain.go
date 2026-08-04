@@ -10,8 +10,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/Stellar-optics/stellar-xdr-lens/pkg/lens"
-	"github.com/Stellar-optics/stellar-xdr-lens/pkg/lens/format"
+	"github.com/stellar-optics/stellar-xdr-lens/pkg/lens"
+	"github.com/stellar-optics/stellar-xdr-lens/pkg/lens/format"
 )
 
 func newExplainCmd(g *globalFlags, stdout io.Writer, stdin io.Reader) *cobra.Command {

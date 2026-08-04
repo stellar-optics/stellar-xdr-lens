@@ -5,7 +5,7 @@ import (
 	"io"
 	"strings"
 
-	"github.com/Stellar-optics/stellar-xdr-lens/pkg/lens"
+	"github.com/stellar-optics/stellar-xdr-lens/pkg/lens"
 )
 
 // DiffFormatter renders a lens.DiffResult.

@@ -60,7 +60,7 @@ formatters:
   settings:
     goimports:
       local-prefixes:
-        - github.com/Stellar-optics/stellar-xdr-lens
+        - github.com/stellar-optics/stellar-xdr-lens
 
 issues:
   max-issues-per-linter: 0
