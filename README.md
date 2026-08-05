@@ -171,6 +171,31 @@ The `--json` output has a documented, stable shape:
 
 Absent union arms are omitted rather than emitted as `null`, so `jq` paths stay short.
 
+`explain --json` has its own documented shape, in camelCase to match Horizon
+and Soroban RPC:
+
+```json
+{
+  "kind": "transaction",
+  "headline": "Transaction failed at operation 0, invoke_host_function …",
+  "fee": 24167,
+  "feeCharged": 13355,
+  "operations": [
+    { "index": 0, "type": "invoke_host_function",
+      "result": { "code": "invoke_host_function_trapped", "summary": "…", "hint": "…" } }
+  ],
+  "outcome": {
+    "success": false,
+    "reason": { "code": "tx_fee_bump_inner_failed", "…": "…" },
+    "innerReason": { "code": "tx_failed", "…": "…" },
+    "failedOperations": [0]
+  }
+}
+```
+
+These field names are part of the public interface — sibling tools and scripts
+address them with `jq`, so renaming one is a breaking change.
+
 ## Library use
 
 The CLI is a thin shell over `pkg/lens`:

@@ -20,54 +20,54 @@ import (
 type Summary struct {
 	// Kind is the sort of value summarised: "transaction_envelope",
 	// "transaction_result", or "transaction" when the two were paired.
-	Kind string
+	Kind string `json:"kind"`
 	// Headline is the single most important sentence, suitable for a log
 	// line or a CI failure message.
-	Headline string
+	Headline string `json:"headline"`
 	// Source is the strkey address that submitted the transaction.
-	Source string
+	Source string `json:"source,omitempty"`
 	// FeeBumpSource is set when the transaction was wrapped in a fee bump.
-	FeeBumpSource string
+	FeeBumpSource string `json:"feeBumpSource,omitempty"`
 	// Fee is the fee bid in stroops, and FeeCharged what was actually taken.
-	Fee         int64
-	FeeCharged  int64
-	SeqNum      int64
-	Memo        string
-	Preconds    []string
-	SignatureCt int
+	Fee         int64    `json:"fee,omitempty"`
+	FeeCharged  int64    `json:"feeCharged,omitempty"`
+	SeqNum      int64    `json:"seqNum,omitempty"`
+	Memo        string   `json:"memo,omitempty"`
+	Preconds    []string `json:"preconditions,omitempty"`
+	SignatureCt int      `json:"signatureCount,omitempty"`
 	// Operations describes each operation, with its outcome when a result
 	// was supplied.
-	Operations []OpSummary
+	Operations []OpSummary `json:"operations,omitempty"`
 	// Outcome is present whenever a result was supplied.
-	Outcome *Outcome
+	Outcome *Outcome `json:"outcome,omitempty"`
 }
 
 // OpSummary describes one operation.
 type OpSummary struct {
 	// Index is the zero-based position in the transaction.
-	Index int
+	Index int `json:"index"`
 	// Type is the snake_case operation name, e.g. "payment".
-	Type string
+	Type string `json:"type"`
 	// Source is the operation-level source account override, when present.
-	Source string
+	Source string `json:"source,omitempty"`
 	// Detail is a one-line description of what the operation does.
-	Detail string
+	Detail string `json:"detail,omitempty"`
 	// Result is the operation's outcome, present only when a result was
 	// supplied and covers this operation.
-	Result *Reason
+	Result *Reason `json:"result,omitempty"`
 }
 
 // Outcome is the resolved result of a transaction.
 type Outcome struct {
 	// Success reports whether the transaction as a whole succeeded.
-	Success bool
+	Success bool `json:"success"`
 	// Reason explains the transaction-level result code.
-	Reason Reason
+	Reason Reason `json:"reason"`
 	// InnerReason is set for fee-bump transactions, and explains the result
 	// of the inner transaction that the fee bump paid for.
-	InnerReason *Reason
+	InnerReason *Reason `json:"innerReason,omitempty"`
 	// FailedOps lists the indexes of operations that did not succeed.
-	FailedOps []int
+	FailedOps []int `json:"failedOperations,omitempty"`
 }
 
 // Explain summarises a single decoded value.

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 
@@ -197,18 +198,18 @@ func TestExplainJSON(t *testing.T) {
 	}
 
 	var doc struct {
-		Kind       string `json:"Kind"`
-		Headline   string `json:"Headline"`
+		Kind       string `json:"kind"`
+		Headline   string `json:"headline"`
 		Operations []struct {
-			Type   string `json:"Type"`
+			Type   string `json:"type"`
 			Result *struct {
-				Code    string `json:"Code"`
-				Success bool   `json:"Success"`
-			} `json:"Result"`
-		} `json:"Operations"`
+				Code    string `json:"code"`
+				Success bool   `json:"success"`
+			} `json:"result"`
+		} `json:"operations"`
 		Outcome *struct {
-			Success bool `json:"Success"`
-		} `json:"Outcome"`
+			Success bool `json:"success"`
+		} `json:"outcome"`
 	}
 	if err := json.Unmarshal([]byte(stdout), &doc); err != nil {
 		t.Fatalf("--json output is not valid JSON: %v\n%s", err, stdout)
@@ -476,4 +477,81 @@ func TestColorFlagIsHonoured(t *testing.T) {
 	if strings.Contains(never, "\x1b[") {
 		t.Error("--color never produced escape sequences")
 	}
+}
+
+// TestExplainJSONShapeIsCamelCase pins the documented JSON contract for
+// `explain --json`.
+//
+// The field names are part of the public interface: scripts and sibling tools
+// address them with jq, so a rename is a breaking change and belongs in a
+// release note rather than in a refactor. camelCase matches Horizon and
+// Soroban RPC, which is what users already have in their fingers.
+func TestExplainJSONShapeIsCamelCase(t *testing.T) {
+	t.Parallel()
+
+	stdout, _, err := run(t, "", "explain", "--json",
+		fixture(t, "tx_failed.env"), "--result", fixture(t, "tx_failed.res"))
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+
+	var doc map[string]any
+	if err := json.Unmarshal([]byte(stdout), &doc); err != nil {
+		t.Fatalf("--json output is not valid JSON: %v\n%s", err, stdout)
+	}
+
+	for _, want := range []string{"kind", "headline", "fee", "feeCharged", "operations", "outcome"} {
+		if _, ok := doc[want]; !ok {
+			t.Errorf("top-level JSON has no %q field; keys were %v", want, mapKeys(doc))
+		}
+	}
+	// Go field names must not leak through.
+	for _, unwanted := range []string{"Kind", "Headline", "Operations", "Outcome", "FeeCharged"} {
+		if _, ok := doc[unwanted]; ok {
+			t.Errorf("JSON leaked the Go field name %q", unwanted)
+		}
+	}
+
+	outcome, ok := doc["outcome"].(map[string]any)
+	if !ok {
+		t.Fatalf("outcome is %T, want an object", doc["outcome"])
+	}
+	for _, want := range []string{"success", "reason", "innerReason", "failedOperations"} {
+		if _, ok := outcome[want]; !ok {
+			t.Errorf("outcome has no %q field; keys were %v", want, mapKeys(outcome))
+		}
+	}
+
+	reason, ok := outcome["reason"].(map[string]any)
+	if !ok {
+		t.Fatalf("outcome.reason is %T, want an object", outcome["reason"])
+	}
+	for _, want := range []string{"code", "constant", "summary", "success"} {
+		if _, ok := reason[want]; !ok {
+			t.Errorf("reason has no %q field; keys were %v", want, mapKeys(reason))
+		}
+	}
+
+	ops, ok := doc["operations"].([]any)
+	if !ok || len(ops) == 0 {
+		t.Fatalf("operations is %T, want a non-empty array", doc["operations"])
+	}
+	op, ok := ops[0].(map[string]any)
+	if !ok {
+		t.Fatalf("operations[0] is %T, want an object", ops[0])
+	}
+	for _, want := range []string{"index", "type", "result"} {
+		if _, ok := op[want]; !ok {
+			t.Errorf("operations[0] has no %q field; keys were %v", want, mapKeys(op))
+		}
+	}
+}
+
+func mapKeys(m map[string]any) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }

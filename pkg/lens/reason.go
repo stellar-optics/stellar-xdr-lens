@@ -6,19 +6,19 @@ import "strings"
 type Reason struct {
 	// Code is the canonical short form, e.g. "tx_bad_seq" or
 	// "payment_underfunded". It is derived from the XDR constant name.
-	Code string
+	Code string `json:"code"`
 	// Constant is the generated XDR constant, e.g.
 	// "PaymentResultCodePaymentUnderfunded". Useful when cross-referencing
 	// the protocol definition.
-	Constant string
+	Constant string `json:"constant"`
 	// Summary explains what went wrong in one sentence, in the terms a
 	// developer debugging the transaction would use.
-	Summary string
+	Summary string `json:"summary"`
 	// Hint suggests what to do about it. It is empty when the code is a
 	// success, or when no general advice applies.
-	Hint string
+	Hint string `json:"hint,omitempty"`
 	// Success reports whether this code represents a successful outcome.
-	Success bool
+	Success bool `json:"success"`
 }
 
 // reasonText pairs a summary with a hint at map-construction time.
