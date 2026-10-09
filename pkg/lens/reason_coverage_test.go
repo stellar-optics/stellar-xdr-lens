@@ -106,6 +106,25 @@ func TestResultCodeShortFormsAreUnique(t *testing.T) {
 	}
 }
 
+// TestReasonByCode verifies that ReasonByCode correctly returns the Reason
+// for a given short code and returns false for unknown codes.
+func TestReasonByCode(t *testing.T) {
+	t.Parallel()
+
+	reason, ok := lens.ReasonByCode("payment_underfunded")
+	if !ok {
+		t.Fatalf("expected to find Reason for payment_underfunded")
+	}
+	if reason.Code != "payment_underfunded" {
+		t.Errorf("expected code payment_underfunded, got %q", reason.Code)
+	}
+
+	_, ok = lens.ReasonByCode("unknown_nonsense_code")
+	if ok {
+		t.Errorf("expected false for unknown code")
+	}
+}
+
 // enumConstantNames returns the constant name of every valid value of a
 // generated XDR enum.
 //

@@ -570,3 +570,21 @@ func shortCode(constant string) string {
 	}
 	return toSnake(name)
 }
+
+// ReasonByCode returns the plain-English Reason for a short result code, such
+// as "tx_bad_seq" or "payment_underfunded". It returns false if the code is
+// not known to this version of lens.
+func ReasonByCode(short string) (Reason, bool) {
+	for constant, text := range reasons {
+		if shortCode(constant) == short {
+			return Reason{
+				Code:     short,
+				Constant: constant,
+				Summary:  text.summary,
+				Hint:     text.hint,
+				Success:  text.success,
+			}, true
+		}
+	}
+	return Reason{}, false
+}
