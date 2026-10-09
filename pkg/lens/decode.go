@@ -88,6 +88,7 @@ var registry = []xdrType{
 	{"Price", func() any { return new(xdr.Price) }, 8},
 	{"SignerKey", func() any { return new(xdr.SignerKey) }, 7},
 	{"ClaimableBalanceId", func() any { return new(xdr.ClaimableBalanceId) }, 6},
+	{"ClaimableBalanceEntry", func() any { return new(xdr.ClaimableBalanceEntry) }, 5},
 }
 
 // TypeNames returns every registered XDR type name, sorted, for use in help
