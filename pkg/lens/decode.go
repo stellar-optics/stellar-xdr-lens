@@ -89,6 +89,12 @@ var registry = []xdrType{
 	{"SignerKey", func() any { return new(xdr.SignerKey) }, 7},
 	{"ClaimableBalanceId", func() any { return new(xdr.ClaimableBalanceId) }, 6},
 	{"ClaimableBalanceEntry", func() any { return new(xdr.ClaimableBalanceEntry) }, 5},
+	{"AccountEntry", func() any { return new(xdr.AccountEntry) }, 5},
+	{"TrustLineEntry", func() any { return new(xdr.TrustLineEntry) }, 5},
+	{"OfferEntry", func() any { return new(xdr.OfferEntry) }, 5},
+	{"DataEntry", func() any { return new(xdr.DataEntry) }, 5},
+	{"LiquidityPoolEntry", func() any { return new(xdr.LiquidityPoolEntry) }, 5},
+	{"ContractCodeEntry", func() any { return new(xdr.ContractCodeEntry) }, 5},
 }
 
 // TypeNames returns every registered XDR type name, sorted, for use in help
