@@ -1,6 +1,7 @@
 package lens
 
 import (
+	"encoding/hex"
 	"reflect"
 	"strconv"
 	"strings"
@@ -35,6 +36,9 @@ func init() {
 		reflect.TypeOf(xdr.TrustLineAsset{}):   enrichTrustLineAsset,
 		reflect.TypeOf(xdr.TimePoint(0)):       enrichTimePoint,
 		reflect.TypeOf(xdr.Duration(0)):        enrichDuration,
+		reflect.TypeOf(xdr.Hash{}):             enrichHash,
+		reflect.TypeOf(xdr.PoolId{}):           enrichPoolID,
+		reflect.TypeOf(xdr.Signature{}):        enrichSignature,
 	}
 }
 
@@ -211,3 +215,28 @@ func toSnake(s string) string {
 	}
 	return b.String()
 }
+
+func enrichHash(rv reflect.Value) (string, any, bool) {
+	h, valid := rv.Interface().(xdr.Hash)
+	if !valid {
+		return "", nil, false
+	}
+	return h.HexString(), h, true
+}
+
+func enrichPoolID(rv reflect.Value) (string, any, bool) {
+	p, valid := rv.Interface().(xdr.PoolId)
+	if !valid {
+		return "", nil, false
+	}
+	return hex.EncodeToString(p[:]), p, true
+}
+
+func enrichSignature(rv reflect.Value) (string, any, bool) {
+	s, valid := rv.Interface().(xdr.Signature)
+	if !valid {
+		return "", nil, false
+	}
+	return hex.EncodeToString(s), s, true
+}
+
