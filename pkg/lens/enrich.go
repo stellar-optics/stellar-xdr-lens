@@ -239,4 +239,3 @@ func enrichSignature(rv reflect.Value) (string, any, bool) {
 	}
 	return hex.EncodeToString(s), s, true
 }
-
