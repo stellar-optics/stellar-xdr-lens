@@ -447,10 +447,11 @@ and [docs/architecture.md](docs/architecture.md).
 
 ### Failure diagnostics library
 
-Beyond `ExplainPair`, `pkg/lens` ships four offline diagnostics for the
-failures developers hit most often. All take decoded XDR (or captured RPC
-text) and make no network calls; existing CLI flags and output formats are
-unchanged.
+Beyond `ExplainPair`, `pkg/lens` ships offline diagnostics for common failure
+classes. They take decoded XDR, captured RPC text, and any required ledger
+context from the caller; they make no network calls. Existing `lens explain`
+flags and output formats are unchanged, and these context-dependent
+helpers are available through the Go library.
 
 ```go
 // 1. Insufficient balance: available = balance - selling liabilities - reserve.
@@ -468,7 +469,39 @@ fmt.Println(sim.Kind, sim.Hint) // e.g. missing_footprint + "use the footprint i
 // 4. Fee-bump: did the outer wrapper or the inner transaction fail?
 fb, _ := lens.DiagnoseFeeBump(envelope, result)
 fmt.Println(fb.Stage, fb.Summary) // inner vs outer, with fee-charged accounting.
+
+// 5. Claimable balance: evaluate nested predicates at explicit ledger times.
+claim, _ := lens.DiagnoseClaimablePredicate(predicate, lens.ClaimablePredicateContext{
+  LedgerCloseTime: ledgerCloseTime, BalanceCreatedCloseTime: createdCloseTime,
+})
+fmt.Println(claim.Satisfied, claim.FailedConditions)
+
+// 6. Soroban resources: classify tx_soroban_invalid / host resource failures.
+resource, _ := lens.DiagnoseResourceFailure(transactionResult)
+if resource != nil {
+  fmt.Println(resource.Kind, resource.Hint)
+}
+
+// 7. Sponsorship: correlate operation errors with begin/end/revoke operations.
+sponsor, _ := lens.DiagnoseSponsorship(envelope, transactionResult)
+if sponsor != nil {
+  fmt.Println(sponsor.Summary, sponsor.Conflicts)
+}
+
+// 8. Protocol upgrade: correlate adjacent headers with a failed result.
+upgrade, _ := lens.DiagnoseProtocolUpgrade(previousHeader, currentHeader, transactionResult)
+if upgrade != nil {
+  fmt.Println(upgrade.LikelyUpgradeRelated, upgrade.Summary)
+}
 ```
+
+Claim-predicate evaluation requires the creation-ledger close time because
+that value is not stored in the claimable-balance entry. Protocol-upgrade
+analysis requires adjacent headers and reports correlation rather than proof
+that an upgrade caused a rejection. Resource result codes do not include CPU or
+memory counters; use `DiagnoseSimulationResponse` when simulation reports
+those values. These APIs complement the CLI's standard result-code explanation
+without adding flags or changing its output contract.
 
 ### Error handling
 

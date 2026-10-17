@@ -73,6 +73,10 @@ pkg/lens/              the library; this is the reusable surface
   signature_explain.go Signature-threshold diagnosis (hint matching, missing weight)
   simulation_explain.go Simulation-failure root-cause decoder (footprint, CPU, fee)
   feebump_explain.go   Fee-bump inner-vs-outer failure separation
+  claimable_explain.go  recursive claim-predicate evaluation with explicit ledger times
+  resource_explain.go   Soroban resource rejection decoder from transaction results
+  sponsorship_explain.go sponsorship result and begin/end sequence diagnosis
+  upgrade_explain.go   protocol-version boundary correlation for failed results
   diff.go              structural path diff and bounded opt-in LCS alignment
   scval_diff.go        recursive ScVal comparison with canonical map-key matching
   semantic_diff.go     exact wide-integer and type-aware semantic comparison
@@ -644,6 +648,59 @@ transaction's. Fixing the wrong half wastes a rebuild.
 
 Verified against the canonical `tx_failed` (inner failure), `tx_soroban`
 (inner success) and `tx_success` (non-fee-bump) fixtures.
+
+## Claimable-balance predicate failures
+
+`claim_claimable_balance_cannot_claim` means at least one claimant's
+`ClaimPredicate` evaluated false at the ledger close time. Predicates may nest
+absolute and relative time checks under `and`, `or` and `not`.
+
+[`claimable_explain.go`](../pkg/lens/claimable_explain.go) evaluates that tree
+locally through `DiagnoseClaimablePredicate`. The caller supplies both the
+current ledger close time and the ledger close time when the balance was
+created; the entry itself does not carry the latter. Relative predicates use
+`created close time + relBefore`, with the protocol's strict less-than
+comparison. Malformed unions and excessively deep trees return classified
+errors instead of panicking.
+
+Tests evaluate the predicate from the canonical `claimable_balance_entry`
+fixture and construct nested predicates for boolean and time-boundary cases.
+
+## Soroban resource-limit rejection
+
+[`resource_explain.go`](../pkg/lens/resource_explain.go) inspects a
+`TransactionResult` with `DiagnoseResourceFailure`, distinguishing invalid
+resource declarations (`tx_soroban_invalid`), host resource-limit exhaustion,
+and insufficient refundable fees. CPU and memory counters are not present in
+those XDR result codes; when simulation provides used/limit values,
+`DiagnoseSimulationResponse` remains the API that reports the exact binding
+resource. The result explainer reads only supplied XDR and returns no diagnosis
+for unrelated result codes.
+
+## Sponsorship authorization and revocation
+
+[`sponsorship_explain.go`](../pkg/lens/sponsorship_explain.go) combines
+sponsorship operation result codes with the transaction's begin/end/revoke
+operations. `DiagnoseSponsorship` identifies a failing operation and flags
+unmatched or overlapping begin/end instructions, while retaining operation
+indexes and sources for correlation. It does not infer ledger sponsorship
+ownership without ledger-entry input; revoke ownership and reserve errors are
+reported from their exact XDR result codes.
+
+## Protocol-upgrade ledger boundaries
+
+[`upgrade_explain.go`](../pkg/lens/upgrade_explain.go) compares adjacent
+`LedgerHeader` values and a transaction result. `DiagnoseProtocolUpgrade`
+returns no diagnosis unless the protocol version changes and the transaction
+fails. Unsupported-feature result codes are marked as likely related; other
+codes are reported as coincident with, but not specifically implicating, the
+upgrade. This is a deterministic correlation, not proof of causation, and
+requires no ledger or RPC lookup.
+
+These four context-dependent diagnosers are library APIs. The existing
+`lens explain` flags and output contracts are unchanged; use `lens explain`
+for the standard result-code report, and call the library helpers when the
+relevant ledger context or claim-balance creation time is already available.
 
 ## Testing approach
 
