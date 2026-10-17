@@ -187,6 +187,35 @@ For an instance entry the same fields render as `Key: instance storage key`
 with `Durability: persistent`, which is what separates instance storage from an
 ordinary persistent entry.
 
+A fee-bump envelope cannot answer "who paid, and did they actually sign this?"
+from the wire alone: signature hints and the inner transaction's hash are
+derived. `lens decode` appends them next to the untouched `Tx` and `Signatures`
+fields, putting the fee payer's 4-byte key hint beside its strkey and checking
+each outer signature hint against it:
+
+```console
+$ lens decode --file fee-bump-envelope.xdr  # excerpt
+├─ FeeSource: GA2JRQOF6EA3HQWDCEDBPPMLYPJCFLDDGYZLEQGMS5SOBQIB3BAFHVAW
+├─ Fee: 45206
+├─ InnerTx
+│  └─ ...
+├─ FeeSourceHint: 01d84053  4-byte key hint of fee source GA2JR…HVAW
+├─ InnerTxHash: ce6d04d8e3d2235664fefee5e6bb8270920f7c24df286346697c050f8f7c9970  sha256 of 00000002 (ENVELOPE_TYPE_TX) followed by the inner tx XDR; the signed inner hash prefixes the 32-byte network id
+├─ Signatures  [1]
+│  └─ [0]
+│     ├─ Hint: 01d84053
+│     └─ Signature: ...  d35ae3bec7e70078...
+└─ SignatureHints  [1]
+   └─ [0]: 01d84053  matches GA2JR…HVAW key hint
+```
+
+`InnerTxHash` fingerprints the inner transaction without the network id: the
+signature preimage prefixes it with the raw 32-byte network id, which an
+offline decode has no passphrase for, so use the digest to identify the inner
+transaction rather than as the explorer's transaction hash. An outer signature
+whose hint does not match is another signer of the fee source account, not a
+wrong signature, and the note says so.
+
 #### Alternative Formats and Interactive Explorer
 
 ```console

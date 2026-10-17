@@ -360,6 +360,56 @@ ContractDataEntry
 ContractDataEntry` decodes a standalone blob, and an entry embedded in a
 `LedgerEntry` decodes the same way at `Data.ContractData`.
 
+### Fee-bump signature hints and the inner hash
+
+A `FeeBumpTransaction` wraps somebody else's transaction and pays for it, and
+none of what a developer asks next — who signed the wrapper, what the inner
+transaction hashes to — is an XDR field. `enrich.go` registers two node hooks
+from an `init`; both append derived children and leave every wire field
+exactly as decoded, so machine-readable output stays byte-faithful:
+
+- `decorateFeeBumpTransaction` runs for `xdr.FeeBumpTransaction` and appends
+  `FeeSourceHint` — the last four bytes of the fee source's ed25519 key, the
+  4-byte index stellar-core matches `DecoratedSignature` hints by, labelled
+  with the strkey it was derived from — and `InnerTxHash`, the digest
+  `sha256` over `00000002` (`ENVELOPE_TYPE_TX`) followed by the inner
+  transaction's XDR.
+- `decorateFeeBumpEnvelope` runs for `xdr.FeeBumpTransactionEnvelope` and
+  appends `SignatureHints`, one entry per outer fee-bump signature, annotated
+  `matches G… key hint` when the hint was made by the fee source key and
+  `does not match …; another fee-source signer` otherwise — a signature from
+  a third-party signer of the fee source account is not a wrong signature, so
+  the note does not claim it is.
+
+Both hooks fire for an envelope decoded whole and for `--type
+FeeBumpTransaction` decoded on its own, so neither view loses the derived
+facts. The signed inner hash prefixes its preimage with the raw 32-byte
+network id, and the offline decode path has no passphrase to derive it from;
+`InnerTxHash`'s note therefore states what the digest is built from rather
+than presenting it as the explorer's transaction hash. Nothing here touches
+the network: the hooks read only the decoded value, and a fee source that
+claims a key it does not carry (the ed25519 arm is the union's zero
+discriminant) declines instead of dereferencing it.
+
+```console
+$ lens decode --file fee-bump-envelope.xdr  # excerpt
+├─ FeeSource: GA2JRQOF6EA3HQWDCEDBPPMLYPJCFLDDGYZLEQGMS5SOBQIB3BAFHVAW
+├─ Fee: 45206
+├─ InnerTx
+│  └─ ...
+├─ FeeSourceHint: 01d84053  4-byte key hint of fee source GA2JR…HVAW
+├─ InnerTxHash: ce6d04d8e3d2235664fefee5e6bb8270920f7c24df286346697c050f8f7c9970  sha256 of 00000002 (ENVELOPE_TYPE_TX) followed by the inner tx XDR; the signed inner hash prefixes the 32-byte network id
+├─ Signatures  [1]
+│  └─ [0]
+│     ... 1 more level(s) hidden
+└─ SignatureHints  [1]
+   └─ [0]: 01d84053  matches GA2JR…HVAW key hint
+```
+
+Verified against the canonical `tx_feebump` fixture in `testdata/`; the unit
+tests build mismatched hints, keyless fee sources, unarmed inner unions and
+foreign values by hand as well.
+
 ### Field-name enrichment
 
 Some renderings depend on the field name rather than the type. XDR models

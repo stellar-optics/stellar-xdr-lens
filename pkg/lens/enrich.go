@@ -1,6 +1,8 @@
 package lens
 
 import (
+	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"reflect"
 	"strconv"
@@ -333,4 +335,165 @@ func enrichSignature(rv reflect.Value) (string, any, bool) {
 		return "", nil, false
 	}
 	return hex.EncodeToString(s), s, true
+}
+
+// A FeeBumpTransaction is somebody else's transaction with a second fee payer
+// bolted on: the fee source is a different account from the inner
+// transaction's source, the outer envelope carries its own signatures over the
+// wrapper, and the inner transaction carries its own signatures over the
+// inner hash. None of the three facts below is an XDR field, and all three are
+// what a developer holding a fee-bump envelope actually asks for:
+//
+//   - who paid — the fee source key's 4-byte signature hint, derived from
+//     the same ed25519 key the strkey encodes. Signature hints are the index
+//     stellar-core matches DecoratedSignatures by, so putting the key's hint
+//     next to its strkey makes a mismatch visible at a glance;
+//   - which outer signatures belong to that key — each envelope signature
+//     hint checked against the fee source key hint. A signature that does not
+//     match is another signer of the fee source account, not a wrong
+//     signature, so the note says which rather than judging;
+//   - the inner transaction hash — the inner transaction is signed
+//     separately from the wrapper and its digest appears nowhere in the
+//     envelope.
+//
+// Both hooks append derived children and leave every wire field exactly as
+// decoded, so machine-readable output stays byte-faithful. Everything is
+// computed from the decoded value alone: no network, no passphrase, no clock.
+
+func init() {
+	nodeHooks[reflect.TypeOf(xdr.FeeBumpTransaction{})] = decorateFeeBumpTransaction
+	nodeHooks[reflect.TypeOf(xdr.FeeBumpTransactionEnvelope{})] = decorateFeeBumpEnvelope
+}
+
+// muxedAccountHint returns the 4-byte signature hint behind a muxed account:
+// the last four bytes of its ed25519 key, whichever arm carries it. ok is
+// false when the account holds no key (an unset or unknown union arm), in
+// which case there is no hint to match signatures against.
+//
+// The GetEd25519 accessor cannot be used here: KEY_TYPE_ED25519 is the union's
+// zero discriminant, so a zero MuxedAccount claims the ed25519 arm with a nil
+// pointer and the accessor dereferences it. Reading the arms directly keeps a
+// malformed value on the declining path.
+func muxedAccountHint(ma xdr.MuxedAccount) (hint xdr.SignatureHint, ok bool) {
+	switch {
+	case ma.Type == xdr.CryptoKeyTypeKeyTypeEd25519 && ma.Ed25519 != nil:
+		return hintFromKey(*ma.Ed25519), true
+	case ma.Type == xdr.CryptoKeyTypeKeyTypeMuxedEd25519 && ma.Med25519 != nil:
+		return hintFromKey(ma.Med25519.Ed25519), true
+	default:
+		return xdr.SignatureHint{}, false
+	}
+}
+
+// hintFromKey takes the last four bytes of a 32-byte key, exactly what
+// SignerHint does for signer-key unions and what stellar-core puts in a
+// DecoratedSignature.Hint.
+func hintFromKey(raw xdr.Uint256) xdr.SignatureHint {
+	return xdr.SignatureHint{raw[28], raw[29], raw[30], raw[31]}
+}
+
+// feeSourceHintNote labels the derived fee-source hint with the strkey it
+// came from, which is what puts the 4-byte hint "alongside the public key
+// strkey" rather than floating unattached in the tree.
+func feeSourceHintNote(ma xdr.MuxedAccount) string {
+	if addr := addressOf(ma); addr != "" {
+		return "4-byte key hint of fee source " + shortAddr(addr)
+	}
+	return "4-byte key hint of the fee source key"
+}
+
+// innerTransactionDigest hashes the inner transaction's signature preimage
+// without the network id: the four bytes of ENVELOPE_TYPE_TX followed by the
+// inner Transaction's XDR.
+//
+// The hash the inner signatures are actually computed over prefixes that
+// preimage with the raw 32-byte network id, and the offline decode path has
+// no passphrase to derive it from. Rather than invent one, the node's note
+// states what the digest is built from, so it can be used as a byte-exact
+// fingerprint of the inner transaction without being mistaken for the
+// explorer's transaction hash. ok is false when the union arm is absent or
+// not a v1 envelope, so a malformed value simply gains no child.
+func innerTransactionDigest(inner xdr.FeeBumpTransactionInnerTx) (digest string, ok bool) {
+	// The generated GetV1 accessor dereferences the arm without checking it,
+	// so test the pointer rather than reaching for the accessor.
+	if inner.Type != xdr.EnvelopeTypeEnvelopeTypeTx || inner.V1 == nil {
+		return "", false
+	}
+	txBytes, err := inner.V1.Tx.MarshalBinary()
+	if err != nil {
+		return "", false
+	}
+	preimage := make([]byte, 4+len(txBytes))
+	binary.BigEndian.PutUint32(preimage, uint32(xdr.EnvelopeTypeEnvelopeTypeTx))
+	copy(preimage[4:], txBytes)
+	sum := sha256.Sum256(preimage)
+	return hex.EncodeToString(sum[:]), true
+}
+
+// decorateFeeBumpTransaction appends the fee-source key hint and the inner
+// transaction digest to a fee-bump transaction node. It runs for a
+// FeeBumpTransaction decoded on its own (--type FeeBumpTransaction) as well
+// as one nested in an envelope, so neither case loses the derived facts.
+func decorateFeeBumpTransaction(n *Node, v any) {
+	fb, ok := v.(xdr.FeeBumpTransaction)
+	if !ok {
+		return
+	}
+	if hint, found := muxedAccountHint(fb.FeeSource); found {
+		n.Children = append(n.Children, &Node{
+			Name:     "FeeSourceHint",
+			Kind:     KindScalar,
+			TypeName: "SignatureHint",
+			Value:    hex.EncodeToString(hint[:]),
+			Note:     feeSourceHintNote(fb.FeeSource),
+		})
+	}
+	if digest, found := innerTransactionDigest(fb.InnerTx); found {
+		n.Children = append(n.Children, &Node{
+			Name:     "InnerTxHash",
+			Kind:     KindScalar,
+			TypeName: "Hash",
+			Value:    digest,
+			Note:     "sha256 of 00000002 (ENVELOPE_TYPE_TX) followed by the inner tx XDR; the signed inner hash prefixes the 32-byte network id",
+		})
+	}
+}
+
+// decorateFeeBumpEnvelope appends the outer fee-bump signatures' hints as a
+// derived group, each one checked against the fee source key hint. The
+// envelope's wire fields — Tx and Signatures — are left untouched, so the
+// group mirrors rather than replaces them.
+func decorateFeeBumpEnvelope(n *Node, v any) {
+	env, ok := v.(xdr.FeeBumpTransactionEnvelope)
+	if !ok || len(env.Signatures) == 0 {
+		return
+	}
+	// Turning the fee source into a strkey dereferences the union arm, and a
+	// malformed value can claim a key it does not carry, so only derive the
+	// label once the arm has been confirmed present.
+	feeHint, haveFeeHint := muxedAccountHint(env.Tx.FeeSource)
+	feeSource := "fee source"
+	if haveFeeHint {
+		if addr := addressOf(env.Tx.FeeSource); addr != "" {
+			feeSource = shortAddr(addr)
+		}
+	}
+	list := &Node{Name: "SignatureHints", Kind: KindList, TypeName: "DecoratedSignature"}
+	for _, sig := range env.Signatures {
+		note := ""
+		switch {
+		case !haveFeeHint:
+			note = "fee source carries no key; hint not matched"
+		case sig.Hint == feeHint:
+			note = "matches " + feeSource + " key hint"
+		default:
+			note = "does not match " + feeSource + " key hint; another fee-source signer"
+		}
+		list.Children = append(list.Children, &Node{
+			Kind:  KindScalar,
+			Value: hex.EncodeToString(sig.Hint[:]),
+			Note:  note,
+		})
+	}
+	n.Children = append(n.Children, list)
 }
