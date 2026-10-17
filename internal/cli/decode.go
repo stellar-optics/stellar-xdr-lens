@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -18,6 +19,10 @@ import (
 func newDecodeCmd(g *globalFlags, stdout io.Writer, stdin io.Reader) *cobra.Command {
 	var (
 		asJSON      bool
+		asYAML      bool
+		isHex       bool
+		isMulti     bool
+		inspectWASM bool
 		asSummary   bool
 		asTxRep     bool
 		asCSV       bool
@@ -53,6 +58,10 @@ is what batch exports concatenate (see pkg/lens/format for the batch API).
 Use --spec to supply a contract WASM or spec file for decoded Soroban contract fields.
 Use --interactive (or 'lens explore') for an interactive terminal tree viewer.`,
 		Example: `  lens decode "$XDR"
+  lens decode --hex "$HEX"
+  lens decode --multi -f envelopes.txt
+  lens decode --yaml "$XDR"
+  lens decode --wasm "$WASM_OR_ENVELOPE"
   lens decode --json "$XDR" | jq '.value.V1.Tx.Fee'
   lens decode --summary "$XDR"
   lens decode --txrep "$XDR"
@@ -70,9 +79,36 @@ Use --interactive (or 'lens explore') for an interactive terminal tree viewer.`,
 				return runStream(stdout, g, firstArg(args), stdin, typeName, asJSON, compactOut, annotate, maxDepth, showTypes, canonical)
 			}
 
+			if isMulti {
+				var r io.Reader
+				if g.file != "" {
+					f, err := os.Open(g.file)
+					if err != nil {
+						return fmt.Errorf("opening %s: %w", g.file, err)
+					}
+					defer f.Close()
+					r = f
+				} else if firstArg(args) != "" && firstArg(args) != stdinMarker {
+					r = strings.NewReader(firstArg(args))
+				} else {
+					r = stdin
+				}
+
+				return runMultiStream(r, stdout, g, typeName, isHex, asJSON, asYAML, compactOut, annotate, maxDepth, showTypes)
+			}
+
 			payload, err := resolveInput(firstArg(args), g.file, stdin)
 			if err != nil {
 				return err
+			}
+
+			if isHex || strings.HasPrefix(payload, "0x") || strings.HasPrefix(payload, "0X") {
+				b64, convErr := lens.HexToBase64(payload)
+				if convErr == nil {
+					payload = b64
+				} else if isHex {
+					return fmt.Errorf("decoding hex input: %w", convErr)
+				}
 			}
 
 			if canonical {
@@ -97,6 +133,23 @@ Use --interactive (or 'lens explore') for an interactive terminal tree viewer.`,
 
 			value, err := decodeValue(payload, typeName)
 			if err != nil {
+				if inspectWASM {
+					// Attempt direct WASM decode from payload
+					return runDirectWASM(stdout, payload, asJSON)
+				}
+				return err
+			}
+
+			if inspectWASM {
+				return runInspectWASM(stdout, value, payload, asJSON)
+			}
+
+			if asYAML {
+				yamlBytes, err := lens.ValueToYAML(value, annotate)
+				if err != nil {
+					return fmt.Errorf("formatting YAML: %w", err)
+				}
+				_, err = stdout.Write(yamlBytes)
 				return err
 			}
 
@@ -170,6 +223,10 @@ Use --interactive (or 'lens explore') for an interactive terminal tree viewer.`,
 	}
 
 	cmd.Flags().BoolVar(&asJSON, "json", false, "emit stable JSON instead of a tree")
+	cmd.Flags().BoolVar(&asYAML, "yaml", false, "emit formatted YAML instead of a tree")
+	cmd.Flags().BoolVar(&isHex, "hex", false, "parse input as hexadecimal XDR instead of base64")
+	cmd.Flags().BoolVar(&isMulti, "multi", false, "decode multiple newline-separated XDR payloads")
+	cmd.Flags().BoolVar(&inspectWASM, "wasm", false, "extract and inspect embedded WebAssembly bytecode")
 	cmd.Flags().BoolVar(&compactOut, "compact", false, "with --json, emit a single line")
 	cmd.Flags().BoolVar(&asSummary, "summary", false, "emit a terse single-line summary suitable for grep and pipelines")
 	cmd.Flags().BoolVar(&asTxRep, "txrep", false, "emit SEP-0011 TxRep format for transaction envelopes")
@@ -327,6 +384,152 @@ func decodeValue(payload, typeName string) (*lens.Value, error) {
 		return nil, err
 	}
 	return v, nil
+}
+
+// runMultiStream decodes and formats multiple concatenated records.
+func runMultiStream(r io.Reader, stdout io.Writer, g *globalFlags, typeName string, isHex, asJSON, asYAML, compactOut, annotate bool, maxDepth int, showTypes bool) error {
+	opts := []lens.MultiStreamOption{
+		lens.WithMultiStreamHex(isHex),
+		lens.WithMultiStreamStopOnError(true),
+	}
+	if typeName != "" {
+		opts = append(opts, lens.WithMultiStreamType(typeName))
+	}
+
+	decoder := lens.NewMultiStreamDecoder(r, opts...)
+	records, err := decoder.DecodeAll()
+	if err != nil {
+		return err
+	}
+
+	if asYAML {
+		for i, rec := range records {
+			if i > 0 {
+				if _, err := fmt.Fprintln(stdout, "---"); err != nil {
+					return err
+				}
+			}
+			y, err := lens.ValueToYAML(rec.Value, annotate)
+			if err != nil {
+				return err
+			}
+			if _, err := stdout.Write(y); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	if asJSON {
+		if compactOut {
+			// NDJSON emission
+			for _, rec := range records {
+				var buf bytes.Buffer
+				f := format.NewJSONFormatter(format.WithIndent(""), format.WithAnnotations(annotate))
+				if err := f.Format(&buf, rec.Value); err != nil {
+					return err
+				}
+				if _, err := fmt.Fprintf(stdout, "%s\n", strings.TrimSpace(buf.String())); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+
+		type multiJSONItem struct {
+			Index      int    `json:"index"`
+			LineNumber int    `json:"line_number"`
+			Type       string `json:"type"`
+			Value      any    `json:"value"`
+		}
+		items := make([]multiJSONItem, len(records))
+		for i, rec := range records {
+			items[i] = multiJSONItem{
+				Index:      rec.Index,
+				LineNumber: rec.LineNumber,
+				Type:       rec.Value.Type,
+				Value:      lens.NodeToGeneric(rec.Value.Node, annotate),
+			}
+		}
+		enc := json.NewEncoder(stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(items)
+	}
+
+	tf := format.NewTreeFormatter(
+		format.WithPalette(format.PaletteFor(stdout, g.color)),
+		format.WithMaxDepth(maxDepth),
+		format.WithTypeNames(showTypes),
+	)
+
+	for _, rec := range records {
+		if _, err := fmt.Fprintf(stdout, "=== Record %d (line %d) Type: %s ===\n", rec.Index, rec.LineNumber, rec.Value.Type); err != nil {
+			return err
+		}
+		if err := tf.Format(stdout, rec.Value); err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintln(stdout); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// runInspectWASM extracts and disassembles WebAssembly bytecode.
+func runInspectWASM(stdout io.Writer, val *lens.Value, payload string, asJSON bool) error {
+	wasmBytes, err := lens.ExtractWASMFromXDR(val)
+	if err != nil {
+		return runDirectWASM(stdout, payload, asJSON)
+	}
+
+	mod, err := lens.ParseWASM(wasmBytes)
+	if err != nil {
+		return fmt.Errorf("parsing extracted WebAssembly: %w", err)
+	}
+
+	if asJSON {
+		enc := json.NewEncoder(stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(mod)
+	}
+
+	_, err = fmt.Fprint(stdout, mod.Inspect())
+	return err
+}
+
+// runDirectWASM attempts to parse a raw/hex/base64 payload directly as WASM.
+func runDirectWASM(stdout io.Writer, payload string, asJSON bool) error {
+	var wasmBytes []byte
+	if lens.IsHexString(payload) {
+		b, err := lens.HexToBytes(payload)
+		if err == nil {
+			wasmBytes = b
+		}
+	}
+	if len(wasmBytes) == 0 {
+		b, err := base64.StdEncoding.DecodeString(payload)
+		if err == nil {
+			wasmBytes = b
+		} else {
+			wasmBytes = []byte(payload)
+		}
+	}
+
+	mod, err := lens.ParseWASM(wasmBytes)
+	if err != nil {
+		return fmt.Errorf("decoding WebAssembly payload: %w", err)
+	}
+
+	if asJSON {
+		enc := json.NewEncoder(stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(mod)
+	}
+
+	_, err = fmt.Fprint(stdout, mod.Inspect())
+	return err
 }
 
 // runCandidates prints every type the payload decodes as, which is the honest

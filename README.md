@@ -388,6 +388,21 @@ lens decode --json "$XDR" | jq -r '.value.V1.Tx.Fee'
 
 # Gate a deployment on the transaction having succeeded
 lens explain "$ENV" --result "$RES" --fail-on-error || exit 1
+
+# Hexadecimal input support
+lens decode --hex "0x00000000..."
+
+# Decode concatenated newline-separated streams (NDJSON or multi-document YAML)
+lens decode --multi -f transactions.txt --json --compact
+
+# Extract and disassemble embedded WebAssembly from Soroban transactions
+lens decode --wasm -f contract_upload.xdr
+
+# Decode into clean YAML
+lens decode --yaml "$XDR"
+
+# Encode YAML specification into XDR
+lens encode -f spec.yaml
 ```
 
 `lens` itself only processes the XDR supplied to it and makes no network calls.
