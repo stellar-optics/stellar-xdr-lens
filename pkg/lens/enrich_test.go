@@ -4,6 +4,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/stellar/go-stellar-sdk/amount"
 	"github.com/stellar/go-stellar-sdk/xdr"
 )
 
@@ -107,6 +108,101 @@ func TestTrustLineFlagNote(t *testing.T) {
 	}
 	if _, ok := trustLineFlagNote(reflect.ValueOf("x")); ok {
 		t.Error("trustLineFlagNote accepted a non-Uint32 value")
+	}
+}
+
+// TestTrustLineFlagNoteCombinations pins the expansion of every documented
+// trustline flag bit, including the combined bitmask used by a clawback-
+// enabled, fully authorized line.
+func TestTrustLineFlagNoteCombinations(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		flags xdr.Uint32
+		want  string
+		ok    bool
+	}{
+		{"zero declines", 0, "", false},
+		{
+			"authorized",
+			xdr.Uint32(xdr.TrustLineFlagsAuthorizedFlag),
+			"authorized",
+			true,
+		},
+		{
+			"maintain liabilities only",
+			xdr.Uint32(xdr.TrustLineFlagsAuthorizedToMaintainLiabilitiesFlag),
+			"authorized_to_maintain_liabilities",
+			true,
+		},
+		{
+			"clawback only",
+			xdr.Uint32(xdr.TrustLineFlagsTrustlineClawbackEnabledFlag),
+			"trustline_clawback_enabled",
+			true,
+		},
+		{
+			"authorized and clawback",
+			xdr.Uint32(xdr.TrustLineFlagsAuthorizedFlag |
+				xdr.TrustLineFlagsTrustlineClawbackEnabledFlag),
+			"authorized | trustline_clawback_enabled",
+			true,
+		},
+		{
+			"all three flags",
+			xdr.Uint32(xdr.TrustLineFlagsAuthorizedFlag |
+				xdr.TrustLineFlagsAuthorizedToMaintainLiabilitiesFlag |
+				xdr.TrustLineFlagsTrustlineClawbackEnabledFlag),
+			"authorized | authorized_to_maintain_liabilities | trustline_clawback_enabled",
+			true,
+		},
+		{"unknown bits alone decline", xdr.Uint32(0x8), "", false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			note, ok := trustLineFlagNote(reflect.ValueOf(tc.flags))
+			if ok != tc.ok || note != tc.want {
+				t.Errorf("trustLineFlagNote(%d) = (%q, %v), want (%q, %v)",
+					tc.flags, note, ok, tc.want, tc.ok)
+			}
+		})
+	}
+}
+
+// TestTrustLineLiabilitiesAmountFormatting pins the shared amount-field
+// enricher for the V1 liabilities: Buying and Selling are Int64 token
+// balances and must render as decimal units alongside the raw stroop integer,
+// exactly like every other amount field in the protocol.
+func TestTrustLineLiabilitiesAmountFormatting(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		field string
+		value xdr.Int64
+		want  string
+	}{
+		{"buying", "Buying", xdr.Int64(100 * amount.One), "100.0000000 (stroops: 1000000000)"},
+		{"selling", "Selling", xdr.Int64(200 * amount.One), "200.0000000 (stroops: 2000000000)"},
+		{"zero buying", "Buying", xdr.Int64(0), "0.0000000 (stroops: 0)"},
+		{"balance", "Balance", xdr.Int64(50 * amount.One), "50.0000000 (stroops: 500000000)"},
+		{"limit", "Limit", xdr.Int64(1000 * amount.One), "1000.0000000 (stroops: 10000000000)"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			note, ok := enrichAmountField(tc.field, reflect.ValueOf(tc.value))
+			if !ok || note != tc.want {
+				t.Errorf("enrichAmountField(%q, %d) = (%q, %v), want (%q, true)",
+					tc.field, tc.value, note, ok, tc.want)
+			}
+		})
 	}
 }
 

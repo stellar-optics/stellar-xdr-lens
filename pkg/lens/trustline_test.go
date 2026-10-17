@@ -63,6 +63,9 @@ func TestTrustLineEntrySimpleDecoding(t *testing.T) {
 	if flags.Value != uint64(xdr.TrustLineFlagsAuthorizedFlag) {
 		t.Errorf("Flags Value = %v, want %d", flags.Value, xdr.TrustLineFlagsAuthorizedFlag)
 	}
+	if flags.Note != "authorized" {
+		t.Errorf("Flags Note = %q, want %q", flags.Note, "authorized")
+	}
 
 	ext := v.Node.Find("Ext")
 	if ext == nil {
@@ -121,6 +124,9 @@ func TestTrustLineEntryV1Decoding(t *testing.T) {
 	}
 	if selling.Value != int64(200*amount.One) {
 		t.Errorf("Selling Value = %v, want %d", selling.Value, 200*amount.One)
+	}
+	if !strings.Contains(selling.Note, "200.0000000") {
+		t.Errorf("Selling Note = %q, want formatted", selling.Note)
 	}
 
 	v1Ext := v1.Child("Ext")

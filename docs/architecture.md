@@ -56,6 +56,7 @@ pkg/lens/              the library; this is the reusable surface
   bucket_entry.go      bucket list, tombstone and hot archive terminology
   scp.go               consensus node identity and pledge names
   state_archival.go    TTL expiry and eviction rendering
+  trustline.go           trustline flag names and liability amount fields
   account_extensions.go liabilities, sponsorship counters and sequence-ledger notes
   data_entry.go        account data values: printable text vs hex
   survey.go            time-sliced survey command names and encrypted bodies
@@ -346,6 +347,21 @@ ContractDataEntry
 `ContractDataEntry` is registered (priority 5), so `lens decode --type
 ContractDataEntry` decodes a standalone blob, and an entry embedded in a
 `LedgerEntry` decodes the same way at `Data.ContractData`.
+
+### Trust line flags and liabilities
+
+`pkg/lens/trustline.go` makes a `TrustLineEntry` self-describing:
+
+- **Flags** is a bitmask whose meaning is invisible in the value alone
+  (`"3"` tells a reader nothing). A field note keyed on `TrustLineEntry`
+  expands the set bits into the Horizon names `authorized`,
+  `authorized_to_maintain_liabilities` and `trustline_clawback_enabled`,
+  joined with ` | ` when several are active. An empty set declines, so an
+  unauthorized line stays a plain `0`.
+- **Buying and Selling liabilities** (the V1 extension) are Int64 token
+  balances. They join the shared `amountFields` list, so
+  `Buying: 1000000000` renders as `100.0000000 (stroops: 1000000000)` —
+  the same decimal form used for every other amount in the protocol.
 
 ### Field-name enrichment
 
