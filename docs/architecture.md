@@ -347,6 +347,28 @@ ContractDataEntry
 ContractDataEntry` decodes a standalone blob, and an entry embedded in a
 `LedgerEntry` decodes the same way at `Data.ContractData`.
 
+### Data values and ManageData payloads
+
+`pkg/lens/data_entry.go` decides whether an arbitrary `DataValue` blob is
+text. Nothing on the wire says so, and always printing hex buries the common
+case — configuration strings, URLs, IPFS hashes, small JSON documents —
+behind an encoding step:
+
+- A value is text when it is non-empty, valid UTF-8, and consists solely of
+  printable runes. Control characters (newlines, tabs, NUL) disqualify it,
+  because rendering them inside a one-line tree node would corrupt the
+  surrounding output. Text becomes the payload itself (`Value`) with the note
+  `UTF-8 text, N byte(s)`.
+- Anything else — invalid UTF-8, embedded control bytes, a PNG signature —
+  stays lower-case hex with the note `binary, N byte(s)`. An empty value
+  notes `empty`.
+
+The enricher is registered on `xdr.DataValue`, so it fires wherever a data
+value appears: a standalone `DataEntry`, a `ManageDataOp` inside a
+transaction operation (the optional `*DataValue` is unwrapped by the walker),
+or any other carrier of the same type. A nil `ManageDataOp.DataValue` (the
+data-delete shape) is an absent optional and is pruned entirely.
+
 ### Field-name enrichment
 
 Some renderings depend on the field name rather than the type. XDR models
