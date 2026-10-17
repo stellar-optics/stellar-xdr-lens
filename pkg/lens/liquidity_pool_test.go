@@ -119,6 +119,52 @@ func TestPoolParametersDecoding(t *testing.T) {
 	}
 }
 
+func TestLiquidityPoolEntryEnrichment(t *testing.T) {
+	t.Parallel()
+
+	v, err := lens.DecodeAs(loadFixture(t, "liquidity_pool_entry"), "LiquidityPoolEntry")
+	if err != nil {
+		t.Fatalf("DecodeAs() error = %v", err)
+	}
+
+	// The pool id keeps its hex value and names what the hex identifies.
+	poolID := v.Node.Find("LiquidityPoolId")
+	if poolID == nil {
+		t.Fatal("LiquidityPoolId not found in tree")
+	}
+	hexID, ok := poolID.Value.(string)
+	if !ok {
+		t.Fatalf("LiquidityPoolId Value = %T, want string hex", poolID.Value)
+	}
+	if !strings.HasPrefix(hexID, "4141414141") {
+		t.Errorf("LiquidityPoolId Value = %q, want the fixture hash hex", hexID)
+	}
+	for _, want := range []string{"constant product pool", "USDC", "native", "@ 0.3%"} {
+		if !strings.Contains(poolID.Note, want) {
+			t.Errorf("LiquidityPoolId Note = %q, want to contain %q", poolID.Note, want)
+		}
+	}
+
+	// Pool shares are decimal tokens, not lumens: the note has to say so.
+	totalPoolShares := v.Node.Find("Body.ConstantProduct.TotalPoolShares")
+	if totalPoolShares == nil {
+		t.Fatal("TotalPoolShares not found in tree")
+	}
+	for _, want := range []string{"200000.0000000", "pool share tokens", "stroops"} {
+		if !strings.Contains(totalPoolShares.Note, want) {
+			t.Errorf("TotalPoolShares Note = %q, want to contain %q", totalPoolShares.Note, want)
+		}
+	}
+
+	trustLineCount := v.Node.Find("Body.ConstantProduct.PoolSharesTrustLineCount")
+	if trustLineCount == nil {
+		t.Fatal("PoolSharesTrustLineCount not found in tree")
+	}
+	if trustLineCount.Note != "held by 150 trustlines" {
+		t.Errorf("PoolSharesTrustLineCount Note = %q, want %q", trustLineCount.Note, "held by 150 trustlines")
+	}
+}
+
 func TestLiquidityPoolEntryDetection(t *testing.T) {
 	t.Parallel()
 

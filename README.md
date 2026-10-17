@@ -187,6 +187,22 @@ For an instance entry the same fields render as `Key: instance storage key`
 with `Durability: persistent`, which is what separates instance storage from an
 ordinary persistent entry.
 
+`lens decode --type LiquidityPoolEntry` names the market a constant product
+pool trades and renders its share supply as pool share tokens, not lumens:
+
+```console
+$ lens decode --type LiquidityPoolEntry "$POOL"
+LiquidityPoolEntry
+├─ LiquidityPoolId: 41…41  constant product pool: USDC:GA2J… / native @ 0.3%
+└─ Body
+   └─ ConstantProduct
+      ├─ Params: USDC:GA2J… / native @ 0.3%
+      ├─ ReserveA: 1000000000000  100000.0000000 (stroops: 1000000000000)
+      ├─ ReserveB: 5000000000000  500000.0000000 (stroops: 5000000000000)
+      ├─ TotalPoolShares: 2000000000000  200000.0000000 pool share tokens (stroops: 2000000000000)
+      └─ PoolSharesTrustLineCount: 150  held by 150 trustlines
+```
+
 #### Alternative Formats and Interactive Explorer
 
 ```console

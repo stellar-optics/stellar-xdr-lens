@@ -301,6 +301,28 @@ afterwards, so it needs no locking.
   stroops, its price as a fraction, and its flags. An offer embedded in a
   `LedgerEntry` decodes the same way at `Data.Offer`.
 
+### Liquidity pools and share tokens
+
+`pkg/lens/liquidity_pool.go` covers the Protocol 18+ liquidity pool family:
+
+- `xdr.PoolId` renders as its 64-character hex value with a
+  `constant product pool id` note. Protocol 18 defines a single pool formula,
+  so the note is always accurate.
+- `xdr.LiquidityPoolConstantProductParameters` collapses into the asset pair
+  and fee, for example `native / USDC:GA... @ 0.3%`; the fee is stored in
+  basis points and rendered as a percentage.
+- A `LiquidityPoolEntry` node hook annotates the `LiquidityPoolId` leaf with
+  the pair and fee from `Body.ConstantProduct`, so the id line answers "which
+  market is this?" without descending into the body.
+- `TotalPoolShares` renders as decimal pool share tokens next to its stroop
+  count (`200000.0000000 pool share tokens (stroops: 2000000000000)`) rather
+  than as lumens, and `PoolSharesTrustLineCount` renders as
+  `held by 150 trustlines`. Both notes are registered per containing type, so
+  no other `Int64` field picks them up.
+
+Every rendering is a pure function of the decoded value: no clock, no
+environment and no network access.
+
 ### Contract data and storage levels
 
 `pkg/lens/contract_data.go` decodes Soroban contract data and makes the three
