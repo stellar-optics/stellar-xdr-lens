@@ -187,6 +187,32 @@ For an instance entry the same fields render as `Key: instance storage key`
 with `Durability: persistent`, which is what separates instance storage from an
 ordinary persistent entry.
 
+A transaction's `LedgerFootprint` is flat on the wire, so `lens decode` also
+groups its keys by storage level after the untouched `ReadOnly` and `ReadWrite`
+lists. Each grouped entry points at its wire position and names the contract it
+belongs to (contract code keys show their WASM hash instead):
+
+```console
+$ lens decode --file soroban-envelope.xdr  # footprint excerpt
+Footprint
+├─ ReadOnly  [10]
+│  └─ ...
+├─ ReadWrite  [6]
+│  └─ ...
+├─ Instance  [3]
+│  ├─ [0]: readOnly[0]  contract data for CBGSBKYMYO6OMGHQXXNOBRGVUDFUDVC2XLC3SXON5R2SNXILR7XCKKY3
+│  └─ ...
+├─ Temporary  [10]
+│  └─ ...
+└─ Other  [3]
+   ├─ [0]: readOnly[8]  contract code 70fe44694c9fe6b0abc69a6da4858fc2aaba04fa10492a466a1d426d04ca8560
+   └─ ...
+```
+
+`Instance` holds persistent keys that use the contract instance key; `Other`
+holds keys with no Soroban durability, such as trust lines and contract code,
+so no entry is dropped.
+
 #### Alternative Formats and Interactive Explorer
 
 ```console

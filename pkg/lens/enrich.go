@@ -45,6 +45,10 @@ func registerEnricher(t reflect.Type, fn Enricher) {
 	enricherFor[t] = fn
 }
 
+func init() {
+	nodeHooks[reflect.TypeOf(xdr.LedgerFootprint{})] = decorateLedgerFootprint
+}
+
 // enrich looks up and applies the Enricher registered for rv's type.
 //
 // Generated XDR accessors dereference union arms without checking the
@@ -333,4 +337,175 @@ func enrichSignature(rv reflect.Value) (string, any, bool) {
 		return "", nil, false
 	}
 	return hex.EncodeToString(s), s, true
+}
+
+// A Soroban transaction declares the ledger entries it will touch in a
+// LedgerFootprint: two flat lists of LedgerKey unions, ReadOnly and ReadWrite.
+// The wire shape says nothing about storage level, and the only place a key's
+// durability appears is deep inside its ContractData arm, so answering "what
+// does this transaction read persistently?" means walking every key. The hook
+// registered above appends derived children that group the same keys by
+// storage level and name the contract each key belongs to; the wire fields are
+// left exactly as decoded so machine output stays byte-faithful.
+
+// Storage levels used by the derived footprint groups. "other" collects ledger
+// keys that carry no Soroban durability at all — accounts, trust lines, offers,
+// contract code, config settings and TTL records — so no footprint entry is
+// dropped from the grouping.
+const (
+	footprintPersistent = "persistent"
+	footprintTemporary  = "temporary"
+	footprintInstance   = "instance"
+	footprintOther      = "other"
+)
+
+// footprintStorageOrder fixes the order the groups are rendered in. It is part
+// of the output contract: stable ordering keeps JSON output and diffs
+// deterministic.
+var footprintStorageOrder = []struct {
+	level string
+	label string
+}{
+	{level: footprintPersistent, label: "Persistent"},
+	{level: footprintTemporary, label: "Temporary"},
+	{level: footprintInstance, label: "Instance"},
+	{level: footprintOther, label: "Other"},
+}
+
+// footprintEntry is one key placed in a storage group. Access and Index locate
+// it in the undecorated ReadOnly/ReadWrite lists, which is why the derived
+// groups reference entries instead of duplicating their (potentially large)
+// key trees.
+type footprintEntry struct {
+	access string
+	index  int
+	key    xdr.LedgerKey
+}
+
+// footprintGroup is one storage bucket of a footprint. Groups with no entries
+// are omitted, so a group node is never rendered empty.
+type footprintGroup struct {
+	name    string
+	entries []footprintEntry
+}
+
+// decorateLedgerFootprint appends the storage groups to a footprint node. It
+// is a node hook, so it only ever sees the concrete decoded value and never
+// fails the surrounding decode.
+func decorateLedgerFootprint(n *Node, v any) {
+	fp, ok := v.(xdr.LedgerFootprint)
+	if !ok {
+		return
+	}
+	for _, group := range groupLedgerFootprint(fp) {
+		list := &Node{Name: group.name, Kind: KindList, TypeName: "LedgerKey"}
+		for _, entry := range group.entries {
+			list.Children = append(list.Children, &Node{
+				Kind:  KindScalar,
+				Value: entry.access + "[" + strconv.Itoa(entry.index) + "]",
+				Note:  footprintKeyNote(entry.key),
+			})
+		}
+		n.Children = append(n.Children, list)
+	}
+}
+
+// groupLedgerFootprint buckets every key by storage level, preserving the
+// order the keys appeared in within each bucket. ReadOnly entries are visited
+// before ReadWrite entries, which mirrors the wire order.
+func groupLedgerFootprint(fp xdr.LedgerFootprint) []footprintGroup {
+	buckets := map[string][]footprintEntry{}
+	add := func(access string, keys []xdr.LedgerKey) {
+		for i, key := range keys {
+			level := footprintStorageLevel(key)
+			buckets[level] = append(buckets[level], footprintEntry{access: access, index: i, key: key})
+		}
+	}
+	add("readOnly", fp.ReadOnly)
+	add("readWrite", fp.ReadWrite)
+
+	groups := make([]footprintGroup, 0, len(footprintStorageOrder))
+	for _, bucket := range footprintStorageOrder {
+		entries := buckets[bucket.level]
+		if len(entries) == 0 {
+			continue
+		}
+		groups = append(groups, footprintGroup{name: bucket.label, entries: entries})
+	}
+	return groups
+}
+
+// footprintStorageLevel classifies one key. Contract data carries the
+// durability explicitly, but instance storage is recorded as persistent and is
+// only recognisable by its special ledger key, so that key splits instance
+// entries out of the persistent bucket.
+func footprintStorageLevel(key xdr.LedgerKey) string {
+	if key.Type != xdr.LedgerEntryTypeContractData || key.ContractData == nil {
+		return footprintOther
+	}
+	switch key.ContractData.Durability {
+	case xdr.ContractDataDurabilityPersistent:
+		if key.ContractData.Key.Type == xdr.ScValTypeScvLedgerKeyContractInstance {
+			return footprintInstance
+		}
+		return footprintPersistent
+	case xdr.ContractDataDurabilityTemporary:
+		return footprintTemporary
+	default:
+		return footprintOther
+	}
+}
+
+// footprintContractID returns the C... address a contract data key belongs to,
+// or "" when the key carries no contract address. "Where available" is literal:
+// account, trust line, code, config and TTL keys have no contract id, and a
+// contract data key that names an account rather than a contract declines.
+func footprintContractID(key xdr.LedgerKey) (id string) {
+	if key.Type != xdr.LedgerEntryTypeContractData || key.ContractData == nil {
+		return ""
+	}
+	contract := key.ContractData.Contract
+	if contract.Type != xdr.ScAddressTypeScAddressTypeContract {
+		return ""
+	}
+	// ScAddress.String dereferences its union arm, so a malformed key can
+	// panic inside the SDK. The derived note is optional: losing it is better
+	// than failing the decode.
+	defer func() {
+		if r := recover(); r != nil {
+			id = ""
+		}
+	}()
+	addr, err := contract.String()
+	if err != nil {
+		return ""
+	}
+	return addr
+}
+
+// footprintKeyNote labels one grouped entry with its key kind and, where the
+// key carries one, the contract id it belongs to. Contract code keys have no
+// contract id but are identified by their WASM hash, so that hash is shown
+// instead of leaving the reference line anonymous.
+func footprintKeyNote(key xdr.LedgerKey) string {
+	kind := ledgerKeyKindName(key)
+	if id := footprintContractID(key); id != "" {
+		return kind + " for " + id
+	}
+	if key.Type == xdr.LedgerEntryTypeContractCode && key.ContractCode != nil {
+		return kind + " " + key.ContractCode.Hash.HexString()
+	}
+	return kind
+}
+
+// ledgerKeyKindName renders a LedgerKey discriminant as lower-case words, the
+// form used elsewhere in the tree ("contract data", "liquidity pool").
+// Unknown discriminants, which the generated String renders as empty, fall back
+// to their numeric value rather than producing an empty label.
+func ledgerKeyKindName(key xdr.LedgerKey) string {
+	name := strings.TrimPrefix(key.Type.String(), "LedgerEntryType")
+	if name == "" {
+		return "ledger entry type " + strconv.FormatInt(int64(key.Type), 10)
+	}
+	return strings.ReplaceAll(toSnake(name), "_", " ")
 }

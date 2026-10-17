@@ -360,6 +360,54 @@ ContractDataEntry
 ContractDataEntry` decodes a standalone blob, and an entry embedded in a
 `LedgerEntry` decodes the same way at `Data.ContractData`.
 
+### Ledger footprint storage groups
+
+A Soroban transaction declares the entries it will touch in a
+`LedgerFootprint`: two flat lists of `LedgerKey` unions, `ReadOnly` and
+`ReadWrite`. Durability is only visible by descending into each key's
+`ContractData` arm, and instance storage shares persistent durability, so the
+wire shape does not answer "what does this transaction read persistently?".
+
+`enrich.go` registers a node hook for `xdr.LedgerFootprint` that appends
+derived children after the declared lists. The lists themselves are untouched:
+
+- `Persistent`, `Temporary`, `Instance` and `Other` are the storage groups, in
+  that fixed order; a group with no entries is omitted.
+- `Instance` holds the persistent entries whose key is the contract instance
+  key — the same signal that names instance storage in a standalone contract
+  data entry.
+- `Other` collects keys that carry no Soroban durability — accounts, trust
+  lines, offers, contract code, config settings and TTL records — so every
+  footprint entry appears in exactly one group.
+
+Each group entry references its wire position (`readOnly[2]`, `readWrite[0]`)
+rather than duplicating the key tree, and its note names the key kind plus the
+contract id (`C...`) when the key carries one. Contract code keys have no
+contract id, so the note shows the WASM hash instead:
+
+```console
+$ lens decode --type TransactionEnvelope "$SOROBAN_ENVELOPE"  # excerpt
+Footprint
+├─ ReadOnly  [10]
+│  └─ ...
+├─ ReadWrite  [6]
+│  └─ ...
+├─ Instance  [3]
+│  ├─ [0]: readOnly[0]  contract data for CBGSBKYMYO6OMGHQXXNOBRGVUDFUDVC2XLC3SXON5R2SNXILR7XCKKY3
+│  └─ ...
+├─ Temporary  [10]
+│  ├─ [0]: readOnly[2]  contract data for CDL74RF5BLYR2YBLCCI7F5FB6TPSCLKEJUBSD2RSVWZ4YHF3VMFAIGWA
+│  └─ ...
+└─ Other  [3]
+   ├─ [0]: readOnly[8]  contract code 70fe44694c9fe6b0abc69a6da4858fc2aaba04fa10492a466a1d426d04ca8560
+   ├─ [1]: readOnly[9]  contract code db2c14290d4964e3805f2527dd132939ba5fb3fccac56b30bfab8fd091011627
+   └─ [2]: readWrite[0]  trustline
+```
+
+The grouping is derived and offline: it reads the decoded value, makes no
+network calls, and leaves the machine-readable `ReadOnly`/`ReadWrite` fields
+unchanged so `--json` consumers keep the raw footprint.
+
 ### Field-name enrichment
 
 Some renderings depend on the field name rather than the type. XDR models
