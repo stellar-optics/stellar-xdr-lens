@@ -60,6 +60,7 @@ pkg/lens/              the library; this is the reusable surface
   data_entry.go        account data values: printable text vs hex
   survey.go            time-sliced survey command names and encrypted bodies
   contract_code.go     WASM section parsing: contract spec, env meta and meta
+  contract_executable.go contract executables: wasm hash, built-in token, external refs
   overlay.go           peer addresses, certificate keys, overlay message names
   tx_history.go        ledger-sequence field notes for history sets and batches
   asset_types.go       asset details and Stellar Asset Contract id derivation
@@ -339,13 +340,35 @@ ContractDataEntry
 └─ Val
    ├─ Type: ScValTypeScvContractInstance
    └─ Instance
-      └─ Executable
-         ... 1 more level(s) hidden
+      └─ Executable: deadbeef…0c0d  wasm:deadbeef…0c0d
 ```
 
 `ContractDataEntry` is registered (priority 5), so `lens decode --type
 ContractDataEntry` decodes a standalone blob, and an entry embedded in a
 `LedgerEntry` decodes the same way at `Data.ContractData`.
+
+### Contract executables
+
+`pkg/lens/contract_executable.go` folds the `ContractExecutable` union — the
+question of how a Soroban contract instance is implemented — into one readable
+scalar, so the instance no longer ends in a raw discriminant and an opaque
+hash:
+
+- `CONTRACT_EXECUTABLE_WASM` renders the module hash in hex with a
+  `wasm:<hex>` note. The hash is the handle that ties a deployed instance back
+  to its uploaded `ContractCodeEntry`, so it is kept in full.
+- `CONTRACT_EXECUTABLE_STELLAR_ASSET` renders as
+  `stellar asset contract (built-in token)`. The arm is void: which asset a
+  Stellar Asset Contract wraps is encoded in the contract address, not the
+  executable, so the executable can only be named.
+- `CONTRACT_EXECUTABLE_EXTERNAL_REF` (Protocol 23) renders as
+  `external contract reference` and keeps the owning address (strkey) and the
+  implementation-defined tag in the value.
+- Unknown discriminants and missing arms decline and fall back to the generic
+  rendering, so a newer protocol degrades to the structural form rather than
+  to a panic.
+
+The enricher reads the decoded value only; no network calls or clock use.
 
 ### Field-name enrichment
 

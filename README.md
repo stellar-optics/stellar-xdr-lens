@@ -185,7 +185,10 @@ ContractDataEntry
 
 For an instance entry the same fields render as `Key: instance storage key`
 with `Durability: persistent`, which is what separates instance storage from an
-ordinary persistent entry.
+ordinary persistent entry. A contract instance's `Executable` also names its
+implementation — `wasm:<hex>` for a WASM module, `stellar asset contract
+(built-in token)` for the built-in token, and the owner plus tag for Protocol
+23 external references — instead of stopping at a union discriminant.
 
 #### Alternative Formats and Interactive Explorer
 

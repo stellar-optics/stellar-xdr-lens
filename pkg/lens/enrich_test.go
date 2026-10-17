@@ -124,3 +124,121 @@ func TestClaimableBalanceFlagNote(t *testing.T) {
 		t.Error("claimableBalanceFlagNote accepted a non-Uint32 value")
 	}
 }
+
+func TestEnrichContractExecutableWasm(t *testing.T) {
+	t.Parallel()
+
+	hash := xdr.Hash{0x4F}
+	exec := xdr.ContractExecutable{
+		Type:     xdr.ContractExecutableTypeContractExecutableWasm,
+		WasmHash: &hash,
+	}
+	note, raw, ok := enrichContractExecutable(reflect.ValueOf(exec))
+	if !ok {
+		t.Fatal("enrichContractExecutable declined a wasm executable")
+	}
+	wantHex := hash.HexString()
+	if note != "wasm:"+wantHex {
+		t.Errorf("note = %q, want %q", note, "wasm:"+wantHex)
+	}
+	if raw != wantHex {
+		t.Errorf("raw = %v, want %q", raw, wantHex)
+	}
+}
+
+func TestEnrichContractExecutableStellarAsset(t *testing.T) {
+	t.Parallel()
+
+	exec := xdr.ContractExecutable{Type: xdr.ContractExecutableTypeContractExecutableStellarAsset}
+	note, raw, ok := enrichContractExecutable(reflect.ValueOf(exec))
+	if !ok {
+		t.Fatal("enrichContractExecutable declined the stellar asset arm")
+	}
+	if note != "stellar asset contract (built-in token)" {
+		t.Errorf("note = %q, want the built-in token description", note)
+	}
+	if raw != "stellar_asset" {
+		t.Errorf("raw = %v, want stellar_asset", raw)
+	}
+}
+
+func TestEnrichContractExecutableExternalRef(t *testing.T) {
+	t.Parallel()
+
+	owner := xdr.ScAddress{Type: xdr.ScAddressTypeScAddressTypeContract}
+	var contractID xdr.ContractId
+	contractID[0] = 0xCA
+	owner.ContractId = &contractID
+
+	ownerStr, err := owner.String()
+	if err != nil {
+		t.Fatalf("encoding owner: %v", err)
+	}
+
+	exec := xdr.ContractExecutable{
+		Type: xdr.ContractExecutableTypeContractExecutableExternalRef,
+		ExternalRef: &xdr.ContractExecutableExternalRef{
+			ExecutableOwner: owner,
+			Tag:             "evm:1",
+		},
+	}
+	note, raw, ok := enrichContractExecutable(reflect.ValueOf(exec))
+	if !ok {
+		t.Fatal("enrichContractExecutable declined the external ref arm")
+	}
+	if note != "external contract reference" {
+		t.Errorf("note = %q, want 'external contract reference'", note)
+	}
+	if raw != ownerStr+" tag: evm:1" {
+		t.Errorf("raw = %v, want owner and tag", raw)
+	}
+}
+
+func TestEnrichContractExecutableDeclinesMalformed(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]xdr.ContractExecutable{
+		"unknown type":         {Type: xdr.ContractExecutableType(99)},
+		"missing wasm hash":    {Type: xdr.ContractExecutableTypeContractExecutableWasm},
+		"missing external ref": {Type: xdr.ContractExecutableTypeContractExecutableExternalRef},
+		"unknown owner type": {
+			Type: xdr.ContractExecutableTypeContractExecutableExternalRef,
+			ExternalRef: &xdr.ContractExecutableExternalRef{
+				ExecutableOwner: xdr.ScAddress{Type: xdr.ScAddressType(99)},
+				Tag:             "x",
+			},
+		},
+	}
+	for name, exec := range cases {
+		if _, _, ok := enrichContractExecutable(reflect.ValueOf(exec)); ok {
+			t.Errorf("%s: enrichContractExecutable produced a rendering, want decline", name)
+		}
+	}
+	if _, _, ok := enrichContractExecutable(reflect.ValueOf("not an executable")); ok {
+		t.Error("enrichContractExecutable accepted a non-ContractExecutable value")
+	}
+}
+
+func TestBuildNodeContractExecutableWasm(t *testing.T) {
+	t.Parallel()
+
+	hash := xdr.Hash{0xAB}
+	instance := xdr.ScContractInstance{
+		Executable: xdr.ContractExecutable{
+			Type:     xdr.ContractExecutableTypeContractExecutableWasm,
+			WasmHash: &hash,
+		},
+	}
+
+	node := buildNode("Instance", reflect.ValueOf(instance), 0)
+	if node == nil {
+		t.Fatal("buildNode(ScContractInstance) returned nil")
+	}
+	exec := node.Child("Executable")
+	if exec == nil {
+		t.Fatal("Executable child not found")
+	}
+	if exec.Note != "wasm:"+hash.HexString() {
+		t.Errorf("Executable Note = %q, want the wasm annotation", exec.Note)
+	}
+}
