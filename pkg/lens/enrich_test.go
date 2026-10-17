@@ -73,6 +73,7 @@ func TestDomainEnrichersRejectWrongType(t *testing.T) {
 		"enrichClaimableBalanceID": enrichClaimableBalanceID,
 		"enrichContractID":         enrichContractID,
 		"enrichScAddress":          enrichScAddress,
+		"enrichThresholds":         enrichThresholds,
 	}
 	for name, fn := range enrichers {
 		if _, _, ok := fn(wrong); ok {

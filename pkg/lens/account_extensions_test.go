@@ -1,12 +1,108 @@
 package lens_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stellar/go-stellar-sdk/xdr"
 
 	"github.com/stellar-optics/stellar-xdr-lens/pkg/lens"
 )
+
+// TestAccountSignerThresholdsRendering pins the public decoding path for the
+// threshold enricher: a decoded AccountEntry's Thresholds leaf carries the
+// named triplet, the locked-master marker when applicable, and the
+// signer-capacity analysis.
+func TestAccountSignerThresholdsRendering(t *testing.T) {
+	t.Parallel()
+
+	aid := mustAccountID(t, testSource)
+	var extraKey xdr.Uint256
+	for i := range extraKey {
+		extraKey[i] = 0xCD
+	}
+	extra, err := xdr.NewSignerKey(xdr.SignerKeyTypeSignerKeyTypeEd25519, extraKey)
+	if err != nil {
+		t.Fatalf("NewSignerKey() error = %v", err)
+	}
+
+	tests := []struct {
+		name       string
+		thresholds xdr.Thresholds
+		signers    []xdr.Signer
+		wants      []string
+		unwanted   []string
+	}{
+		{
+			name:       "single-sig",
+			thresholds: xdr.Thresholds{3, 1, 2, 3},
+			wants: []string{
+				"low=1 med=2 high=3 master=3",
+				"signers meet medium",
+				"signers meet high",
+			},
+		},
+		{
+			name:       "2-of-3 multisig",
+			thresholds: xdr.Thresholds{1, 1, 2, 3},
+			signers: []xdr.Signer{
+				{Key: extra, Weight: 1},
+				{Key: extra, Weight: 1},
+				{Key: extra, Weight: 1},
+			},
+			wants: []string{
+				"low=1 med=2 high=3 master=1",
+				"signers meet medium",
+				"signers meet high",
+			},
+		},
+		{
+			name:       "locked master with two co-signers",
+			thresholds: xdr.Thresholds{0, 1, 2, 3},
+			signers: []xdr.Signer{
+				{Key: extra, Weight: 1},
+				{Key: extra, Weight: 1},
+			},
+			wants: []string{
+				"master=0",
+				"master locked",
+				"signers meet medium",
+				"signers cannot meet high (need 3, have 2)",
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			entry := xdr.AccountEntry{
+				AccountId:  aid,
+				Balance:    10000000000,
+				Thresholds: tc.thresholds,
+				Signers:    tc.signers,
+			}
+			v, err := lens.DecodeAs(mustMarshal(t, entry), "AccountEntry")
+			if err != nil {
+				t.Fatalf("DecodeAs() error = %v", err)
+			}
+			thresholds := v.Node.Find("Thresholds")
+			if thresholds == nil {
+				t.Fatal("Thresholds node missing")
+			}
+			for _, want := range tc.wants {
+				if !strings.Contains(thresholds.Note, want) {
+					t.Errorf("Thresholds Note = %q, want it to contain %q", thresholds.Note, want)
+				}
+			}
+			for _, bad := range tc.unwanted {
+				if strings.Contains(thresholds.Note, bad) {
+					t.Errorf("Thresholds Note = %q, must not contain %q", thresholds.Note, bad)
+				}
+			}
+		})
+	}
+}
 
 func TestDecodeAccountEntryExtV1(t *testing.T) {
 	t.Parallel()

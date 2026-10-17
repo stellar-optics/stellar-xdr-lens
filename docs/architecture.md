@@ -57,6 +57,7 @@ pkg/lens/              the library; this is the reusable surface
   scp.go               consensus node identity and pledge names
   state_archival.go    TTL expiry and eviction rendering
   account_extensions.go liabilities, sponsorship counters and sequence-ledger notes
+  signer_thresholds.go  account threshold triplet, locked master, signer capacity
   data_entry.go        account data values: printable text vs hex
   survey.go            time-sliced survey command names and encrypted bodies
   contract_code.go     WASM section parsing: contract spec, env meta and meta
@@ -346,6 +347,27 @@ ContractDataEntry
 `ContractDataEntry` is registered (priority 5), so `lens decode --type
 ContractDataEntry` decodes a standalone blob, and an entry embedded in a
 `LedgerEntry` decodes the same way at `Data.ContractData`.
+
+### Account signer weights and multisig thresholds
+
+`pkg/lens/signer_thresholds.go` annotates the signing configuration of an
+`AccountEntry`. The bare `Thresholds` [4]byte would otherwise render as hex;
+instead:
+
+- A type enricher on `xdr.Thresholds` names the quartet:
+  `low=1 med=2 high=3 master=1`.
+- A node hook on `xdr.AccountEntry` (which, unlike a field note, can see the
+  whole entry) replaces that note with a fuller analysis: whether the master
+  key is locked (`master locked` when its weight is 0) and whether the
+  reachable signing weight — master weight plus every signer's weight —
+  satisfies the medium and high thresholds (`signers meet high`,
+  `signers cannot meet medium (need 2, have 1)`).
+
+The note sits on the `Thresholds` leaf because notes only render on scalar
+values. Signature *verification* against a supplied set of signatures is a
+separate concern and lives in `signature_explain.go`
+(`DiagnoseSignatures`); this enrichment is purely about what the account is
+configured to allow.
 
 ### Field-name enrichment
 
