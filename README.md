@@ -163,6 +163,24 @@ TransactionEnvelope
 Accounts render as strkey, amounts as XLM, timestamps as RFC 3339, and enums as
 their constant names — not raw byte arrays and integers.
 
+Claimable balances render their predicate trees as boolean expressions instead
+of nested union arms, and the balance id carries its claimant count and asset:
+
+```console
+$ lens decode --type ClaimableBalanceEntry "$BALANCE"
+ClaimableBalanceEntry
+├─ BalanceId: BAAEEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQQSBM  3 claimants; asset USDC:GA2J…FHVAW
+├─ Claimants  [3]
+│  ├─ [0]
+│  │  └─ V0
+│  │     ├─ Destination: GAPB7YMUQ6MPQ23PTFDNBZP7HGGTZPI2DT5JJURUOIXNPLGHW2O3WYXZ
+│  │     └─ Predicate: before 2025-01-01T00:00:00Z
+│  └─ [2]
+│     └─ V0
+│        └─ Predicate: (before 2026-01-01T00:00:00Z or unconditional)
+└─ Asset: USDC:GA2J…FHVAW
+```
+
 `lens decode --type ContractDataEntry` decodes Soroban contract data and names
 its storage level. `persistent` and `temporary` come from the wire durability;
 instance storage keeps persistent durability on the wire and is recognised by

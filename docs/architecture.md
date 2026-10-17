@@ -301,6 +301,27 @@ afterwards, so it needs no locking.
   stroops, its price as a fraction, and its flags. An offer embedded in a
   `LedgerEntry` decodes the same way at `Data.Offer`.
 
+### Claimable balances and predicate trees
+
+`pkg/lens/claimable_balance.go` makes claimable balances readable:
+
+- `xdr.ClaimableBalanceId` renders as its canonical `B...` strkey.
+- `xdr.ClaimPredicate` is a recursive union — `unconditional`, absolute time,
+  relative time, `not`, `and`, `or` — that the enricher folds into a boolean
+  expression preserving the nesting, for example
+  `((unconditional or not (before 2025-01-01T00:00:00Z)) and before 2026-01-01T00:00:00Z)`.
+  Absolute times render in RFC 3339 UTC; relative times count seconds after
+  creation. A union arm added by a newer protocol falls back to its constant
+  name, and a dangling arm renders as a named placeholder rather than
+  panicking.
+- A `ClaimableBalanceEntry` node hook annotates the `BalanceId` leaf with the
+  two facts the id cannot carry: the claimant count and the asset it pays, for
+  example `3 claimants; asset USDC:GA...`. A malformed asset degrades to the
+  claimant count alone instead of suppressing the note.
+
+Predicate rendering recurses over the decoded value only; no network calls or
+clock use are involved.
+
 ### Contract data and storage levels
 
 `pkg/lens/contract_data.go` decodes Soroban contract data and makes the three

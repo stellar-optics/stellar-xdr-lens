@@ -2,6 +2,7 @@ package lens
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/stellar/go-stellar-sdk/xdr"
@@ -122,5 +123,170 @@ func TestClaimableBalanceFlagNote(t *testing.T) {
 	}
 	if _, ok := claimableBalanceFlagNote(reflect.ValueOf("x")); ok {
 		t.Error("claimableBalanceFlagNote accepted a non-Uint32 value")
+	}
+}
+
+// testAccountID builds an account id for the internal tests, which cannot use
+// the lens_test package helpers.
+func testAccountID(t *testing.T, addr string) xdr.AccountId {
+	t.Helper()
+	var aid xdr.AccountId
+	if err := aid.SetAddress(addr); err != nil {
+		t.Fatalf("parsing address %s: %v", addr, err)
+	}
+	return aid
+}
+
+// testCreditAsset builds a classic credit asset for the internal tests.
+func testCreditAsset(t *testing.T, code, issuer string) xdr.Asset {
+	t.Helper()
+	var a xdr.Asset
+	if err := a.SetCredit(code, testAccountID(t, issuer)); err != nil {
+		t.Fatalf("building asset %s: %v", code, err)
+	}
+	return a
+}
+
+const (
+	testClaimDestA  = "GAPB7YMUQ6MPQ23PTFDNBZP7HGGTZPI2DT5JJURUOIXNPLGHW2O3WYXZ"
+	testClaimDestB  = "GCJNHFXJEQEY54NPKU4DBMT5WOBJUHMYSFBDAQF4OMTEGJN4BQU7ZST6"
+	testClaimIssuer = "GA2JRQOF6EA3HQWDCEDBPPMLYPJCFLDDGYZLEQGMS5SOBQIB3BAFHVAW"
+)
+
+func unconditionalClaimant(t *testing.T, dest string) xdr.Claimant {
+	t.Helper()
+	return xdr.Claimant{
+		Type: xdr.ClaimantTypeClaimantTypeV0,
+		V0: &xdr.ClaimantV0{
+			Destination: testAccountID(t, dest),
+			Predicate:   xdr.ClaimPredicate{Type: xdr.ClaimPredicateTypeClaimPredicateUnconditional},
+		},
+	}
+}
+
+func TestDecorateClaimableBalanceEntry(t *testing.T) {
+	t.Parallel()
+
+	hash := xdr.Hash{0xAB}
+	entry := xdr.ClaimableBalanceEntry{
+		BalanceId: xdr.ClaimableBalanceId{
+			Type: xdr.ClaimableBalanceIdTypeClaimableBalanceIdTypeV0,
+			V0:   &hash,
+		},
+		Claimants: []xdr.Claimant{
+			unconditionalClaimant(t, testClaimDestA),
+			unconditionalClaimant(t, testClaimDestB),
+		},
+		Asset:  testCreditAsset(t, "USDC", testClaimIssuer),
+		Amount: xdr.Int64(10_000_000),
+	}
+
+	node := buildNode("ClaimableBalanceEntry", reflect.ValueOf(entry), 0)
+	if node == nil {
+		t.Fatal("buildNode(ClaimableBalanceEntry) returned nil")
+	}
+	id := node.Child("BalanceId")
+	if id == nil {
+		t.Fatal("BalanceId child not found")
+	}
+	want := "2 claimants; asset USDC:" + testClaimIssuer
+	if id.Note != want {
+		t.Errorf("BalanceId note = %q, want %q", id.Note, want)
+	}
+	if s, ok := id.Value.(string); !ok || !strings.HasPrefix(s, "B") {
+		t.Errorf("BalanceId value = %v, want B... strkey", id.Value)
+	}
+}
+
+func TestDecorateClaimableBalanceEntryMalformedAssetStillCountsClaimants(t *testing.T) {
+	t.Parallel()
+
+	entry := xdr.ClaimableBalanceEntry{
+		BalanceId: xdr.ClaimableBalanceId{
+			Type: xdr.ClaimableBalanceIdTypeClaimableBalanceIdTypeV0,
+			V0:   &xdr.Hash{0x01},
+		},
+		Claimants: []xdr.Claimant{unconditionalClaimant(t, testClaimDestA)},
+		Asset:     xdr.Asset{Type: xdr.AssetType(99)},
+	}
+
+	node := buildNode("ClaimableBalanceEntry", reflect.ValueOf(entry), 0)
+	if node == nil {
+		t.Fatal("buildNode(ClaimableBalanceEntry) returned nil")
+	}
+	id := node.Child("BalanceId")
+	if id == nil {
+		t.Fatal("BalanceId child not found")
+	}
+	if id.Note != "1 claimant" {
+		t.Errorf("BalanceId note = %q, want %q", id.Note, "1 claimant")
+	}
+}
+
+func TestClaimantCountLabel(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		count int
+		want  string
+	}{
+		{0, "0 claimants"},
+		{1, "1 claimant"},
+		{3, "3 claimants"},
+	}
+	for _, tc := range tests {
+		if got := claimantCountLabel(tc.count); got != tc.want {
+			t.Errorf("claimantCountLabel(%d) = %q, want %q", tc.count, got, tc.want)
+		}
+	}
+}
+
+func TestCanonicalAssetName(t *testing.T) {
+	t.Parallel()
+
+	if name, ok := canonicalAssetName(xdr.MustNewNativeAsset()); !ok || name != "native" {
+		t.Errorf("canonicalAssetName(native) = %q, %v; want native, true", name, ok)
+	}
+	if name, ok := canonicalAssetName(testCreditAsset(t, "USDC", testClaimIssuer)); !ok || name != "USDC:"+testClaimIssuer {
+		t.Errorf("canonicalAssetName(USDC) = %q, %v; want the canonical form", name, ok)
+	}
+	if name, ok := canonicalAssetName(xdr.Asset{Type: xdr.AssetType(99)}); ok || name != "" {
+		t.Errorf("canonicalAssetName(unknown type) = %q, %v; want \"\", false", name, ok)
+	}
+	// A credit union missing its arm must decline rather than panic.
+	if name, ok := canonicalAssetName(xdr.Asset{Type: xdr.AssetTypeAssetTypeCreditAlphanum4}); ok || name != "" {
+		t.Errorf("canonicalAssetName(dangling credit arm) = %q, %v; want \"\", false", name, ok)
+	}
+}
+
+func TestDescribeClaimPredicateNested(t *testing.T) {
+	t.Parallel()
+
+	p := xdr.ClaimPredicate{
+		Type: xdr.ClaimPredicateTypeClaimPredicateAnd,
+		AndPredicates: &[]xdr.ClaimPredicate{
+			{
+				Type: xdr.ClaimPredicateTypeClaimPredicateOr,
+				OrPredicates: &[]xdr.ClaimPredicate{
+					{Type: xdr.ClaimPredicateTypeClaimPredicateUnconditional},
+					{
+						Type: xdr.ClaimPredicateTypeClaimPredicateNot,
+						NotPredicate: ptrTo(&xdr.ClaimPredicate{
+							Type:      xdr.ClaimPredicateTypeClaimPredicateBeforeAbsoluteTime,
+							AbsBefore: ptrTo(xdr.Int64(1735689600)),
+						}),
+					},
+				},
+			},
+			{
+				Type:      xdr.ClaimPredicateTypeClaimPredicateBeforeAbsoluteTime,
+				AbsBefore: ptrTo(xdr.Int64(1767225600)),
+			},
+		},
+	}
+
+	want := "((unconditional or not (before 2025-01-01T00:00:00Z)) and before 2026-01-01T00:00:00Z)"
+	if got := DescribeClaimPredicate(p); got != want {
+		t.Errorf("DescribeClaimPredicate(nested) = %q, want %q", got, want)
 	}
 }

@@ -125,6 +125,24 @@ func TestClaimableBalanceEntryDecoding(t *testing.T) {
 	}
 }
 
+func TestClaimableBalanceEntryIDAnnotation(t *testing.T) {
+	t.Parallel()
+
+	v, err := lens.DecodeAs(loadFixture(t, "claimable_balance_entry"), "ClaimableBalanceEntry")
+	if err != nil {
+		t.Fatalf("DecodeAs() error = %v", err)
+	}
+
+	id := v.Node.Find("BalanceId")
+	if id == nil {
+		t.Fatal("BalanceId not found in tree")
+	}
+	want := "3 claimants; asset USDC:GA2JRQOF6EA3HQWDCEDBPPMLYPJCFLDDGYZLEQGMS5SOBQIB3BAFHVAW"
+	if id.Note != want {
+		t.Errorf("BalanceId Note = %q, want %q", id.Note, want)
+	}
+}
+
 func TestClaimableBalanceEntrySimpleDecoding(t *testing.T) {
 	t.Parallel()
 

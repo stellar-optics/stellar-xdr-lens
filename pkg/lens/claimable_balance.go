@@ -3,6 +3,7 @@ package lens
 import (
 	"fmt"
 	"reflect"
+	"strconv"
 	"strings"
 	"time"
 
@@ -22,6 +23,7 @@ func init() {
 	registerEnricher(reflect.TypeOf(xdr.ClaimPredicate{}), enrichClaimPredicate)
 	registerEnricher(reflect.TypeOf(xdr.ClaimableBalanceId{}), enrichClaimableBalanceID)
 	registerFieldNote(reflect.TypeOf(xdr.ClaimableBalanceEntryExtensionV1{}), "Flags", claimableBalanceFlagNote)
+	nodeHooks[reflect.TypeOf(xdr.ClaimableBalanceEntry{})] = decorateClaimableBalanceEntry
 }
 
 // DescribeClaimPredicate renders a claim predicate union as a boolean
@@ -98,6 +100,56 @@ func enrichClaimableBalanceID(rv reflect.Value) (string, any, bool) {
 		return "", nil, false
 	}
 	return "", str, true
+}
+
+// decorateClaimableBalanceEntry annotates the BalanceId leaf with the two
+// facts the id cannot carry: how many claimants share it and which asset it
+// pays. The B... strkey stays the scalar value; the note is the context that
+// makes a bare balance id placeable in a wallet or explorer view.
+func decorateClaimableBalanceEntry(n *Node, v any) {
+	entry, ok := v.(xdr.ClaimableBalanceEntry)
+	if !ok {
+		return
+	}
+	idNode := n.Child("BalanceId")
+	if idNode == nil {
+		return
+	}
+	idNode.Note = claimantCountLabel(len(entry.Claimants))
+	if asset, ok := canonicalAssetName(entry.Asset); ok {
+		idNode.Note += "; asset " + asset
+	}
+}
+
+// claimantCountLabel renders a claimant count with the right plural. The
+// protocol requires at least one claimant to create a balance, but a malformed
+// entry can carry none, and saying "0 claimants" is still more useful than
+// silence.
+func claimantCountLabel(count int) string {
+	if count == 1 {
+		return "1 claimant"
+	}
+	return strconv.Itoa(count) + " claimants"
+}
+
+// canonicalAssetName renders an asset in its SEP-11 canonical form, declining
+// unknown types and malformed credit arms instead of panicking. Generated
+// asset accessors dereference union arms without checking the discriminant, so
+// the call is guarded even after the type check.
+func canonicalAssetName(a xdr.Asset) (name string, ok bool) {
+	switch a.Type {
+	case xdr.AssetTypeAssetTypeNative,
+		xdr.AssetTypeAssetTypeCreditAlphanum4,
+		xdr.AssetTypeAssetTypeCreditAlphanum12:
+	default:
+		return "", false
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			name, ok = "", false
+		}
+	}()
+	return a.StringCanonical(), true
 }
 
 // claimableBalanceFlagNote names the only defined claimable balance flag.
