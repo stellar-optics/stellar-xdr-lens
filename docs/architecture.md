@@ -52,7 +52,7 @@ pkg/lens/              the library; this is the reusable surface
   node.go              the neutral Node tree — the only file using reflection
   enrich.go            per-type human rendering (strkey, amounts, timestamps)
   contract_data.go     contract data storage: durability and special storage keys
-  ledger_header.go     ledger-header field notes and protocol parameters
+  ledger_header.go     ledger-header field notes, LP flags and upgrade votes
   bucket_entry.go      bucket list, tombstone and hot archive terminology
   scp.go               consensus node identity and pledge names
   state_archival.go    TTL expiry and eviction rendering
@@ -346,6 +346,31 @@ ContractDataEntry
 `ContractDataEntry` is registered (priority 5), so `lens decode --type
 ContractDataEntry` decodes a standalone blob, and an entry embedded in a
 `LedgerEntry` decodes the same way at `Data.ContractData`.
+
+### Ledger headers, flags and upgrade votes
+
+`pkg/lens/ledger_header.go` teaches the tool about the parts of a ledger
+header that are opaque integers on the wire:
+
+- **BaseReserve and BaseFee** are Uint32 protocol parameters denominated in
+  stroops. They join the shared `amountFields` list, so `BaseReserve: 5000000`
+  renders as `0.5000000 (stroops: 5000000)` — the same decimal form used for
+  balances and fees everywhere else.
+- **Liquidity-pool control flags** live in `LedgerHeaderExtensionV1.Flags`.
+  The three `DISABLE_LIQUIDITY_POOL_*` bits expand to their Horizon-style
+  names (`disable_liquidity_pool_trading`, `disable_liquidity_pool_deposit`,
+  `disable_liquidity_pool_withdrawal`), joined with ` | ` when several are
+  set. The note is keyed on the extension type, so other `Flags` fields in the
+  protocol are untouched.
+- **Upgrade votes** in `StellarValue.Upgrades` are opaque `UpgradeType` blobs.
+  Each blob is a serialized `LedgerUpgrade`; the registered enricher
+  unmarshals it and names the proposed change — `protocol version 23`,
+  `base fee 0.0000200 XLM (200 stroops)`, `max tx set size 1200`, and so on.
+  Blobs that do not parse decline and keep the generic hex rendering, so a
+  malformed proposal is still visible.
+
+A ledger header is intentionally not collapsed into a single scalar: the tree
+keeps every field, and the human reading is the sum of its per-field notes.
 
 ### Field-name enrichment
 
