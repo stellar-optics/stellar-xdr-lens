@@ -347,6 +347,31 @@ ContractDataEntry
 ContractDataEntry` decodes a standalone blob, and an entry embedded in a
 `LedgerEntry` decodes the same way at `Data.ContractData`.
 
+### State archival and TTL entries
+
+`pkg/lens/state_archival.go` renders protocol 20's rent bookkeeping. A TTL
+record's two fields are both opaque on the wire — a hash and a ledger number:
+
+- `KeyHash` renders as its hex string (the walker's default for a `Hash` is a
+  byte-array dump) with a `state archival key hash` note. The hash is the
+  SHA-256 of the tracked entry's `LedgerKey`. A TTL entry tracks contract code
+  or contract data; which of the two — and whether the data is persistent or
+  temporary — is not recoverable from the record, so the note names the set
+  instead of guessing.
+- `LiveUntilLedgerSeq: 55281000` becomes
+  `live through ledger 55281000 (~2025-04-03T14:33:02Z)`: the ledger through
+  which the entry stays live, plus an estimated close date. The estimate uses
+  the protocol's target close interval (`LedgerCloseInterval`, 5 seconds) and
+  a recorded Mainnet reference close: ledger 64,990,097 at
+  `2026-10-17T11:24:27Z`.
+- A zero TTL renders `already expired (evict at next close)`.
+
+The estimate is deterministic and offline. `TTLExpiryAt` computes the date
+from any reference ledger/close-time pair, and `EstimateTTLExpiry` applies the
+package's recorded Mainnet reference. Real close intervals average slightly
+above the target and have changed across protocol upgrades, so the date is
+labelled `~` and should be read as approximate.
+
 ### Field-name enrichment
 
 Some renderings depend on the field name rather than the type. XDR models
@@ -358,8 +383,9 @@ showing it raw.
 
 `fieldNotes` is the same idea for anything that is not an amount — a hint
 attached to a field rendered alongside it. `LedgerVersion: 22` becomes
-`protocol 22`, and `LiveUntilLedgerSeq` becomes `live through ledger N`.
-Feature files register notes from `init`:
+`protocol 22`, and `LiveUntilLedgerSeq` becomes `live through ledger N` plus
+an estimated close date (see the state archival section). Feature files
+register notes from `init`:
 
 ```go
 func init() {

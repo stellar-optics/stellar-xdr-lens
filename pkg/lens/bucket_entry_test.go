@@ -97,8 +97,8 @@ func TestDecodeBucketEntryDead(t *testing.T) {
 		t.Errorf("DeadEntry.Type = %v, want LedgerEntryTypeTtl", keyType.Value)
 	}
 	keyHash := v.Node.Find("DeadEntry.Ttl.KeyHash")
-	if keyHash == nil || !strings.Contains(keyHash.Note, bucketKeyHashNote) {
-		t.Errorf("DeadEntry.Ttl.KeyHash = %v, want it to contain %q", keyHash, bucketKeyHashNote)
+	if keyHash == nil || keyHash.Value != bucketKeyHashNote {
+		t.Errorf("DeadEntry.Ttl.KeyHash = %v, want value %q", keyHash, bucketKeyHashNote)
 	}
 }
 

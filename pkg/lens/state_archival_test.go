@@ -30,15 +30,16 @@ func TestDecodeTtlEntry(t *testing.T) {
 	}
 
 	keyHash := v.Node.Find("KeyHash")
-	if keyHash == nil || !strings.Contains(keyHash.Note, ttlKeyHashNote) {
-		t.Errorf("KeyHash = %v, want it to contain %q", keyHash, ttlKeyHashNote)
+	if keyHash == nil || keyHash.Value != ttlKeyHashNote ||
+		!strings.Contains(keyHash.Note, "state archival key hash") {
+		t.Errorf("KeyHash = %v, want value %q and the storage annotation", keyHash, ttlKeyHashNote)
 	}
 
-	// A TTL is an absolute ledger sequence; naming the expiry is the whole
-	// human-readable value of the field.
+	// A TTL is an absolute ledger sequence; naming the expiry plus an
+	// estimated close date is the whole human-readable value of the field.
 	live := v.Node.Find("LiveUntilLedgerSeq")
-	if live == nil || live.Note != "live through ledger 55281000" {
-		t.Errorf("LiveUntilLedgerSeq = %v, want a live-through note", live)
+	if live == nil || live.Note != "live through ledger 55281000 (~2025-04-03T14:33:02Z)" {
+		t.Errorf("LiveUntilLedgerSeq = %v, want a live-through note with an estimated date", live)
 	}
 }
 
@@ -56,8 +57,9 @@ func TestDecodeLedgerKeyTtl(t *testing.T) {
 		t.Fatalf("Raw is %T, want *xdr.LedgerKeyTtl", v.Raw)
 	}
 	keyHash := v.Node.Find("KeyHash")
-	if keyHash == nil || !strings.Contains(keyHash.Note, ttlKeyHashNote) {
-		t.Errorf("KeyHash = %v, want it to contain %q", keyHash, ttlKeyHashNote)
+	if keyHash == nil || keyHash.Value != ttlKeyHashNote ||
+		!strings.Contains(keyHash.Note, "state archival key hash") {
+		t.Errorf("KeyHash = %v, want value %q and the storage annotation", keyHash, ttlKeyHashNote)
 	}
 }
 
@@ -76,8 +78,8 @@ func TestDecodeTtlInsideLedgerEntry(t *testing.T) {
 		t.Errorf("Data.Type = %v, want LedgerEntryTypeTtl", dataType)
 	}
 	live := v.Node.Find("Data.Ttl.LiveUntilLedgerSeq")
-	if live == nil || live.Note != "live through ledger 55281000" {
-		t.Errorf("Data.Ttl.LiveUntilLedgerSeq = %v, want a live-through note", live)
+	if live == nil || live.Note != "live through ledger 55281000 (~2025-04-03T14:33:02Z)" {
+		t.Errorf("Data.Ttl.LiveUntilLedgerSeq = %v, want a live-through note with an estimated date", live)
 	}
 }
 

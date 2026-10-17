@@ -187,6 +187,17 @@ For an instance entry the same fields render as `Key: instance storage key`
 with `Durability: persistent`, which is what separates instance storage from an
 ordinary persistent entry.
 
+TTL entries name the archived key hash and estimate the expiry date from a
+recorded Mainnet reference ledger (5-second target close interval, strictly
+offline):
+
+```console
+$ lens decode --type TtlEntry testdata/ttl_entry.txt
+TtlEntry
+├─ KeyHash: 333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152  state archival key hash: contract code or contract data
+└─ LiveUntilLedgerSeq: 55281000  live through ledger 55281000 (~2025-04-03T14:33:02Z)
+```
+
 #### Alternative Formats and Interactive Explorer
 
 ```console
