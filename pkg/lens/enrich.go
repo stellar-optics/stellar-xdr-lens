@@ -319,12 +319,18 @@ func enrichHash(rv reflect.Value) (string, any, bool) {
 	return h.HexString(), h, true
 }
 
+// enrichPoolID renders a liquidity pool id as its hex form and names what it
+// identifies. Protocol 18 introduced pools with a single constant product
+// formula, so a PoolId is always a constant product pool id; saying so turns a
+// bare 64-character hex string into something a reader can place. Pool entries
+// additionally annotate the note with the asset pair and fee, via the hook in
+// liquidity_pool.go, where that context is available.
 func enrichPoolID(rv reflect.Value) (string, any, bool) {
 	p, valid := rv.Interface().(xdr.PoolId)
 	if !valid {
 		return "", nil, false
 	}
-	return hex.EncodeToString(p[:]), p, true
+	return "constant product pool id", hex.EncodeToString(p[:]), true
 }
 
 func enrichSignature(rv reflect.Value) (string, any, bool) {

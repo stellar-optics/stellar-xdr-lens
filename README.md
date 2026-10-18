@@ -198,6 +198,22 @@ For an instance entry the same fields render as `Key: instance storage key`
 with `Durability: persistent`, which is what separates instance storage from an
 ordinary persistent entry.
 
+`lens decode --type LiquidityPoolEntry` names the market a constant product
+pool trades and renders its share supply as pool share tokens, not lumens:
+
+```console
+$ lens decode --type LiquidityPoolEntry "$POOL"
+LiquidityPoolEntry
+├─ LiquidityPoolId: 41…41  constant product pool: USDC:GA2J… / native @ 0.3%
+└─ Body
+   └─ ConstantProduct
+      ├─ Params: USDC:GA2J… / native @ 0.3%
+      ├─ ReserveA: 1000000000000  100000.0000000 (stroops: 1000000000000)
+      ├─ ReserveB: 5000000000000  500000.0000000 (stroops: 5000000000000)
+      ├─ TotalPoolShares: 2000000000000  200000.0000000 pool share tokens (stroops: 2000000000000)
+      └─ PoolSharesTrustLineCount: 150  held by 150 trustlines
+```
+
 #### Alternative Formats and Interactive Explorer
 
 ```console
@@ -303,6 +319,92 @@ XDR keys. These options can be combined:
 ```console
 $ lens diff --align --semantic before.xdr after.xdr
 ```
+
+Three modes compare the values differently rather than printing them
+differently:
+
+```console
+# Signatures and signers are sets, not sequences: reordering them is not a diff
+$ lens diff --unordered-signers before.xdr after.xdr
+
+# Set-theoretic (Venn) difference of two Soroban ledger footprints
+$ lens diff --footprint before.env.xdr after.env.xdr
+
+# Just the statistics: how many changes, of what kind, in which section
+$ lens diff --stats before.xdr after.xdr
+TransactionResult
+6 change(s): 5 modified, 1 removed
+  FeeCharged: 1
+  Result: 5
+```
+
+`--stats` derives everything from an existing diff, so it stays deterministic
+and offline. It has a stable JSON form (`--stats --json`) with the total, the
+per-kind counts, the per-section breakdown and the deepest changed path.
+
+`--include-paths` and `--exclude-paths` narrow which changed paths are reported,
+which is how a rebuilt envelope's sequence number and signatures stop drowning
+out the change you care about. A pattern is a dot-separated field path; `*` and
+`?` are glob metacharacters within a segment, `**` spans segments, and a pattern
+also matches everything beneath it. Excludes win over includes.
+
+```console
+# Ignore the noise of a rebuild and report only what really changed
+$ lens diff --exclude-paths Signatures,SeqNum before.xdr after.xdr
+
+# Report only the top-level result code and the fee charged
+$ lens diff --include-paths Result.Code,FeeCharged before.res after.res
+```
+
+Three formats render the difference for other tools. Each is mutually exclusive
+with the others and with `--json`/`--stats`.
+
+```console
+# An RFC 6902 JSON Patch of the difference, ready for any JSON Patch consumer
+$ lens diff --json-patch before.xdr after.xdr
+[
+  {"op": "replace", "path": "/Result/Code", "value": "TransactionResultCodeTxFailed"},
+  {"op": "remove", "path": "/Result/InnerResultPair/Result/Result/Results/0/Tr/InvokeHostFunctionResult/Success"}
+]
+
+# A standard unified diff, suitable for posting as a pull-request review comment
+$ lens diff --unified before.xdr after.xdr
+--- a/TransactionResult
++++ b/TransactionResult
+@@ -1,6 +1,6 @@
+ . = TransactionResult
+-FeeCharged = 35438 (0.0035438 (stroops: 35438))
++FeeCharged = 13355 (0.0013355 (stroops: 13355))
+
+# A colourised two-column terminal view, removed on the left, added on the right
+$ lens diff --side-by-side before.xdr after.xdr
+```
+
+Use `--context N` to bound the context lines for `--unified` and `--side-by-side`
+(default 3), and `--side-by-side-width N` to set the total column width.
+
+### `lens result-diff` — align an envelope with its result
+
+`lens diff` compares like with like. `result-diff` compares a transaction with
+the result it produced, pairing each operation with the operation result at the
+same index and naming every place they disagree:
+
+```console
+$ lens result-diff envelope.xdr result.xdr
+tx_fee_bump_inner_failed
+  The fee-bump wrapper was valid, but the inner transaction it paid for failed.
+  inner: tx_failed
+Operations (1)
+  ✗ [0] invoke_host_function — call harvest on contract CBGSB…KKY3 with 2 argument(s)
+      invoke_host_function_trapped: The contract trapped: it panicked, or explicitly returned an error.
+      → This is a failure inside the contract itself, not a protocol-level rejection. Run the call through simulation and read the diagnostic events to find the contract-level cause.
+```
+
+It reports mismatched operation and result types, operations that have no result
+of their own, results with no matching operation, and each failed operation's
+result code in plain English. `--json` emits the alignment as camelCase JSON and
+`--exit-code` exits non-zero when the two disagree. Everything is computed from
+the two supplied blobs; no network call is made.
 
 ### `lens meta-diff` — how did ledger balances change?
 
@@ -480,15 +582,31 @@ func main() {
 }
 ```
 
+The diff helpers compose with the same decoded values. `lens.SummarizeDiff`
+turns a `*lens.DiffResult` into counts and per-section statistics;
+`lens.DiffSigners` and `lens.DiffDecoratedSignatures` compare signer and
+signature collections as unordered multisets; `lens.DiffFootprints` computes
+the read-only and read-write set differences of two Soroban footprints; and
+`lens.DiffEnvelopeResult` aligns an envelope with its result, operation by
+operation. None of them fetches or decodes anything beyond the values passed in.
+
+The output formatters are reusable too. `format.NewJSONPatchFormatter` and
+`format.NewUnifiedFormatter` turn a diff into an RFC 6902 patch or a unified
+diff, and `format.NewSideBySideFormatter` produces the two-column view. A
+`lens.NewPathFilter(include, exclude)` narrows any of them to the paths you care
+about, either through `DiffOptions.Filter` before the diff or the formatter's
+filter option afterwards.
+
 See the [API reference](https://pkg.go.dev/github.com/stellar-optics/stellar-xdr-lens/pkg/lens)
 and [docs/architecture.md](docs/architecture.md).
 
 ### Failure diagnostics library
 
-Beyond `ExplainPair`, `pkg/lens` ships four offline diagnostics for the
-failures developers hit most often. All take decoded XDR (or captured RPC
-text) and make no network calls; existing CLI flags and output formats are
-unchanged.
+Beyond `ExplainPair`, `pkg/lens` ships offline diagnostics for common failure
+classes. They take decoded XDR, captured RPC text, and any required ledger
+context from the caller; they make no network calls. Existing `lens explain`
+flags and output formats are unchanged, and these context-dependent
+helpers are available through the Go library.
 
 ```go
 // 1. Insufficient balance: available = balance - selling liabilities - reserve.
@@ -506,7 +624,39 @@ fmt.Println(sim.Kind, sim.Hint) // e.g. missing_footprint + "use the footprint i
 // 4. Fee-bump: did the outer wrapper or the inner transaction fail?
 fb, _ := lens.DiagnoseFeeBump(envelope, result)
 fmt.Println(fb.Stage, fb.Summary) // inner vs outer, with fee-charged accounting.
+
+// 5. Claimable balance: evaluate nested predicates at explicit ledger times.
+claim, _ := lens.DiagnoseClaimablePredicate(predicate, lens.ClaimablePredicateContext{
+  LedgerCloseTime: ledgerCloseTime, BalanceCreatedCloseTime: createdCloseTime,
+})
+fmt.Println(claim.Satisfied, claim.FailedConditions)
+
+// 6. Soroban resources: classify tx_soroban_invalid / host resource failures.
+resource, _ := lens.DiagnoseResourceFailure(transactionResult)
+if resource != nil {
+  fmt.Println(resource.Kind, resource.Hint)
+}
+
+// 7. Sponsorship: correlate operation errors with begin/end/revoke operations.
+sponsor, _ := lens.DiagnoseSponsorship(envelope, transactionResult)
+if sponsor != nil {
+  fmt.Println(sponsor.Summary, sponsor.Conflicts)
+}
+
+// 8. Protocol upgrade: correlate adjacent headers with a failed result.
+upgrade, _ := lens.DiagnoseProtocolUpgrade(previousHeader, currentHeader, transactionResult)
+if upgrade != nil {
+  fmt.Println(upgrade.LikelyUpgradeRelated, upgrade.Summary)
+}
 ```
+
+Claim-predicate evaluation requires the creation-ledger close time because
+that value is not stored in the claimable-balance entry. Protocol-upgrade
+analysis requires adjacent headers and reports correlation rather than proof
+that an upgrade caused a rejection. Resource result codes do not include CPU or
+memory counters; use `DiagnoseSimulationResponse` when simulation reports
+those values. These APIs complement the CLI's standard result-code explanation
+without adding flags or changing its output contract.
 
 ### Error handling
 

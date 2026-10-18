@@ -83,10 +83,16 @@ func (j *JSONFormatter) Format(w io.Writer, v *lens.Value) error {
 
 // convert turns a Node tree into plain Go values that encoding/json can emit.
 //
-// Struct nodes use json.RawMessage-free ordered emission via a map; Go's JSON
-// encoder sorts map keys, which gives deterministic output — important because
-// this format is meant to be diffed and asserted on in CI.
+// Struct nodes use map[string]any; Go's JSON encoder sorts map keys, which
+// gives deterministic output — important because this format is meant to be
+// diffed and asserted on in CI.
 func (j *JSONFormatter) convert(n *lens.Node) any {
+	return convertNode(n, j.annotate)
+}
+
+// convertNode turns a Node tree into a JSON-encodable value. It is shared with
+// the JSON Patch formatter so both formats describe nodes identically.
+func convertNode(n *lens.Node, annotate bool) any {
 	if n == nil {
 		return nil
 	}
@@ -94,7 +100,7 @@ func (j *JSONFormatter) convert(n *lens.Node) any {
 	case lens.KindList:
 		out := make([]any, 0, len(n.Children))
 		for _, c := range n.Children {
-			out = append(out, j.convert(c))
+			out = append(out, convertNode(c, annotate))
 		}
 		return out
 
@@ -105,12 +111,12 @@ func (j *JSONFormatter) convert(n *lens.Node) any {
 			if key == "" {
 				continue
 			}
-			out[key] = j.convert(c)
+			out[key] = convertNode(c, annotate)
 		}
 		return out
 
 	default:
-		if j.annotate && n.Note != "" {
+		if annotate && n.Note != "" {
 			return map[string]any{"value": n.Value, "display": n.Note}
 		}
 		return n.Value
