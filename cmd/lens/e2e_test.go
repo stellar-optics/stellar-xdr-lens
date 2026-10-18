@@ -137,6 +137,48 @@ func TestDiffCommandE2E(t *testing.T) {
 	}
 }
 
+func TestResultDiffCommandE2E(t *testing.T) {
+	t.Parallel()
+
+	stdout, stderr, err := runLens(t, nil,
+		"result-diff",
+		fixturePath(t, "tx_failed.env"),
+		fixturePath(t, "tx_failed.res"),
+	)
+	if err != nil {
+		t.Fatalf("result-diff command failed: %v\n%s", err, stderr)
+	}
+	for _, want := range []string{"tx_fee_bump_inner_failed", "Operations (1)", "invoke_host_function_trapped"} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("result-diff output does not contain %q\n%s", want, stdout)
+		}
+	}
+}
+
+func TestDiffModesCommandE2E(t *testing.T) {
+	t.Parallel()
+
+	stats, stderr, err := runLens(t, nil, "diff", "--stats",
+		fixturePath(t, "tx_soroban.res"), fixturePath(t, "tx_failed.res"))
+	if err != nil {
+		t.Fatalf("diff --stats failed: %v\n%s", err, stderr)
+	}
+	if !strings.Contains(stats, "change(s):") {
+		t.Fatalf("diff --stats output missing summary\n%s", stats)
+	}
+
+	footprint, stderr, err := runLens(t, nil, "diff", "--footprint",
+		fixturePath(t, "tx_soroban.env"), fixturePath(t, "tx_failed.env"))
+	if err != nil {
+		t.Fatalf("diff --footprint failed: %v\n%s", err, stderr)
+	}
+	for _, want := range []string{"read-only:", "read-write:"} {
+		if !strings.Contains(footprint, want) {
+			t.Fatalf("diff --footprint output does not contain %q\n%s", want, footprint)
+		}
+	}
+}
+
 func TestCLIIgnoresProxyEnvironmentE2E(t *testing.T) {
 	t.Parallel()
 

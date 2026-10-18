@@ -9,7 +9,9 @@ Working and tested:
 - `decode` with automatic type detection, tree and stable JSON output
 - `explain` for envelopes, results, and the two paired together
 - `diff` with path-level structural comparison, opt-in LCS list alignment,
-  recursive Soroban map/vector comparison, and exact ScVal wide-integer values
+  recursive Soroban map/vector comparison, exact ScVal wide-integer values,
+  include/exclude path filters, and unified, RFC 6902 JSON Patch and
+  side-by-side output modes
 - `meta-diff` with offline account, trustline, and claimable-balance deltas
 - `asset`, deriving Stellar Asset Contract ids offline for any network
 - `types` with a machine-readable `--json` index of every registered type
