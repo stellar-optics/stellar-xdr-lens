@@ -40,6 +40,11 @@ explicitly offline-first: it runs with the standard proxy variables cleared to
 ensure no network pathway is introduced by the command wrapper or default
 runtime environment.
 
+The stdin path is normalized once in `pkg/lens/stdin_pipe.go` and then reused by
+`internal/cli/input.go`. The helper trims whitespace, tolerates URL-safe base64
+characters, and collapses newline-delimited shell pipes into a deterministic
+single payload or a sequence of payloads without introducing any network calls.
+
 ## Package layout
 
 ```
@@ -53,6 +58,7 @@ internal/cli/          cobra commands — deliberately thin
   meta_diff.go         transaction metadata balance-diff command
   asset.go             asset command; network resolution for contract ids
   input.go             argument / --file / stdin resolution
+  stdin_pipe.go        reusable stdin normalization for piped XDR payloads and batch streams
   tui_tree.go          interactive terminal tree explorer (TUI)
 pkg/lens/              the library; this is the reusable surface
   errors.go            stable error kinds and errors.Is-compatible sentinels
