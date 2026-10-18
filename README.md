@@ -100,6 +100,11 @@ canonical fixtures in `testdata/`. These checks run the real command binary, not
 library call wrappers, and intentionally scrub proxy environment variables to
 prove the core execution path stays offline and deterministic in CI.
 
+The `testdata/` corpus is a checked-in, deterministic snapshot whose `manifest.json`
+records the canonical fixtures and their provenance. A small offline sync helper in
+`pkg/lens/corpus_sync_test.go` validates that every tracked fixture is present and
+that no untracked files exist in the corpus, without making any network calls.
+
 ```sh
 go test ./cmd/lens
 ```

@@ -45,6 +45,13 @@ The stdin path is normalized once in `pkg/lens/stdin_pipe.go` and then reused by
 characters, and collapses newline-delimited shell pipes into a deterministic
 single payload or a sequence of payloads without introducing any network calls.
 
+The canonical XDR corpus in `testdata/` is treated as a versioned offline snapshot,
+not a live remote registry. `manifest.json` records every supported fixture and its
+provenance, while `pkg/lens/corpus_sync_test.go` enforces that the local corpus stays
+in lockstep with that manifest without touching the network or relying on external
+services. This makes regression testing deterministic, reproducible, and safe in CI
+or on air-gapped machines.
+
 ## Shell completion
 
 The CLI wires Cobra's generated completion scripts into the root command and
