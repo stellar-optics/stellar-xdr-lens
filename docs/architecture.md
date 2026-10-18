@@ -45,6 +45,17 @@ The stdin path is normalized once in `pkg/lens/stdin_pipe.go` and then reused by
 characters, and collapses newline-delimited shell pipes into a deterministic
 single payload or a sequence of payloads without introducing any network calls.
 
+## Strict exit codes
+
+The CLI uses a stable exit-code contract so automation can branch on the outcome without parsing stdout:
+
+- `0` = clean run
+- `1` = generic CLI/library failure
+- `2` = meaningful non-zero result, such as a diff or a failing transaction when the caller requested `--fail-on-error` / `--exit-code`
+- `3` = invalid XDR, malformed base64, or a value that cannot be decoded as a supported Stellar type
+
+`internal/cli/exitcodes.go` centralizes the mapping in one place and leaves the actual command handlers focused on behavior. Invalid payloads are classified as invalid XDR rather than as generic runtime failures, while `errValuesDiffer` and `errTransactionFailed` remain non-printable sentinel errors so stderr stays clean in CI.
+
 ## Package layout
 
 ```

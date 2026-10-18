@@ -2,7 +2,6 @@ package cli
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -187,28 +186,7 @@ diagnostic events and display contract panic messages.`,
 
 // errTransactionFailed signals --fail-on-error. It is handled in main so that
 // it maps to a distinct exit code rather than being printed as an error.
-var errTransactionFailed = &exitError{code: 2, msg: "transaction failed"}
-
-// exitError carries an explicit process exit code.
-type exitError struct {
-	code int
-	msg  string
-}
-
-func (e *exitError) Error() string { return e.msg }
-
-// ExitCode returns the process exit code for err, and whether err should be
-// printed as an error message.
-func ExitCode(err error) (code int, printable bool) {
-	if err == nil {
-		return 0, false
-	}
-	var ee *exitError
-	if errors.As(err, &ee) {
-		return ee.code, false
-	}
-	return 1, true
-}
+var errTransactionFailed = &exitError{code: ExitCodeDiffFound, msg: "transaction failed"}
 
 // buildSummary decides whether to explain one value or a pair, based on what
 // the user supplied and what the primary payload turned out to be.

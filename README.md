@@ -89,6 +89,17 @@ prove the core execution path stays offline and deterministic in CI.
 go test ./cmd/lens
 ```
 
+## Exit codes
+
+`lens` uses a strict, CI-friendly process exit contract so scripts can tell the difference between a clean run, a generic failure, an intentional mismatch, and invalid input:
+
+- `0`: clean run; no differences and no error
+- `1`: generic error; command failed for an operational reason
+- `2`: meaningful non-zero result; a diff was found or a transaction check failed when `--fail-on-error` / `--exit-code` is requested
+- `3`: invalid XDR or malformed base64 input
+
+This policy keeps the offline execution path deterministic and makes it safe to gate pipelines on CLI exit status.
+
 ## Usage
 
 ### `lens explain` — why did this fail?

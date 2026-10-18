@@ -3,6 +3,7 @@ package cli_test
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"sort"
@@ -364,6 +365,35 @@ func TestExplainFailOnErrorExitCode(t *testing.T) {
 	}
 }
 
+func TestExitCodePolicy(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		err           error
+		wantCode      int
+		wantPrintable bool
+	}{
+		{"nil is success", nil, 0, false},
+		{"generic errors are generic", errors.New("boom"), 1, true},
+		{"invalid XDR is code 3", lens.ErrInvalidXDR, 3, true},
+		{"invalid base64 is code 3", lens.ErrInvalidBase64, 3, true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			gotCode, gotPrintable := cli.ExitCode(tc.err)
+			if gotCode != tc.wantCode {
+				t.Fatalf("ExitCode(%v) = %d, want %d", tc.err, gotCode, tc.wantCode)
+			}
+			if gotPrintable != tc.wantPrintable {
+				t.Fatalf("ExitCode(%v) printable = %t, want %t", tc.err, gotPrintable, tc.wantPrintable)
+			}
+		})
+	}
+}
+
 func TestDiffCommand(t *testing.T) {
 	t.Parallel()
 
@@ -416,7 +446,7 @@ func TestDiffExitCode(t *testing.T) {
 		left, right string
 		wantCode    int
 	}{
-		{"differing values exit 1", "tx_soroban.res", "tx_failed.res", 1},
+		{"differing values exit 2", "tx_soroban.res", "tx_failed.res", 2},
 		{"identical values exit 0", "tx_failed.res", "tx_failed.res", 0},
 	}
 
@@ -442,8 +472,8 @@ func TestDiffQuietPrintsNothing(t *testing.T) {
 	if stdout != "" {
 		t.Errorf("--quiet printed output:\n%s", stdout)
 	}
-	if code, _ := cli.ExitCode(err); code != 1 {
-		t.Errorf("exit code = %d, want 1", code)
+	if code, _ := cli.ExitCode(err); code != 2 {
+		t.Errorf("exit code = %d, want 2", code)
 	}
 }
 

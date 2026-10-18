@@ -103,9 +103,9 @@ mismatched hash.`,
 	return cmd
 }
 
-// errValuesDiffer signals --exit-code, mirroring diff(1)'s convention of
-// exiting 1 when the inputs differ.
-var errValuesDiffer = &exitError{code: 1, msg: "values differ"}
+// errValuesDiffer signals --exit-code when a diff is present. This keeps the
+// result distinct from generic CLI failures while remaining CI-friendly.
+var errValuesDiffer = &exitError{code: ExitCodeDiffFound, msg: "values differ"}
 
 // diffChange is the stable JSON shape for one change.
 type diffChange struct {

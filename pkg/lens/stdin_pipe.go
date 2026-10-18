@@ -1,6 +1,7 @@
 package lens
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"strings"
@@ -33,7 +34,15 @@ func ReadPipeRecords(r io.Reader) ([]string, error) {
 		return nil, fmt.Errorf("reading stdin: %w", err)
 	}
 
-	raw := strings.FieldsFunc(string(data), func(ch rune) bool {
+	trimmed := strings.TrimSpace(string(data))
+	if trimmed == "" {
+		return nil, ErrEmptyInput
+	}
+	if json.Valid([]byte(trimmed)) {
+		return []string{trimmed}, nil
+	}
+
+	raw := strings.FieldsFunc(trimmed, func(ch rune) bool {
 		switch ch {
 		case '\n', '\r', '\t', ' ', '\f', '\v':
 			return true
