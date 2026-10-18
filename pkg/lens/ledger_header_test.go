@@ -116,6 +116,118 @@ func TestDecodeLedgerHeaderHistoryEntryFixture(t *testing.T) {
 	}
 }
 
+// TestLedgerHeaderFlagsAndUpgradeVotes builds a header carrying V1
+// liquidity-pool control flags and two upgrade votes, then decodes it through
+// the public API. This is the enrichment the canonical fixture does not
+// exercise: flags expanded to names, and opaque upgrade blobs decoded into
+// the protocol parameter each proposes.
+func TestLedgerHeaderFlagsAndUpgradeVotes(t *testing.T) {
+	t.Parallel()
+
+	versionVote := xdr.LedgerUpgrade{
+		Type:             xdr.LedgerUpgradeTypeLedgerUpgradeVersion,
+		NewLedgerVersion: ptrToUint32(23),
+	}
+	baseReserveVote := xdr.LedgerUpgrade{
+		Type:           xdr.LedgerUpgradeTypeLedgerUpgradeBaseReserve,
+		NewBaseReserve: ptrToUint32(10000000),
+	}
+	versionBlob, err := versionVote.MarshalBinary()
+	if err != nil {
+		t.Fatalf("MarshalBinary(version) error = %v", err)
+	}
+	reserveBlob, err := baseReserveVote.MarshalBinary()
+	if err != nil {
+		t.Fatalf("MarshalBinary(baseReserve) error = %v", err)
+	}
+
+	header := xdr.LedgerHeader{
+		LedgerVersion: 23,
+		PreviousLedgerHash: xdr.Hash{
+			0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+			0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10,
+			0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18,
+			0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f, 0x20,
+		},
+		ScpValue: xdr.StellarValue{
+			TxSetHash: xdr.Hash{
+				0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28,
+				0x29, 0x2a, 0x2b, 0x2c, 0x2d, 0x2e, 0x2f, 0x30,
+				0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38,
+				0x39, 0x3a, 0x3b, 0x3c, 0x3d, 0x3e, 0x3f, 0x40,
+			},
+			CloseTime: xdr.TimePoint(1700000000),
+			Upgrades:  []xdr.UpgradeType{versionBlob, reserveBlob},
+			Ext:       xdr.StellarValueExt{V: 0},
+		},
+		TxSetResultHash: xdr.Hash{
+			0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48,
+			0x49, 0x4a, 0x4b, 0x4c, 0x4d, 0x4e, 0x4f, 0x50,
+			0x51, 0x52, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58,
+			0x59, 0x5a, 0x5b, 0x5c, 0x5d, 0x5e, 0x5f, 0x60,
+		},
+		BucketListHash: xdr.Hash{
+			0x61, 0x62, 0x63, 0x64, 0x65, 0x66, 0x67, 0x68,
+			0x69, 0x6a, 0x6b, 0x6c, 0x6d, 0x6e, 0x6f, 0x70,
+			0x71, 0x72, 0x73, 0x74, 0x75, 0x76, 0x77, 0x78,
+			0x79, 0x7a, 0x7b, 0x7c, 0x7d, 0x7e, 0x7f, 0x80,
+		},
+		LedgerSeq:    1000,
+		TotalCoins:   xdr.Int64(100000000000000000),
+		FeePool:      xdr.Int64(100000000),
+		BaseFee:      100,
+		BaseReserve:  5000000,
+		MaxTxSetSize: 1000,
+		Ext: xdr.LedgerHeaderExt{
+			V: 1,
+			V1: &xdr.LedgerHeaderExtensionV1{
+				Flags: xdr.Uint32(
+					xdr.LedgerHeaderFlagsDisableLiquidityPoolTradingFlag |
+						xdr.LedgerHeaderFlagsDisableLiquidityPoolDepositFlag),
+			},
+		},
+	}
+
+	v, err := lens.DecodeAs(mustMarshal(t, header), "LedgerHeader")
+	if err != nil {
+		t.Fatalf("DecodeAs() error = %v", err)
+	}
+
+	baseReserve := v.Node.Find("BaseReserve")
+	if baseReserve == nil || baseReserve.Note != "0.5000000 (stroops: 5000000)" {
+		t.Errorf("BaseReserve = %v, want the XLM decimal rendering", baseReserve)
+	}
+
+	flags := v.Node.Find("Ext.V1.Flags")
+	if flags == nil {
+		t.Fatal("Ext.V1.Flags not found")
+	}
+	if flags.Value != uint64(xdr.Uint32(
+		xdr.LedgerHeaderFlagsDisableLiquidityPoolTradingFlag|
+			xdr.LedgerHeaderFlagsDisableLiquidityPoolDepositFlag)) {
+		t.Errorf("Flags Value = %v, want the raw bitmask", flags.Value)
+	}
+	if flags.Note != "disable_liquidity_pool_trading | disable_liquidity_pool_deposit" {
+		t.Errorf("Flags Note = %q, want expanded flag names", flags.Note)
+	}
+
+	upgrades := v.Node.Find("ScpValue.Upgrades")
+	if upgrades == nil || len(upgrades.Children) != 2 {
+		t.Fatalf("ScpValue.Upgrades = %v, want 2 votes", upgrades)
+	}
+	if note := upgrades.Children[0].Note; note != "protocol version 23" {
+		t.Errorf("Upgrades[0] Note = %q, want %q", note, "protocol version 23")
+	}
+	if note := upgrades.Children[1].Note; note != "base reserve 1.0000000 XLM (10000000 stroops)" {
+		t.Errorf("Upgrades[1] Note = %q, want the base reserve proposal", note)
+	}
+
+	// The raw vote bytes remain available for machine-readable output.
+	if b, ok := upgrades.Children[0].Value.(xdr.UpgradeType); !ok || string(b) != string(versionBlob) {
+		t.Errorf("Upgrades[0] Value = %v, want the original upgrade blob", upgrades.Children[0].Value)
+	}
+}
+
 func TestDecodeLedgerHeaderRejectsTruncatedInput(t *testing.T) {
 	t.Parallel()
 
@@ -162,4 +274,9 @@ func TestDetectReportsLedgerHeader(t *testing.T) {
 			}
 		})
 	}
+}
+
+func ptrToUint32(v uint32) *xdr.Uint32 {
+	u := xdr.Uint32(v)
+	return &u
 }
