@@ -129,6 +129,7 @@ The input can be passed as a positional argument, read from a file with
 		"shortcut to encode input as ScVal")
 	cmd.Flags().BoolVar(&opts.envelope, "tx", false,
 		"shortcut to encode input as TransactionEnvelope")
+	mustRegisterFlagCompletionFunc(cmd, "type", typeNameCompletion)
 
 	return cmd
 }

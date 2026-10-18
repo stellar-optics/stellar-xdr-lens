@@ -186,6 +186,13 @@ Use --interactive (or 'lens explore') for an interactive terminal tree viewer.`,
 		"list every XDR type the input decodes as, best first")
 	cmd.Flags().BoolVar(&stream, "stream", false, "stream and decode framed XDR chunks (RFC 5531 or length-prefixed)")
 	cmd.Flags().BoolVar(&canonical, "canonical", false, "verify that input adheres strictly to canonical XDR serialization")
+	mustRegisterFlagCompletionFunc(cmd, "type", typeNameCompletion)
+	mustRegisterFlagCompletionFunc(cmd, "format", func(_ *cobra.Command, _ []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		return completionValues([]string{"tree", "json", "summary", "txrep", "csv"}, toComplete), cobra.ShellCompDirectiveNoFileComp
+	})
+	mustRegisterFlagCompletionFunc(cmd, "spec", func(_ *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {
+		return nil, cobra.ShellCompDirectiveDefault
+	})
 
 	return cmd
 }
@@ -240,6 +247,10 @@ Use arrow keys or j/k to navigate, Enter or Space to toggle node expansion,
 		"decode as this XDR type instead of detecting it")
 	cmd.Flags().StringVar(&specPath, "spec", "",
 		"path to contract WASM or ScSpecEntry file for spec-aware decoding")
+	mustRegisterFlagCompletionFunc(cmd, "type", typeNameCompletion)
+	mustRegisterFlagCompletionFunc(cmd, "spec", func(_ *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {
+		return nil, cobra.ShellCompDirectiveDefault
+	})
 
 	return cmd
 }

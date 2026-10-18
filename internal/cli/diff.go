@@ -99,6 +99,7 @@ mismatched hash.`,
 		"exit with a non-zero status when the values differ")
 	cmd.Flags().BoolVarP(&quietMode, "quiet", "q", false,
 		"print nothing; report the answer only through the exit code")
+	mustRegisterFlagCompletionFunc(cmd, "type", typeNameCompletion)
 
 	return cmd
 }

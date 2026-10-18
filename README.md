@@ -59,6 +59,21 @@ go build ./cmd/lens
 Everything runs offline. `lens` makes no network calls, which makes it safe on
 unsigned transactions and deterministic in CI.
 
+## Shell completion
+
+`lens` ships with Cobra's built-in shell completion support, so bash, zsh, and
+fish can complete registered XDR type names and the CLI flags without any network
+or remote lookup. Use the generated script directly:
+
+```sh
+lens completion bash > /etc/bash_completion.d/lens
+source <(lens completion bash)
+```
+
+The `--type` completion is dynamic and sourced from the live registry in
+`pkg/lens`, which means the suggestions stay aligned with every supported XDR
+value and continue to work offline.
+
 #### Terminal colors
 
 Human-readable terminal output uses the dark color theme by default. Set

@@ -92,6 +92,7 @@ unsigned transactions and works in CI.`,
 		newTypesCmd(stdout),
 		newVersionCmd(stdout),
 	)
+	installCompletionHandlers(root)
 	return root
 }
 

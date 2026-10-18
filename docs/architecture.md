@@ -45,6 +45,15 @@ The stdin path is normalized once in `pkg/lens/stdin_pipe.go` and then reused by
 characters, and collapses newline-delimited shell pipes into a deterministic
 single payload or a sequence of payloads without introducing any network calls.
 
+## Shell completion
+
+The CLI wires Cobra's generated completion scripts into the root command and
+registers dynamic type completions for every value in the XDR registry. The
+`--type` flag completes from `lens.TypeNames()`, while `--format` and the shared
+CLI flags complete to their supported values without any network lookup or
+runtime mutation. This keeps the completion path deterministic and fully offline,
+matching the rest of the core execution model.
+
 ## Strict exit codes
 
 The CLI uses a stable exit-code contract so automation can branch on the outcome without parsing stdout:
