@@ -131,6 +131,9 @@ type DiffOptions struct {
 	// filter reports every change. Filtering happens after the walk, so it
 	// only narrows the output; it never changes how the values are compared.
 	Filter *PathFilter
+	// MaskPaths excludes changes matching glob-like patterns (e.g. *.Signatures, Tx.SeqNum)
+	// from diff evaluation (#126).
+	MaskPaths []string
 	// Threshold ignores scalar numeric differences below or equal to the given delta.
 	Threshold float64
 	// DiffThreshold is an alias for Threshold.
