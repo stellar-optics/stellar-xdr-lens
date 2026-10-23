@@ -33,6 +33,19 @@ const (
 	ChangeReordered
 )
 
+// LedgerEntryTransitionType classifies high-level LedgerEntry state transitions.
+type LedgerEntryTransitionType string
+
+const (
+	// TransitionCreated indicates a LedgerEntry was created from scratch.
+	TransitionCreated LedgerEntryTransitionType = "created"
+	// TransitionUpdated indicates a LedgerEntry was updated in place.
+	TransitionUpdated LedgerEntryTransitionType = "updated"
+	// TransitionDeleted indicates a LedgerEntry was deleted.
+	TransitionDeleted LedgerEntryTransitionType = "deleted"
+)
+
+
 func (c ChangeOp) String() string {
 	switch c {
 	case ChangeModified:
