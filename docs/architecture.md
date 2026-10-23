@@ -485,6 +485,17 @@ untrusted, possibly truncated blobs, both the decoder and every enricher run
 behind a `recover`. A value we cannot prettify degrades to its generic
 rendering; it never takes the process down.
 
+### Deterministic output
+
+JSON output is fully deterministic. The `Node` tree sorts map keys before
+traversal, and the sort comparator uses a two-level key: first the `%v` string
+representation, then a tie-break of `%T|%#v` (type + Go syntax) so that keys
+with identical `%v` output (e.g., integer `1` and string `"1"`) never cause
+nondeterministic ordering. Formatters themselves are pure functions of the
+`Node` tree — no clocks, environment, or network access — so repeated runs on
+identical input produce byte-identical output. This property is tested by
+`TestJSONFormatterDeterministicMapKeys` in `format/format_test.go`.
+
 ## Adding a new XDR type
 
 Add one line to `registry` in [`decode.go`](../pkg/lens/decode.go):
