@@ -977,6 +977,19 @@ func TestDecodeNewFormatsAndCommands(t *testing.T) {
 		}
 	})
 
+	t.Run("decode --format junit", func(t *testing.T) {
+		stdout, _, err := run(t, "", "decode", "--format", "junit", fixture(t, "tx_success.res"))
+		if err != nil {
+			t.Fatalf("decode --format junit: %v", err)
+		}
+		if !strings.Contains(stdout, `<?xml version="1.0" encoding="UTF-8"?>`) {
+			t.Errorf("junit output is missing the XML declaration: %s", stdout)
+		}
+		if !strings.Contains(stdout, `<testsuite name="stellar-xdr-lens" tests="1" failures="0"`) {
+			t.Errorf("unexpected junit output: %s", stdout)
+		}
+	})
+
 	t.Run("explore command", func(t *testing.T) {
 		stdout, _, err := run(t, "q\n", "explore", fixturePayload)
 		if err != nil {

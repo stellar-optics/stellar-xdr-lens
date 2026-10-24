@@ -355,6 +355,9 @@ $ lens decode --txrep --file envelope.xdr
 $ lens decode --csv --file envelope.xdr
 # or: lens decode --format csv --file envelope.xdr
 
+# JUnit XML test report for CI gatekeeping
+$ lens decode --format junit --file result.xdr > junit.xml
+
 # Interactive terminal tree explorer (TUI)
 $ lens decode -i --file envelope.xdr
 # or use the dedicated command:

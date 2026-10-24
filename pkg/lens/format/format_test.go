@@ -3,6 +3,8 @@ package format_test
 import (
 	"bytes"
 	"encoding/json"
+	"encoding/xml"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -752,4 +754,197 @@ func TestDiffJSONFormatter(t *testing.T) {
 			t.Errorf("equal diff format with warning mismatch: %s", bufEq.String())
 		}
 	})
+}
+
+// junitDocument is the subset of the JUnit schema the formatter emits. It is
+// unmarshalled rather than grepped, so the tests prove the output parses as XML
+// instead of merely containing the expected substrings.
+type junitDocument struct {
+	XMLName  xml.Name `xml:"testsuite"`
+	Name     string   `xml:"name,attr"`
+	Tests    int      `xml:"tests,attr"`
+	Failures int      `xml:"failures,attr"`
+	Errors   int      `xml:"errors,attr"`
+	Skipped  int      `xml:"skipped,attr"`
+	Time     string   `xml:"time,attr"`
+	Cases    []struct {
+		Name      string `xml:"name,attr"`
+		ClassName string `xml:"classname,attr"`
+		Time      string `xml:"time,attr"`
+		Failure   *struct {
+			Type    string `xml:"type,attr"`
+			Message string `xml:"message,attr"`
+			Body    string `xml:",chardata"`
+		} `xml:"failure"`
+		SystemOut string `xml:"system-out"`
+	} `xml:"testcase"`
+}
+
+func parseJUnit(t *testing.T, out string) junitDocument {
+	t.Helper()
+	if !strings.HasPrefix(out, xml.Header) {
+		t.Fatalf("JUnit output does not start with the XML declaration:\n%s", out)
+	}
+	var doc junitDocument
+	if err := xml.Unmarshal([]byte(out), &doc); err != nil {
+		t.Fatalf("JUnit output is not well-formed XML: %v\n%s", err, out)
+	}
+	return doc
+}
+
+func renderJUnit(t *testing.T, f *format.JUnitFormatter, vals ...*lens.Value) (string, junitDocument) {
+	t.Helper()
+	var buf bytes.Buffer
+	if err := f.FormatAll(&buf, vals); err != nil {
+		t.Fatalf("JUnitFormatter.FormatAll() error = %v", err)
+	}
+	out := buf.String()
+	return out, parseJUnit(t, out)
+}
+
+func TestJUnitFormatterPassesDecodedValues(t *testing.T) {
+	t.Parallel()
+
+	out, doc := renderJUnit(t,
+		format.NewJUnitFormatter(format.WithSuiteName("decode-report")),
+		loadValue(t, "tx_success.env"),
+		loadValue(t, "tx_success.res"),
+	)
+
+	if doc.Name != "decode-report" {
+		t.Errorf("suite name = %q, want %q", doc.Name, "decode-report")
+	}
+	if doc.Tests != 2 || doc.Failures != 0 || doc.Errors != 0 {
+		t.Errorf("suite counts = tests %d failures %d errors %d, want 2/0/0", doc.Tests, doc.Failures, doc.Errors)
+	}
+	if len(doc.Cases) != 2 {
+		t.Fatalf("testcase count = %d, want 2", len(doc.Cases))
+	}
+	for i, tc := range doc.Cases {
+		if tc.Failure != nil {
+			t.Errorf("testcase %d has a failure element for a successful value", i)
+		}
+		if tc.SystemOut == "" {
+			t.Errorf("testcase %d has no system-out", i)
+		}
+		if tc.ClassName != "decode-report" {
+			t.Errorf("testcase %d classname = %q, want %q", i, tc.ClassName, "decode-report")
+		}
+	}
+	if got := doc.Cases[0].Name; got != "TransactionEnvelope" {
+		t.Errorf("first testcase name = %q, want TransactionEnvelope", got)
+	}
+	if got := doc.Cases[1].Name; got != "TransactionResult" {
+		t.Errorf("second testcase name = %q, want TransactionResult", got)
+	}
+	if got := doc.Cases[1].SystemOut; got != "Transaction succeeded." {
+		t.Errorf("result system-out = %q, want the explain headline", got)
+	}
+	if !strings.Contains(doc.Cases[0].SystemOut, "Transaction from") {
+		t.Errorf("envelope system-out = %q, want the explain headline", doc.Cases[0].SystemOut)
+	}
+
+	// Timing is fixed so repeated runs produce byte-identical reports.
+	if doc.Time != "0.000" || doc.Cases[0].Time != "0.000" {
+		t.Errorf("suite/testcase time = %q/%q, want 0.000", doc.Time, doc.Cases[0].Time)
+	}
+	if strings.Contains(out, "\x1b[") {
+		t.Error("JUnit output contains ANSI escape sequences")
+	}
+}
+
+func TestJUnitFormatterReportsFailedTransaction(t *testing.T) {
+	t.Parallel()
+
+	out, doc := renderJUnit(t, format.NewJUnitFormatter(), loadValue(t, "tx_failed.res"))
+
+	if doc.Tests != 1 || doc.Failures != 1 || doc.Errors != 0 {
+		t.Errorf("suite counts = tests %d failures %d errors %d, want 1/1/0", doc.Tests, doc.Failures, doc.Errors)
+	}
+	if len(doc.Cases) != 1 {
+		t.Fatalf("testcase count = %d, want 1", len(doc.Cases))
+	}
+	tc := doc.Cases[0]
+	if tc.Failure == nil {
+		t.Fatalf("testcase has no failure element:\n%s", out)
+	}
+	// The inner transaction's code is the specific cause, so it wins over the
+	// fee-bump wrapper's tx_fee_bump_inner_failed.
+	if tc.Failure.Type != "tx_failed" {
+		t.Errorf("failure type = %q, want tx_failed", tc.Failure.Type)
+	}
+	if !strings.Contains(tc.Failure.Message, "Transaction failed at operation 0") {
+		t.Errorf("failure message = %q, want the explain headline", tc.Failure.Message)
+	}
+	for _, want := range []string{"Reason:", "Inner reason:", "Operation 0 failed", "Hint:"} {
+		if !strings.Contains(tc.Failure.Body, want) {
+			t.Errorf("failure body missing %q:\n%s", want, tc.Failure.Body)
+		}
+	}
+}
+
+func TestJUnitFormatterEscapesNamesAndIsDeterministic(t *testing.T) {
+	t.Parallel()
+
+	v := &lens.Value{
+		Type: `Bad<&"Type`,
+		Node: &lens.Node{Kind: lens.KindScalar, Value: "x"},
+	}
+	f := format.NewJUnitFormatter()
+
+	first, doc := renderJUnit(t, f, v)
+	if got := doc.Cases[0].Name; got != v.Type {
+		t.Errorf("testcase name = %q, want %q", got, v.Type)
+	}
+
+	second, _ := renderJUnit(t, f, v)
+	if first != second {
+		t.Errorf("JUnit output is not deterministic:\nfirst:\n%s\nsecond:\n%s", first, second)
+	}
+}
+
+func TestJUnitFormatterEmptySuite(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	if err := format.NewJUnitFormatter().FormatAll(&buf, nil); err != nil {
+		t.Fatalf("FormatAll() error = %v", err)
+	}
+	doc := parseJUnit(t, buf.String())
+	if doc.Tests != 0 || doc.Failures != 0 || doc.Errors != 0 {
+		t.Errorf("empty suite counts = tests %d failures %d errors %d, want 0/0/0", doc.Tests, doc.Failures, doc.Errors)
+	}
+	if len(doc.Cases) != 0 {
+		t.Errorf("empty suite has %d testcases", len(doc.Cases))
+	}
+}
+
+func TestJUnitFormatterRejectsNilValues(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	f := format.NewJUnitFormatter()
+	if err := f.Format(&buf, nil); err == nil {
+		t.Error("Format(nil) error = nil, want an error")
+	}
+	if err := f.FormatAll(&buf, []*lens.Value{loadValue(t, "tx_success.env"), nil}); err == nil {
+		t.Error("FormatAll() with a nil value error = nil, want an error")
+	}
+	if buf.Len() != 0 {
+		t.Errorf("formatter wrote %d bytes before failing, want none", buf.Len())
+	}
+}
+
+type junitErrWriter struct{ err error }
+
+func (w junitErrWriter) Write([]byte) (int, error) { return 0, w.err }
+
+func TestJUnitFormatterPropagatesWriteError(t *testing.T) {
+	t.Parallel()
+
+	boom := errors.New("boom")
+	err := format.NewJUnitFormatter().Format(junitErrWriter{err: boom}, loadValue(t, "tx_success.env"))
+	if !errors.Is(err, boom) {
+		t.Errorf("Format() error = %v, want it to wrap %v", err, boom)
+	}
 }

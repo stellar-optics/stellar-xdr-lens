@@ -127,6 +127,7 @@ pkg/lens/              the library; this is the reusable surface
     markdown.go        GitHub-flavored Markdown transaction reports
     html.go            self-contained offline HTML reports
     mermaid.go         Mermaid flowchart (graph TD) transaction visualization
+    junit.go           JUnit XML test reports for CI gatekeeping
     linediff.go        shared line alignment for unified and side-by-side diffs
     unified.go         standard unified diff for CI review comments
     json_patch.go      RFC 6902 JSON Patch output
@@ -1305,6 +1306,28 @@ the [README](../README.md#lens-explain--why-did-this-fail) for usage.
 - Provides fallback rendering of node hierarchies for general XDR types.
 - Reachable from the CLI as `lens decode --format mermaid`.
 
+## JUnit XML test reports (`pkg/lens/format/junit.go`)
+
+`JUnitFormatter` renders decoded values as a JUnit XML `<testsuite>` that
+Jenkins, GitLab CI, CircleCI and other CI systems already know how to display.
+- Each value becomes one `<testcase>`, named after its XDR type, so an
+  envelope and its result can be reported side by side in one suite.
+- A test case fails when `lens.Explain` resolves a failed transaction outcome.
+  The `<failure>` element carries the most specific result code as its `type`
+  and the explain headline as its `message`, with the transaction and
+  per-operation reasons, context and hints in the element body.
+- Decoded values that `lens.Explain` does not cover (everything except
+  `TransactionEnvelope` and `TransactionResult`) pass: reaching a formatter
+  means the value decoded successfully. Nil values are rejected instead of
+  being reported as test cases.
+- Output is written through `encoding/xml`, so quotes, angle brackets,
+  ampersands and newlines in memos or failure messages are escaped and the
+  document always parses. `tests`, `failures` and `errors` counts are derived
+  from the values themselves.
+- Output is deterministic: durations are reported as `0.000` rather than read
+  from a clock, and nothing depends on the environment or the network.
+- Reachable from the CLI as `lens decode --format junit`.
+
 ## Precondition Expiry Verification (`pkg/lens/timebounds_explain.go`)
 
 `VerifyPreconditionExpiry` and `CheckPreconditionExpiry` verify transaction preconditions (`TimeBounds` and `LedgerBounds`) against a reference timestamp.
@@ -1444,7 +1467,7 @@ nothing — and walks every command:
 - **Dynamic flag values**: `--type`/`-t` on `decode`, `explore`, `diff` and
   `encode` complete from `lens.TypeNames()`, the same registry the `types`
   command prints, so nothing can drift between them.
-- **Choice lists**: `--format` (tree/json/compact/summary/txrep/csv/yaml),
+- **Choice lists**: `--format` (tree/json/compact/summary/txrep/csv/junit),
   `--color`, `--network`, and the repeatable `--redact` prefix set are static
   candidates.
 - **Shell scripts**: all four render through cobra's `Gen*Completion`, with the

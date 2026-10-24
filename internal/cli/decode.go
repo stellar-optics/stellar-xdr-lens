@@ -271,6 +271,10 @@ Use --interactive (or 'lens explore') for an interactive terminal tree viewer.`,
 					return format.NewMermaidFormatter().Format(w, value)
 				}
 
+				if formatName == "junit" {
+					return format.NewJUnitFormatter().Format(w, value)
+				}
+
 				if asJSON || formatName == "json" {
 					indent := "  "
 					if compactOut {
@@ -318,7 +322,7 @@ Use --interactive (or 'lens explore') for an interactive terminal tree viewer.`,
 	cmd.Flags().BoolVar(&asCSV, "csv", false, "emit a flat CSV row of the high-level transaction fields")
 	cmd.Flags().BoolVarP(&interactive, "interactive", "i", false, "explore the decoded tree interactively")
 	cmd.Flags().StringVar(&specPath, "spec", "", "path to contract WASM or ScSpecEntry file for spec-aware decoding")
-	cmd.Flags().StringVar(&formatName, "format", "", `output format: "tree", "json", "summary", "txrep", "csv", "html", or "mermaid"`)
+	cmd.Flags().StringVar(&formatName, "format", "", `output format: "tree", "json", "summary", "txrep", "csv", "html", "mermaid", or "junit"`)
 	cmd.Flags().StringVar(&network, "network", "", "network passphrase for txrep formatting")
 	cmd.Flags().StringVarP(&typeName, "type", "t", "",
 		"decode as this XDR type instead of detecting it (see `lens types`)")
