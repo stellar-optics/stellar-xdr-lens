@@ -400,6 +400,14 @@
         "type": "LiquidityPoolEntry",
         "description": "Constant-product pool with the deterministic 'AAAA…' id, 0.3% fee, reserves 100000 XLM / 500000 USDC and 150 trustline holders."
       },
+      "tx_path_receive_failed.env": {
+        "type": "TransactionEnvelope",
+        "description": "Constructed PathPaymentStrictReceive sending XLM to USDC through EURC, paired with tx_path_receive_failed.res."
+      },
+      "tx_path_receive_failed.res": {
+        "type": "TransactionResult",
+        "description": "Constructed failed result for tx_path_receive_failed.env: path_payment_strict_receive_no_issuer naming the EURC hop."
+      },
       "stellar_value_votes": {
         "type": "StellarValue",
         "description": "Basic StellarValue with three upgrade votes: protocol version 21, base reserve 1.0000000 XLM, and an unparseable deadbeef blob kept as hex."
