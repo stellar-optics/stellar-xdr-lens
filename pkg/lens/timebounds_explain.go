@@ -68,19 +68,27 @@ func (t *TimeboundFailure) DiagnosticReport() string {
 	return b.String()
 }
 
+// ExtractTimeBounds returns the transaction's minTime and maxTime bounds (as
+// Unix timestamps) and whether a TimeBounds struct was present on the envelope.
+func ExtractTimeBounds(env *xdr.TransactionEnvelope) (minTime, maxTime int64, ok bool) {
+	if env == nil {
+		return 0, 0, false
+	}
+	tb := env.TimeBounds()
+	if tb == nil {
+		return 0, 0, false
+	}
+	return int64(tb.MinTime), int64(tb.MaxTime), true
+}
+
 // DiagnoseTimeboundFailure diagnoses a timebound failure from a transaction envelope.
 // This is a purely local, offline diagnosis - no network calls are made.
 // It compares the transaction's time bounds against the current ledger time.
 func DiagnoseTimeboundFailure(env *xdr.TransactionEnvelope) *TimeboundFailure {
-	// Get the transaction's time bounds
-	tb := env.TimeBounds()
-	if tb == nil {
+	minTime, maxTime, ok := ExtractTimeBounds(env)
+	if !ok {
 		return nil
 	}
-
-	// Convert TimePoint (Uint64) to int64 for comparison
-	minTime := int64(tb.MinTime)
-	maxTime := int64(tb.MaxTime)
 
 	// Use a default current time if not available (offline mode)
 	// In a real scenario, this would be the current ledger close time
@@ -190,10 +198,7 @@ func VerifyPreconditionExpiry(env *xdr.TransactionEnvelope, refTime time.Time) *
 	}
 
 	// 1. Evaluate TimeBounds
-	tb := env.TimeBounds()
-	if tb != nil {
-		minTime := int64(tb.MinTime)
-		maxTime := int64(tb.MaxTime)
+	if minTime, maxTime, ok := ExtractTimeBounds(env); ok {
 		refUnix := refTime.Unix()
 
 		if maxTime > 0 && refUnix > maxTime {
