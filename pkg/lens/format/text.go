@@ -132,6 +132,9 @@ func (f *SummaryFormatter) operation(b *strings.Builder, op lens.OpSummary) {
 	if op.Source != "" {
 		fmt.Fprintf(b, "      %ssource: %s%s\n", p.Dim, op.Source, p.Reset)
 	}
+	if op.Deprecation != "" {
+		fmt.Fprintf(b, "      %s%s%s\n", p.Note, op.Deprecation, p.Reset)
+	}
 	if op.Result != nil && !op.Result.Success {
 		fmt.Fprintf(b, "      %s%s%s: %s\n", p.Remove, op.Result.Code, p.Reset, op.Result.Summary)
 		if op.Result.Context != "" {

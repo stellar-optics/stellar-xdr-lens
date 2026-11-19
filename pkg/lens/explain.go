@@ -63,6 +63,9 @@ type OpSummary struct {
 	PathPayment *PathPaymentSlippageDiagnosis `json:"pathPayment,omitempty"`
 	// TrustLine provides contextual diagnostics for SetTrustLineFlags failures.
 	TrustLine *SetTrustLineFlagsDiagnosis `json:"trustLine,omitempty"`
+	// Deprecation is a banner for operations the protocol has permanently
+	// retired. It is set whether or not a result was supplied.
+	Deprecation string `json:"deprecation,omitempty"`
 }
 
 // Outcome is the resolved result of a transaction.
@@ -137,10 +140,11 @@ func explainEnvelope(env *xdr.TransactionEnvelope, res *xdr.TransactionResult) (
 	ops := env.Operations()
 	for i, op := range ops {
 		s.Operations = append(s.Operations, OpSummary{
-			Index:  i,
-			Type:   operationTypeLabel(op.Body.Type),
-			Source: operationSource(op),
-			Detail: describeOperation(op),
+			Index:       i,
+			Type:        operationTypeLabel(op.Body.Type),
+			Source:      operationSource(op),
+			Detail:      describeOperation(op),
+			Deprecation: operationDeprecation(op),
 		})
 	}
 
@@ -208,7 +212,7 @@ func attachResult(s *Summary, res *xdr.TransactionResult, ops []xdr.Operation, s
 		for i, opRes := range opResults {
 			reason := explainOperationResult(opRes)
 			if !reason.Success && i < len(ops) {
-				reason = deepenOperationFailure(source, ops[i], reason)
+				reason = deepenOperationFailure(source, s.SeqNum, ops[i], reason)
 			}
 			if !reason.Success {
 				outcome.FailedOps = append(outcome.FailedOps, i)
@@ -304,22 +308,29 @@ func explainOperationResult(opRes xdr.OperationResult) Reason {
 // anything it cannot pin down keeps the generic per-code explanation.
 // Everything here is pure analysis of supplied XDR — no network calls, no
 // ledger lookups — so output stays deterministic and offline-first.
-func deepenOperationFailure(source string, op xdr.Operation, r Reason) Reason {
+//
+// txSeq is the envelope's sequence number, which is what a bump_sequence
+// target has to be measured against.
+func deepenOperationFailure(source string, txSeq int64, op xdr.Operation, r Reason) Reason {
 	if r.Success {
 		return r
 	}
 	switch {
+	case op.Body.Type == xdr.OperationTypeInflation:
+		return deepenInflationFailure(r)
+	case strings.HasPrefix(r.Constant, "BumpSequenceResultCode"):
+		return deepenBumpSequenceFailure(source, txSeq, op, r)
 	case strings.HasPrefix(r.Constant, "SetOptionsResultCode"):
 		if body, ok := op.Body.GetSetOptionsOp(); ok {
 			return deepenSetOptionsFailure(operationEffectiveSource(source, op), body, r)
 		}
 	case strings.HasPrefix(r.Constant, "LiquidityPoolDepositResultCode"):
 		if body, ok := op.Body.GetLiquidityPoolDepositOp(); ok {
-			return deepenLiquidityPoolDepositFailure(body, r)
+			return withPoolDepositDiagnosis(body, deepenLiquidityPoolDepositFailure(body, r))
 		}
 	case strings.HasPrefix(r.Constant, "LiquidityPoolWithdrawResultCode"):
 		if body, ok := op.Body.GetLiquidityPoolWithdrawOp(); ok {
-			return deepenLiquidityPoolWithdrawFailure(body, r)
+			return withPoolWithdrawDiagnosis(body, deepenLiquidityPoolWithdrawFailure(body, r))
 		}
 	case strings.HasPrefix(r.Constant, "AccountMergeResultCode"):
 		return deepenAccountMergeFailure(operationEffectiveSource(source, op), op, r)
@@ -687,16 +698,16 @@ func liquidityPoolDepositMalformedReason(o xdr.LiquidityPoolDepositOp) (string, 
 // Exact integer arithmetic avoids the rounding that would make a boundary
 // case lie.
 func depositAmountsVsWindow(o xdr.LiquidityPoolDepositOp) int {
-	a := new(big.Int).SetInt64(int64(o.MaxAmountA))
-	b := new(big.Int).SetInt64(int64(o.MaxAmountB))
+	a := big.NewInt(int64(o.MaxAmountA))
+	b := big.NewInt(int64(o.MaxAmountB))
 	minN, minD := big.NewInt(int64(o.MinPrice.N)), big.NewInt(int64(o.MinPrice.D))
 	maxN, maxD := big.NewInt(int64(o.MaxPrice.N)), big.NewInt(int64(o.MaxPrice.D))
-	// ratio is B per A: below the window when b/a < minN/minD, above it
-	// when b/a > maxN/maxD.
-	if b.Mul(b, minD).Cmp(a.Mul(a, minN)) < 0 {
+	// The protocol prices a deposit as A per B: below the window when
+	// a/b < minN/minD, above it when a/b > maxN/maxD.
+	if new(big.Int).Mul(a, minD).Cmp(new(big.Int).Mul(b, minN)) < 0 {
 		return -1
 	}
-	if b.Mul(b, maxD).Cmp(a.Mul(a, maxN)) > 0 {
+	if new(big.Int).Mul(a, maxD).Cmp(new(big.Int).Mul(b, maxN)) > 0 {
 		return 1
 	}
 	return 0

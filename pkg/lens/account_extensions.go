@@ -118,3 +118,52 @@ func pluralSuffix(n uint64) string {
 	}
 	return "ies"
 }
+
+// DiagnoseBumpSequence explains a bump_sequence failure by comparing the target
+// with the envelope's sequence number, which is the source account's sequence
+// when the transaction applies. It returns "" for any other code, and when the
+// target is above txSeq, since the operation then gives no cause to report.
+//
+// stellar-core rejects only negative targets with this code and treats any
+// other target at or below the current sequence as a successful no-op, so the
+// non-negative case also asks the reader to check the pairing.
+func DiagnoseBumpSequence(txSeq int64, bumpTo xdr.SequenceNumber, code xdr.BumpSequenceResultCode) string {
+	if code != xdr.BumpSequenceResultCodeBumpSequenceBadSeq {
+		return ""
+	}
+	target := int64(bumpTo)
+	const rule = "BumpSequence cannot rewind or stay on the current sequence number"
+	switch {
+	case target < 0:
+		return fmt.Sprintf(
+			"bumpTo %d is negative, so it is not greater than the envelope sequence number %d; %s, and stellar-core rejects every negative target. Set bumpTo > %d.",
+			target, txSeq, rule, txSeq)
+	case target > txSeq:
+		return ""
+	}
+	relation := "is below"
+	if target == txSeq {
+		relation = "equals"
+	}
+	return fmt.Sprintf(
+		"bumpTo %d %s the envelope sequence number %d; %s. Set bumpTo > %d. stellar-core normally applies such a target as a no-op and reserves this code for negative targets, so confirm this result belongs to this envelope.",
+		target, relation, txSeq, rule, txSeq)
+}
+
+// deepenBumpSequenceFailure attaches DiagnoseBumpSequence's finding to a failed
+// bump_sequence. An operation-level source override is left alone: the envelope
+// sequence number belongs to the transaction source, not to that account.
+func deepenBumpSequenceFailure(source string, txSeq int64, op xdr.Operation, r Reason) Reason {
+	body, ok := op.Body.GetBumpSequenceOp()
+	if !ok || operationEffectiveSource(source, op) != source {
+		return r
+	}
+	if r.Constant != xdr.BumpSequenceResultCodeBumpSequenceBadSeq.String() {
+		return r
+	}
+	if diagnosis := DiagnoseBumpSequence(txSeq, body.BumpTo, xdr.BumpSequenceResultCodeBumpSequenceBadSeq); diagnosis != "" {
+		r.Context = diagnosis
+		r.Hint = "Set bumpTo to a non-negative value greater than the source account's current sequence number."
+	}
+	return r
+}
