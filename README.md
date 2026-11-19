@@ -155,6 +155,13 @@ balance locks: two base reserves for the entry plus one per claimant, at
 0.5 XLM each. This distinguishes a missing creator trustline from a claimant
 who cannot receive the asset, and it is computed entirely from the envelope.
 
+`payment` failures get a context line too. It names the destination, asset,
+issuer and amount, and the step that unblocks the payment: `CreateAccount` for a
+missing destination, `ChangeTrust` for a missing trustline, `SetTrustLineFlagsOp`
+for an unauthorized one. `clawback` and `clawback_claimable_balance` failures
+point at the issuer's `AUTH_CLAWBACK_ENABLED_FLAG`, which has to be in place
+before the trustline or claimable balance is created.
+
 The same detail appears as `context` in `--json` output and in the Markdown
 result cell, and it is resolved entirely from the decoded envelope — no network
 call is made.
