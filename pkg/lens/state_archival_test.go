@@ -159,3 +159,66 @@ func TestStateArchivalDetectionIsUnambiguous(t *testing.T) {
 		})
 	}
 }
+
+func TestDiagnoseStateArchivalOp(t *testing.T) {
+	t.Parallel()
+
+	const extendMalformed = "The extend-footprint-TTL operation with extendTo=1000 failed validation: extendTo must be below the network's maximum entry TTL, the read-write footprint must be empty, and the read-only footprint may list only contract data and contract code keys. " +
+		"Extending only affects live entries: extendTo must reach past an entry's current live-until ledger to change it, and archived entries are skipped until RestoreFootprint brings them back."
+	const restoreMalformed = "The restore-footprint operation failed validation: the read-only footprint must be empty and the read-write footprint may list only persistent contract data and contract code keys; temporary entries can never be restored. " +
+		"Restoring only affects archived entries, meaning persistent entries past their live-until ledger. Entries that are still live are skipped, so keep those alive with ExtendFootprintTTL instead."
+
+	tests := []struct {
+		name     string
+		opType   string
+		extendTo uint32
+		code     string
+		want     string
+	}{
+		{"extend by short names", "extend_footprint_ttl", 1000, "extend_footprint_ttl_malformed", extendMalformed},
+		{"extend by XDR constants", "OperationTypeExtendFootprintTtl", 1000, "ExtendFootprintTtlResultCodeExtendFootprintTtlMalformed", extendMalformed},
+		{"restore by short names", "restore_footprint", 0, "restore_footprint_malformed", restoreMalformed},
+		{"restore by XDR constants", "OperationTypeRestoreFootprint", 0, "RestoreFootprintResultCodeRestoreFootprintMalformed", restoreMalformed},
+		{"success has nothing to diagnose", "restore_footprint", 0, "restore_footprint_success", ""},
+		{"code from the other operation", "restore_footprint", 0, "extend_footprint_ttl_malformed", ""},
+		{"extend given a restore code", "extend_footprint_ttl", 1000, "restore_footprint_malformed", ""},
+		{"unrelated operation", "payment", 0, "restore_footprint_malformed", ""},
+		{"unknown code", "restore_footprint", 0, "not_a_code", ""},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := lens.DiagnoseStateArchivalOp(tc.opType, tc.extendTo, tc.code); got != tc.want {
+				t.Errorf("DiagnoseStateArchivalOp() =\n%q\nwant\n%q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestExplainPairDeepensStateArchivalMalformed(t *testing.T) {
+	t.Parallel()
+
+	extend := explainSingleOperation(t,
+		xdr.OperationBody{Type: xdr.OperationTypeExtendFootprintTtl, ExtendFootprintTtlOp: &xdr.ExtendFootprintTtlOp{ExtendTo: 1000}},
+		xdr.OperationResultTr{
+			Type:                     xdr.OperationTypeExtendFootprintTtl,
+			ExtendFootprintTtlResult: &xdr.ExtendFootprintTtlResult{Code: xdr.ExtendFootprintTtlResultCodeExtendFootprintTtlMalformed},
+		})
+	assertReasonContains(t, extend, false, "extendTo=1000", "read-write footprint must be empty")
+	if !strings.Contains(extend.Hint, "until RestoreFootprint brings them back") {
+		t.Errorf("Hint = %q, want guidance on archived entries", extend.Hint)
+	}
+
+	restore := explainSingleOperation(t,
+		xdr.OperationBody{Type: xdr.OperationTypeRestoreFootprint, RestoreFootprintOp: &xdr.RestoreFootprintOp{}},
+		xdr.OperationResultTr{
+			Type:                   xdr.OperationTypeRestoreFootprint,
+			RestoreFootprintResult: &xdr.RestoreFootprintResult{Code: xdr.RestoreFootprintResultCodeRestoreFootprintMalformed},
+		})
+	assertReasonContains(t, restore, false, "read-only footprint must be empty", "temporary entries can never be restored")
+	if !strings.Contains(restore.Hint, "ExtendFootprintTTL") {
+		t.Errorf("Hint = %q, want guidance on live entries", restore.Hint)
+	}
+}

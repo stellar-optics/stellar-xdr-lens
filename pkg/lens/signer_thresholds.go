@@ -108,3 +108,135 @@ func annotateAccountSignerThresholds(n *Node, v any) {
 		t.Note = note
 	}
 }
+
+// DiagnoseSetOptions explains a set_options operation from its own parameters.
+// A failed operation gets its deepened failure explanation plus any threshold
+// or lockout warnings; a successful one gets only the warnings, since both
+// problems are legal on-chain. The source account is not part of the operation,
+// so use DiagnoseSetOptionsFromSource to detect an account signing for itself.
+func DiagnoseSetOptions(op *xdr.SetOptionsOp, code xdr.SetOptionsResultCode) string {
+	return DiagnoseSetOptionsFromSource("", op, code)
+}
+
+// DiagnoseSetOptionsFromSource is DiagnoseSetOptions for a known source account
+// address. It returns an empty string for a nil operation, or for a successful
+// operation with nothing to warn about.
+func DiagnoseSetOptionsFromSource(source string, op *xdr.SetOptionsOp, code xdr.SetOptionsResultCode) string {
+	if op == nil {
+		return ""
+	}
+	r := ExplainCode(code.String())
+	if r.Success {
+		var warnings []string
+		for _, w := range setOptionsWarnings(*op) {
+			warnings = append(warnings, w.summary+" "+w.hint)
+		}
+		return strings.Join(warnings, " ")
+	}
+	return reasonDiagnosisText(deepenSetOptionsDiagnostics(source, *op, r))
+}
+
+// deepenSetOptionsDiagnostics extends the per-code set_options explanation with
+// the signer and threshold problems visible in the operation body.
+func deepenSetOptionsDiagnostics(source string, o xdr.SetOptionsOp, r Reason) Reason {
+	r = deepenSetOptionsFailure(source, o, r)
+	if r.Constant == "SetOptionsResultCodeSetOptionsBadSigner" && hasEmptySignedPayload(o) {
+		r.Summary = "the signed-payload signer carries an empty payload; a signed-payload signer must commit to at least one byte"
+		r.Hint = "Set a non-empty payload of up to 64 bytes on the signer key."
+	}
+	for _, w := range setOptionsWarnings(o) {
+		r.Summary = strings.TrimSpace(r.Summary + " " + w.summary)
+		r.Hint = strings.TrimSpace(r.Hint + " " + w.hint)
+	}
+	return r
+}
+
+// hasEmptySignedPayload reports whether the operation's signer is otherwise
+// in range but is a signed-payload key without a payload.
+func hasEmptySignedPayload(o xdr.SetOptionsOp) bool {
+	if o.Signer == nil || o.Signer.Weight > 255 {
+		return false
+	}
+	key := o.Signer.Key
+	return key.Type == xdr.SignerKeyTypeSignerKeyTypeEd25519SignedPayload &&
+		key.Ed25519SignedPayload != nil && len(key.Ed25519SignedPayload.Payload) == 0
+}
+
+// setOptionsWarning is a hazard in a set_options operation that the protocol
+// does not reject.
+type setOptionsWarning struct {
+	summary string
+	hint    string
+}
+
+// setOptionsWarnings collects the threshold ordering and master key lockout
+// hazards in an operation.
+func setOptionsWarnings(o xdr.SetOptionsOp) []setOptionsWarning {
+	var warnings []setOptionsWarning
+	if violations := thresholdOrderViolations(o); len(violations) > 0 {
+		warnings = append(warnings, setOptionsWarning{
+			summary: fmt.Sprintf(
+				"Threshold hierarchy violation: %s. The protocol accepts this ordering, but a higher tier then needs less signing weight than a lower one.",
+				strings.Join(violations, ", ")),
+			hint: "Keep low <= med <= high.",
+		})
+	}
+	if w, ok := masterLockoutWarning(o); ok {
+		warnings = append(warnings, w)
+	}
+	return warnings
+}
+
+// thresholdOrderViolations names each pair of thresholds set by the operation
+// that breaks low <= med <= high. Low and high are only compared directly when
+// the operation leaves med unset, because med otherwise reports the break.
+func thresholdOrderViolations(o xdr.SetOptionsOp) []string {
+	var violations []string
+	exceeds := func(aName string, a *xdr.Uint32, bName string, b *xdr.Uint32) {
+		if a != nil && b != nil && *a > *b {
+			violations = append(violations, fmt.Sprintf("%s=%d > %s=%d", aName, *a, bName, *b))
+		}
+	}
+	exceeds("low", o.LowThreshold, "med", o.MedThreshold)
+	exceeds("med", o.MedThreshold, "high", o.HighThreshold)
+	if o.MedThreshold == nil {
+		exceeds("low", o.LowThreshold, "high", o.HighThreshold)
+	}
+	return violations
+}
+
+// masterLockoutWarning detects an operation that disables the master key
+// without leaving enough signing weight behind. Changing signers needs the high
+// threshold, so an account that cannot reach it can never be repaired. Signers
+// already on the account are not visible in the operation, so the warning says
+// how much weight they would have to supply.
+func masterLockoutWarning(o xdr.SetOptionsOp) (setOptionsWarning, bool) {
+	if o.MasterWeight == nil || *o.MasterWeight != 0 {
+		return setOptionsWarning{}, false
+	}
+	var added uint32
+	if o.Signer != nil && o.Signer.Weight <= 255 {
+		added = uint32(o.Signer.Weight)
+	}
+	hint := "Add signers that reach the high threshold before setting the master weight to 0."
+	if o.HighThreshold == nil {
+		if added > 0 {
+			return setOptionsWarning{}, false
+		}
+		return setOptionsWarning{
+			summary: "Master key lockout risk: master=0 disables the master key and this operation adds no signer weight, so the account is locked unless its existing signers meet the high threshold.",
+			hint:    hint,
+		}, true
+	}
+	// Even a zero threshold needs one signature from a key with weight.
+	required := max(uint32(*o.HighThreshold), 1)
+	if added >= required {
+		return setOptionsWarning{}, false
+	}
+	return setOptionsWarning{
+		summary: fmt.Sprintf(
+			"Master key lockout risk: master=0 disables the master key and this operation provides signer weight %d against high=%d, so the account is locked unless its existing signers supply the remaining %d.",
+			added, *o.HighThreshold, required-added),
+		hint: hint,
+	}, true
+}

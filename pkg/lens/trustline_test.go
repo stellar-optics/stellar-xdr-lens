@@ -312,3 +312,108 @@ func TestTrustLineFlagsRendering(t *testing.T) {
 		})
 	}
 }
+
+func TestDiagnoseChangeTrustFailure(t *testing.T) {
+	t.Parallel()
+
+	const issuer = "GA2JRQOF6EA3HQWDCEDBPPMLYPJCFLDDGYZLEQGMS5SOBQIB3BAFHVAW"
+	usdc := xdr.MustNewCreditAsset("USDC", issuer).ToChangeTrustAsset()
+	pool := xdr.ChangeTrustAsset{Type: xdr.AssetTypeAssetTypePoolShare}
+	label := "USDC:" + issuer
+
+	tests := []struct {
+		name string
+		op   *xdr.ChangeTrustOp
+		code xdr.ChangeTrustResultCode
+		want string
+	}{
+		{
+			name: "removal with liabilities names offers and the remaining balance",
+			op:   &xdr.ChangeTrustOp{Line: usdc, Limit: 0},
+			code: xdr.ChangeTrustResultCodeChangeTrustInvalidLimit,
+			want: "Setting the " + label + " limit to 0 asks to remove the trustline, which is only possible once its balance and buying liabilities are zero; a trustline that does not exist cannot be removed either. " +
+				"Cancel open DEX offers for " + label + " to release their liabilities and send any remaining balance away (for example back to the issuer), then retry with limit 0. Claimable balances already created hold no liabilities on this trustline, so they do not block removal.",
+		},
+		{
+			name: "reduced limit states the minimum",
+			op:   &xdr.ChangeTrustOp{Line: usdc, Limit: 250000000},
+			code: xdr.ChangeTrustResultCodeChangeTrustInvalidLimit,
+			want: "The new " + label + " limit of 25.0000000 is below the trustline's minimum: its current balance plus the buying liabilities of open DEX offers. " +
+				"Set the limit to at least the balance plus buying liabilities, or cancel open buy offers and reduce the balance before lowering it.",
+		},
+		{
+			name: "low reserve computes one base reserve",
+			op:   &xdr.ChangeTrustOp{Line: usdc, Limit: 250000000},
+			code: xdr.ChangeTrustResultCodeChangeTrustLowReserve,
+			want: "Creating the " + label + " trustline adds one subentry, raising the account's minimum balance by 5000000 stroops (0.5 XLM) at the 0.5 XLM base reserve, and its available XLM cannot cover that. " +
+				"Make at least 5000000 stroops (0.5 XLM) available above the current minimum balance, free reserve by removing an unused offer, trustline, data entry or signer, or have another account sponsor the trustline.",
+		},
+		{
+			name: "low reserve counts a pool share trustline twice",
+			op:   &xdr.ChangeTrustOp{Line: pool, Limit: 250000000},
+			code: xdr.ChangeTrustResultCodeChangeTrustLowReserve,
+			want: "Creating the liquidity pool shares trustline adds two subentries, raising the account's minimum balance by 10000000 stroops (1 XLM) at the 0.5 XLM base reserve, and its available XLM cannot cover that. " +
+				"Make at least 10000000 stroops (1 XLM) available above the current minimum balance, free reserve by removing an unused offer, trustline, data entry or signer, or have another account sponsor the trustline.",
+		},
+		{
+			name: "other failures keep the generic explanation",
+			op:   &xdr.ChangeTrustOp{Line: usdc, Limit: 1},
+			code: xdr.ChangeTrustResultCodeChangeTrustSelfNotAllowed,
+			want: "An account cannot open a trustline to an asset it issues itself.",
+		},
+		{
+			name: "success has nothing to diagnose",
+			op:   &xdr.ChangeTrustOp{Line: usdc, Limit: 1},
+			code: xdr.ChangeTrustResultCodeChangeTrustSuccess,
+			want: "",
+		},
+		{
+			name: "nil operation has nothing to diagnose",
+			code: xdr.ChangeTrustResultCodeChangeTrustInvalidLimit,
+			want: "",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := lens.DiagnoseChangeTrustFailure(tc.op, tc.code); got != tc.want {
+				t.Errorf("DiagnoseChangeTrustFailure() =\n%q\nwant\n%q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestExplainPairDeepensChangeTrustFailures pins that the diagnosis survives
+// the whole explain path rather than being replaced by a later rewrite.
+func TestExplainPairDeepensChangeTrustFailures(t *testing.T) {
+	t.Parallel()
+
+	line := xdr.MustNewCreditAsset("USDC", "GA2JRQOF6EA3HQWDCEDBPPMLYPJCFLDDGYZLEQGMS5SOBQIB3BAFHVAW").ToChangeTrustAsset()
+
+	tests := []struct {
+		name  string
+		limit xdr.Int64
+		code  xdr.ChangeTrustResultCode
+		want  []string
+	}{
+		{"removal", 0, xdr.ChangeTrustResultCodeChangeTrustInvalidLimit, []string{"limit to 0", "buying liabilities"}},
+		{"reduction", 10000000, xdr.ChangeTrustResultCodeChangeTrustInvalidLimit, []string{"limit of 1.0000000", "buying liabilities"}},
+		{"low reserve", 10000000, xdr.ChangeTrustResultCodeChangeTrustLowReserve, []string{"5000000 stroops (0.5 XLM)"}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := explainSingleOperation(t,
+				xdr.OperationBody{Type: xdr.OperationTypeChangeTrust, ChangeTrustOp: &xdr.ChangeTrustOp{Line: line, Limit: tc.limit}},
+				xdr.OperationResultTr{Type: xdr.OperationTypeChangeTrust, ChangeTrustResult: &xdr.ChangeTrustResult{Code: tc.code}})
+			assertReasonContains(t, got, false, tc.want...)
+			if got.Hint == "" {
+				t.Error("Hint is empty, want a remediation")
+			}
+		})
+	}
+}
