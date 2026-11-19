@@ -77,6 +77,7 @@ pkg/lens/              the library; this is the reusable surface
   contract_executable.go contract executables: wasm hash, built-in token, external refs
   overlay.go           peer addresses, certificate keys, overlay message names
   tx_history.go        ledger-sequence field notes for history sets and batches
+  asset.go             strict SEP-11 asset string parsing and canonical formatting
   asset_types.go       asset details and Stellar Asset Contract id derivation
   validate.go          strict schema validation for JSON templates
   coerce.go            permissive type coercion & number parsing (stringified numbers, hex, assets)
@@ -477,6 +478,23 @@ So the walker does three things generically:
 3. **Renders byte sequences as hex.** A 32-byte hash is a hex string, not a
    list of 32 integers.
 
+### Scratch buffers
+
+Large ledger batches build many trees, so the walker reuses its temporary
+buffers through `sync.Pool`. A struct collects its children in a pooled slice
+and then copies them into an exactly sized one; byte sequences are hex-encoded
+in a pooled buffer. Lists and maps know their size up front and allocate once.
+
+A finished `Node` never refers to pooled memory, so trees stay safe to keep,
+share and mutate. Child buffers are cleared before they are returned, so the pool
+cannot keep a tree alive, and unusually large buffers are left to the garbage
+collector. `BenchmarkBuildNode` in
+[`node_test.go`](../pkg/lens/node_test.go) reports the walker's allocations:
+
+```sh
+go test ./pkg/lens -run '^$' -bench 'BenchmarkBuildNode' -benchmem
+```
+
 ### Robustness
 
 Generated XDR accessors dereference union arms without checking the
@@ -846,6 +864,12 @@ Two small APIs round out the library for tooling use:
   deterministic, offline, and different on every network. `DescribeAssetValue`
   does the same for an already-decoded `Value` and reports `ErrNotAsset` when
   the value is not an asset.
+- [`ParseAsset` and `FormatAsset`](../pkg/lens/asset.go) convert between
+  `xdr.Asset` and the SEP-11 strings `native` and `CODE:ISSUER`, with no network
+  access. Parsing is strict, so every accepted string formats back to itself,
+  and failures wrap `ErrMalformedAsset`. `FormatAsset` returns `""` for a value
+  with no canonical form rather than panicking on untrusted XDR. `CoerceAsset`
+  remains the permissive entry point for JSON templates.
 
 `ContractId` and `ScAddress` values anywhere in a decoded tree render as strkey
 addresses too, via enrichers registered in `asset_types.go` — a contract id
@@ -897,6 +921,15 @@ whose cause is provable from the operation's own parameters:
   and the permanence of `auth_immutable` behind `immutable_set`. Each mirrors
   the corresponding check in stellar-core's `MergeOpFrame::doApply`, in the
   same order core applies them.
+
+`payment` and `clawback` failures also carry a `Reason.Context` line built from
+the operation body. `DiagnosePaymentFailure` names the destination, asset, issuer
+and amount, and the step that unblocks the payment: `CreateAccount` for a missing
+destination, `ChangeTrust` for a missing trustline, `SetTrustLineFlagsOp` for an
+unauthorized one, and the trustline limit for `line_full`.
+`DiagnoseClawbackFailure` points at the issuer's `AUTH_CLAWBACK_ENABLED_FLAG`,
+which must be set before a trustline is opened, and at the rule that a claimable
+balance must have clawback enabled when it is created.
 
 It never touches `Code` or `Constant`, never invents ledger state, and a code
 it cannot pin down keeps the generic per-code text — a result explained

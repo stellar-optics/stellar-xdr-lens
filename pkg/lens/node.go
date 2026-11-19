@@ -1,12 +1,14 @@
 package lens
 
 import (
+	"bytes"
 	"encoding/hex"
 	"fmt"
 	"reflect"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 // Kind classifies a Node in the neutral tree.
@@ -136,6 +138,67 @@ func (n *Node) String() string {
 // pathological value producing an unbounded walk.
 const maxDepth = 200
 
+// Buffers larger than these limits are left to the garbage collector, so one
+// unusually wide struct or large WASM blob does not stay pinned in a pool.
+const (
+	maxPooledChildren = 256
+	maxPooledBytes    = 64 << 10
+)
+
+// childScratchPool and byteScratchPool hold the temporary buffers used while a
+// tree is built. Nothing reachable from a finished Node refers to them. They
+// store pointers so that returning a buffer does not itself allocate.
+var (
+	childScratchPool sync.Pool // of *[]*Node
+	byteScratchPool  sync.Pool // of *[]byte
+)
+
+// getChildScratch returns an empty buffer for collecting a node's children.
+func getChildScratch() *[]*Node {
+	if scratch, ok := childScratchPool.Get().(*[]*Node); ok {
+		return scratch
+	}
+	scratch := make([]*Node, 0, 32)
+	return &scratch
+}
+
+// releaseChildScratch copies children into an exactly sized slice and returns
+// the buffer to the pool. The buffer is cleared first so the pool never keeps a
+// finished tree alive. With no children the result is nil, as for a node that
+// was never appended to.
+func releaseChildScratch(scratch *[]*Node, children []*Node) []*Node {
+	var out []*Node
+	if len(children) > 0 {
+		out = make([]*Node, len(children))
+		copy(out, children)
+	}
+	if cap(children) > maxPooledChildren {
+		return out
+	}
+	clear(children)
+	*scratch = children[:0]
+	childScratchPool.Put(scratch)
+	return out
+}
+
+// getByteScratch returns an empty buffer for rendering a byte sequence.
+func getByteScratch() *[]byte {
+	if scratch, ok := byteScratchPool.Get().(*[]byte); ok {
+		return scratch
+	}
+	scratch := make([]byte, 0, 128)
+	return &scratch
+}
+
+// releaseByteScratch returns buf, which may have grown from scratch, to the pool.
+func releaseByteScratch(scratch *[]byte, buf []byte) {
+	if cap(buf) > maxPooledBytes {
+		return
+	}
+	*scratch = buf[:0]
+	byteScratchPool.Put(scratch)
+}
+
 // nodeHooks maps a concrete XDR type to a function that appends derived
 // children to its struct node once the declared fields have been walked. It is
 // the extension point for content that is not itself an XDR field but is
@@ -215,6 +278,8 @@ func buildNode(name string, rv reflect.Value, depth int) *Node {
 	case reflect.Struct:
 		n := &Node{Name: name, Kind: KindStruct, TypeName: typeName}
 		rt := rv.Type()
+		scratch := getChildScratch()
+		children := *scratch
 		for i := range rv.NumField() {
 			f := rt.Field(i)
 			if f.PkgPath != "" { // unexported
@@ -236,8 +301,9 @@ func buildNode(name string, rv reflect.Value, depth int) *Node {
 			if note, ok := noteForField(rt, f.Name, rv.Field(i)); ok {
 				child.Note = note
 			}
-			n.Children = append(n.Children, child)
+			children = append(children, child)
 		}
+		n.Children = releaseChildScratch(scratch, children)
 		runNodeHook(n, rv)
 		return n
 
@@ -245,22 +311,25 @@ func buildNode(name string, rv reflect.Value, depth int) *Node {
 		// Byte sequences are hashes, signatures and keys. Rendering them as
 		// a list of 32 integers is useless, so they become hex scalars.
 		if rv.Type().Elem().Kind() == reflect.Uint8 {
-			b := byteSlice(rv)
 			if rv.Kind() == reflect.Slice && rv.IsNil() {
 				return nil
 			}
+			value, note := renderByteSequence(rv)
 			return &Node{
 				Name:     name,
 				Kind:     KindScalar,
 				TypeName: typeName,
-				Value:    hex.EncodeToString(b),
-				Note:     printableASCII(b),
+				Value:    value,
+				Note:     note,
 			}
 		}
 		if rv.Kind() == reflect.Slice && rv.IsNil() {
 			return nil
 		}
 		n := &Node{Name: name, Kind: KindList, TypeName: typeName}
+		if rv.Len() > 0 {
+			n.Children = make([]*Node, 0, rv.Len())
+		}
 		for i := range rv.Len() {
 			child := buildNode("", rv.Index(i), depth+1)
 			if child == nil {
@@ -281,12 +350,18 @@ func buildNode(name string, rv reflect.Value, depth int) *Node {
 			}
 			return fmt.Sprintf("%T|%#v", keys[i].Interface(), keys[i].Interface()) < fmt.Sprintf("%T|%#v", keys[j].Interface(), keys[j].Interface())
 		})
+		if len(keys) > 0 {
+			n.Children = make([]*Node, 0, len(keys))
+		}
 		for _, k := range keys {
 			child := buildNode(fmt.Sprintf("%v", k), rv.MapIndex(k), depth+1)
 			if child == nil {
 				continue
 			}
 			n.Children = append(n.Children, child)
+		}
+		if len(n.Children) == 0 {
+			n.Children = nil
 		}
 		return n
 
@@ -310,17 +385,30 @@ func buildNode(name string, rv reflect.Value, depth int) *Node {
 	}
 }
 
-// byteSlice extracts bytes from a slice or array value without assuming the
-// value is addressable (arrays inside structs obtained by value are not).
-func byteSlice(rv reflect.Value) []byte {
+// renderByteSequence returns the hex form of a byte slice or array and its
+// printable note. Arrays are copied element by element because a value reached
+// through a struct obtained by value is not addressable. The copy and the hex
+// text share one pooled buffer, so only the returned strings are allocated.
+func renderByteSequence(rv reflect.Value) (value, note string) {
+	scratch := getByteScratch()
+	buf := *scratch
+
+	var raw []byte
 	if rv.Kind() == reflect.Slice {
-		return rv.Bytes()
+		raw = rv.Bytes()
+	} else {
+		for i := range rv.Len() {
+			buf = append(buf, byte(rv.Index(i).Uint()))
+		}
+		raw = buf
 	}
-	b := make([]byte, rv.Len())
-	for i := range rv.Len() {
-		b[i] = byte(rv.Index(i).Uint())
-	}
-	return b
+
+	start := len(buf)
+	buf = hex.AppendEncode(buf, raw)
+	value = string(buf[start:])
+	note = printableASCII(raw)
+	releaseByteScratch(scratch, buf)
+	return value, note
 }
 
 // printableASCII returns the string form of b when it is entirely printable
@@ -330,16 +418,16 @@ func printableASCII(b []byte) string {
 	if len(b) == 0 || len(b) > 64 {
 		return ""
 	}
-	trimmed := strings.TrimRight(string(b), "\x00")
-	if trimmed == "" {
+	trimmed := bytes.TrimRight(b, "\x00")
+	if len(trimmed) == 0 {
 		return ""
 	}
-	for _, r := range trimmed {
-		if r < 0x20 || r > 0x7e {
+	for _, c := range trimmed {
+		if c < 0x20 || c > 0x7e {
 			return ""
 		}
 	}
-	return strconv.Quote(trimmed)
+	return strconv.Quote(string(trimmed))
 }
 
 type pathSeg struct {
