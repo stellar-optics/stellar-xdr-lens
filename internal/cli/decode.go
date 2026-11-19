@@ -45,6 +45,7 @@ func newDecodeCmd(g *globalFlags, stdout io.Writer, stdin io.Reader) *cobra.Comm
 		rawFormat     string
 		accountFilter string
 		opTypeFilter  string
+		outputDir     string
 	)
 
 	cmd := &cobra.Command{
@@ -82,6 +83,20 @@ Use --interactive (or 'lens explore') for an interactive terminal tree viewer.`,
   echo "$XDR" | lens decode --depth 3`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if outputDir != "" {
+				if g.output != "" {
+					return fmt.Errorf("%w: --output-dir cannot be combined with --output", lens.ErrInvalidArgument)
+				}
+				if interactive {
+					return fmt.Errorf("%w: --output-dir cannot be combined with --interactive", lens.ErrInvalidArgument)
+				}
+			}
+
+			var dirSink *DirectoryOutputSink
+			if outputDir != "" {
+				dirSink = NewDirectoryOutputSink(outputDir, resolveOutputExt(asJSON, asYAML, asSummary, asTxRep, asCSV, formatName))
+			}
+
 			if batchPattern != "" {
 				if stream || isMulti {
 					return fmt.Errorf("%w: --batch cannot be combined with --stream or --multi", lens.ErrInvalidArgument)
@@ -98,7 +113,7 @@ Use --interactive (or 'lens explore') for an interactive terminal tree viewer.`,
 			}
 
 			if stream {
-				return runStream(stdout, g, firstArg(args), stdin, typeName, asJSON, compactOut, annotate, maxDepth, showTypes, canonical)
+				return runStream(stdout, g, firstArg(args), stdin, typeName, asJSON, compactOut, annotate, maxDepth, showTypes, canonical, dirSink)
 			}
 
 			if isMulti {
@@ -116,53 +131,53 @@ Use --interactive (or 'lens explore') for an interactive terminal tree viewer.`,
 					r = stdin
 				}
 
-				return runMultiStream(r, stdout, g, typeName, isHex, asJSON, asYAML, compactOut, annotate, maxDepth, showTypes)
+				return runMultiStream(r, stdout, g, typeName, isHex, asJSON, asYAML, compactOut, annotate, maxDepth, showTypes, dirSink)
 			}
 
 			// Helper to check if output format is tree (default)
 			isTreeFormat := !asJSON && formatName != "json" && !asYAML && !asCSV && formatName != "csv" && !asTxRep && formatName != "txrep" && !asSummary && formatName != "summary" && formatName != "html" && formatName != "mermaid"
 
-			render := func(w io.Writer, payload string) error {
+			render := func(w io.Writer, payload string) (string, error) {
 				if isHex || strings.HasPrefix(payload, "0x") || strings.HasPrefix(payload, "0X") {
 					b64, convErr := lens.HexToBase64(payload)
 					if convErr == nil {
 						payload = b64
 					} else if isHex {
-						return fmt.Errorf("decoding hex input: %w", convErr)
+						return "", fmt.Errorf("decoding hex input: %w", convErr)
 					}
 				}
 
 				if canonical {
 					raw, decErr := base64.StdEncoding.DecodeString(payload)
 					if decErr != nil {
-						return fmt.Errorf("decoding base64: %w", decErr)
+						return "", fmt.Errorf("decoding base64: %w", decErr)
 					}
 					if typeName != "" {
 						if err := lens.ValidateTypeCanonicalXDR(raw, typeName); err != nil {
-							return fmt.Errorf("canonical validation failed: %w", err)
+							return "", fmt.Errorf("canonical validation failed: %w", err)
 						}
 					} else {
 						if err := lens.ValidateCanonicalXDR(raw); err != nil {
-							return fmt.Errorf("canonical validation failed: %w", err)
+							return "", fmt.Errorf("canonical validation failed: %w", err)
 						}
 					}
 				}
 
 				if listCands {
-					return runCandidates(w, payload)
+					return "candidates", runCandidates(w, payload)
 				}
 
 				value, err := decodeValue(payload, typeName)
 				if err != nil {
 					if inspectWASM {
 						// Attempt direct WASM decode from payload
-						return runDirectWASM(w, payload, asJSON)
+						return "wasm", runDirectWASM(w, payload, asJSON)
 					}
-					return err
+					return "", err
 				}
 
 				if inspectWASM {
-					return runInspectWASM(w, value, payload, asJSON)
+					return value.Type, runInspectWASM(w, value, payload, asJSON)
 				}
 
 				// Apply --select / --query path selection
@@ -170,7 +185,7 @@ Use --interactive (or 'lens explore') for an interactive terminal tree viewer.`,
 				if selectPath != "" {
 					selectedNode = value.Node.Find(selectPath)
 					if selectedNode == nil {
-						return fmt.Errorf("path %q not found in decoded tree", selectPath)
+						return "", fmt.Errorf("path %q not found in decoded tree", selectPath)
 					}
 					// Create a new value with just the selected node
 					value = &lens.Value{
@@ -182,23 +197,23 @@ Use --interactive (or 'lens explore') for an interactive terminal tree viewer.`,
 
 				// Handle --raw output (must come before scalar node check)
 				if rawOutput {
-					return handleRawOutput(w, value, selectedNode, rawFormat)
+					return value.Type, handleRawOutput(w, value, selectedNode, rawFormat)
 				}
 
 				// If a scalar node was selected and we're using tree format, print it directly
 				if selectPath != "" && value.Node.Kind == lens.KindScalar && isTreeFormat {
 					palette, err := paletteForOutput(w, g.color)
 					if err != nil {
-						return err
+						return "", err
 					}
-					return writeScalarNode(w, value.Node, palette)
+					return value.Type, writeScalarNode(w, value.Node, palette)
 				}
 
 				// Apply --account filter
 				if accountFilter != "" {
 					value.Node = lens.FilterByAccount(value.Node, accountFilter)
 					if value.Node == nil || (value.Node.Kind == lens.KindStruct && len(value.Node.Children) == 0) {
-						return fmt.Errorf("no nodes found matching account %q", accountFilter)
+						return "", fmt.Errorf("no nodes found matching account %q", accountFilter)
 					}
 				}
 
@@ -206,14 +221,14 @@ Use --interactive (or 'lens explore') for an interactive terminal tree viewer.`,
 				if opTypeFilter != "" {
 					value.Node = lens.FilterByOpType(value.Node, opTypeFilter)
 					if value.Node == nil || (value.Node.Kind == lens.KindStruct && len(value.Node.Children) == 0) {
-						return fmt.Errorf("no operations found matching type %q", opTypeFilter)
+						return "", fmt.Errorf("no operations found matching type %q", opTypeFilter)
 					}
 				}
 
 				if specPath != "" {
 					spec, err := lens.LoadContractSpecFile(specPath)
 					if err != nil {
-						return fmt.Errorf("loading contract spec: %w", err)
+						return "", fmt.Errorf("loading contract spec: %w", err)
 					}
 					spec.ApplyToValue(value)
 				}
@@ -221,58 +236,58 @@ Use --interactive (or 'lens explore') for an interactive terminal tree viewer.`,
 				if interactive {
 					palette, err := paletteForOutput(w, g.color)
 					if err != nil {
-						return err
+						return "", err
 					}
 					tui := NewTUITree(value, stdin, w, palette)
-					return tui.Run()
+					return value.Type, tui.Run()
 				}
 
 				if asYAML {
 					yamlBytes, err := lens.ValueToYAML(value, annotate)
 					if err != nil {
-						return fmt.Errorf("formatting YAML: %w", err)
+						return "", fmt.Errorf("formatting YAML: %w", err)
 					}
 					_, err = w.Write(yamlBytes)
-					return err
+					return value.Type, err
 				}
 
 				if asSummary || formatName == "summary" {
 					palette, err := paletteForOutput(w, g.color)
 					if err != nil {
-						return err
+						return "", err
 					}
 					f := format.NewCompactFormatter(
 						format.WithCompactPalette(palette),
 					)
-					return f.Format(w, value)
+					return value.Type, f.Format(w, value)
 				}
 
 				if asTxRep || formatName == "txrep" {
 					palette, err := paletteForOutput(w, g.color)
 					if err != nil {
-						return err
+						return "", err
 					}
 					f := format.NewTxRepFormatter(
 						format.WithTxRepPalette(palette),
 						format.WithTxRepNetwork(network),
 					)
-					return f.Format(w, value)
+					return value.Type, f.Format(w, value)
 				}
 
 				if asCSV || formatName == "csv" {
-					return format.NewCSVFormatter().Format(w, value)
+					return value.Type, format.NewCSVFormatter().Format(w, value)
 				}
 
 				if formatName == "html" {
-					return format.NewHTMLFormatter().Format(w, value)
+					return value.Type, format.NewHTMLFormatter().Format(w, value)
 				}
 
 				if formatName == "mermaid" {
-					return format.NewMermaidFormatter().Format(w, value)
+					return value.Type, format.NewMermaidFormatter().Format(w, value)
 				}
 
 				if formatName == "junit" {
-					return format.NewJUnitFormatter().Format(w, value)
+					return value.Type, format.NewJUnitFormatter().Format(w, value)
 				}
 
 				if asJSON || formatName == "json" {
@@ -284,30 +299,40 @@ Use --interactive (or 'lens explore') for an interactive terminal tree viewer.`,
 						format.WithIndent(indent),
 						format.WithAnnotations(annotate),
 					)
-					return f.Format(w, value)
+					return value.Type, f.Format(w, value)
 				}
 
 				palette, err := paletteForOutput(w, g.color)
 				if err != nil {
-					return err
+					return "", err
 				}
 				f := format.NewTreeFormatter(
 					format.WithPalette(palette),
 					format.WithMaxDepth(maxDepth),
 					format.WithTypeNames(showTypes),
 				)
-				return f.Format(w, value)
+				return value.Type, f.Format(w, value)
 			}
 
 			if batchPattern != "" {
-				return runBatchDecode(stdout, batchPattern, render)
+				return runBatchDecode(stdout, batchPattern, dirSink, render)
 			}
 
 			payload, err := resolveInput(firstArg(args), g.file, stdin)
 			if err != nil {
 				return err
 			}
-			return render(stdout, payload)
+			if dirSink != nil {
+				var buf bytes.Buffer
+				decodedType, err := render(&buf, payload)
+				if err != nil {
+					return err
+				}
+				_, err = dirSink.WriteElement(0, decodedType, buf.Bytes())
+				return err
+			}
+			_, err = render(stdout, payload)
+			return err
 		},
 	}
 
@@ -340,8 +365,32 @@ Use --interactive (or 'lens explore') for an interactive terminal tree viewer.`,
 	cmd.Flags().StringVar(&rawFormat, "raw-format", "auto", `raw output format: "auto", "base64", "hex", or "raw" (raw bytes)`)
 	cmd.Flags().StringVar(&accountFilter, "account", "", "filter tree to only show nodes involving this account strkey (G...)")
 	cmd.Flags().StringVar(&opTypeFilter, "op-type", "", "filter operations by type (e.g., payment, invoke_host_function)")
+	cmd.Flags().StringVar(&outputDir, "output-dir", "", "write each decoded element to a separate file (<index>_<type>.<format>) in this directory")
 
 	return cmd
+}
+
+func resolveOutputExt(asJSON, asYAML, asSummary, asTxRep, asCSV bool, formatName string) string {
+	switch {
+	case asYAML:
+		return "yaml"
+	case asSummary || formatName == "summary":
+		return "summary"
+	case asTxRep || formatName == "txrep":
+		return "txrep"
+	case asCSV || formatName == "csv":
+		return "csv"
+	case formatName == "html":
+		return "html"
+	case formatName == "mermaid":
+		return "mermaid"
+	case formatName == "junit":
+		return "junit"
+	case asJSON || formatName == "json":
+		return "json"
+	default:
+		return "txt"
+	}
 }
 
 func newExploreCmd(g *globalFlags, stdout io.Writer, stdin io.Reader) *cobra.Command {
@@ -401,18 +450,26 @@ Use arrow keys or j/k to navigate, Enter or Space to toggle node expansion,
 // runBatchDecode processes files sequentially, buffering each file's output so
 // a failure cannot leave a half-written report under a filename header. Every
 // file gets a header; failures are listed both in place and in an aggregated
-// summary returned as an error.
-func runBatchDecode(stdout io.Writer, pattern string, render func(io.Writer, string) error) error {
+// summary returned as an error. When dirSink is non-nil, each decoded element
+// is written to its own file inside the target directory.
+func runBatchDecode(stdout io.Writer, pattern string, dirSink *DirectoryOutputSink, render func(io.Writer, string) (string, error)) error {
 	files, err := resolveBatchFiles(pattern)
 	if err != nil {
 		return err
 	}
+	if dirSink != nil {
+		if err := dirSink.EnsureDir(); err != nil {
+			return err
+		}
+	}
 
 	failures := make([]batchFailure, 0)
 	succeeded := 0
-	for _, path := range files {
-		if _, err := fmt.Fprintf(stdout, "=== %s ===\n", path); err != nil {
-			return fmt.Errorf("writing batch header: %w", err)
+	for i, path := range files {
+		if dirSink == nil {
+			if _, err := fmt.Fprintf(stdout, "=== %s ===\n", path); err != nil {
+				return fmt.Errorf("writing batch header: %w", err)
+			}
 		}
 
 		data, readErr := os.ReadFile(path)
@@ -429,7 +486,8 @@ func runBatchDecode(stdout io.Writer, pattern string, render func(io.Writer, str
 		}
 
 		var buf bytes.Buffer
-		if err := render(&buf, payload); err != nil {
+		decodedType, err := render(&buf, payload)
+		if err != nil {
 			failures = append(failures, batchFailure{path: path, err: err})
 			if _, err := fmt.Fprintf(stdout, "error: %v\n\n", err); err != nil {
 				return fmt.Errorf("writing batch error: %w", err)
@@ -438,6 +496,14 @@ func runBatchDecode(stdout io.Writer, pattern string, render func(io.Writer, str
 		}
 
 		body := buf.Bytes()
+		if dirSink != nil {
+			if _, err := dirSink.WriteElement(i, decodedType, body); err != nil {
+				return err
+			}
+			succeeded++
+			continue
+		}
+
 		if _, err := stdout.Write(body); err != nil {
 			return fmt.Errorf("writing batch output: %w", err)
 		}
@@ -470,7 +536,7 @@ func runBatchDecode(stdout io.Writer, pattern string, render func(io.Writer, str
 	return nil
 }
 
-func runStream(stdout io.Writer, g *globalFlags, arg string, stdin io.Reader, typeName string, asJSON, compactOut, annotate bool, maxDepth int, showTypes, canonical bool) error {
+func runStream(stdout io.Writer, g *globalFlags, arg string, stdin io.Reader, typeName string, asJSON, compactOut, annotate bool, maxDepth int, showTypes, canonical bool, dirSink *DirectoryOutputSink) error {
 	var r io.Reader
 	if g.file != "" {
 		f, err := os.Open(g.file)
@@ -485,6 +551,12 @@ func runStream(stdout io.Writer, g *globalFlags, arg string, stdin io.Reader, ty
 		r = stdin
 	}
 
+	if dirSink != nil {
+		if err := dirSink.EnsureDir(); err != nil {
+			return err
+		}
+	}
+
 	parser := lens.NewStreamParser(r)
 	for {
 		raw, err := parser.Next()
@@ -495,14 +567,15 @@ func runStream(stdout io.Writer, g *globalFlags, arg string, stdin io.Reader, ty
 			return err
 		}
 
+		idx := int(parser.ChunkIndex() - 1)
 		if canonical {
 			if typeName != "" {
 				if err := lens.ValidateTypeCanonicalXDR(raw, typeName); err != nil {
-					return fmt.Errorf("chunk [%d] canonical error: %w", parser.ChunkIndex()-1, err)
+					return fmt.Errorf("chunk [%d] canonical error: %w", idx, err)
 				}
 			} else {
 				if err := lens.ValidateCanonicalXDR(raw); err != nil {
-					return fmt.Errorf("chunk [%d] canonical error: %w", parser.ChunkIndex()-1, err)
+					return fmt.Errorf("chunk [%d] canonical error: %w", idx, err)
 				}
 			}
 		}
@@ -510,7 +583,13 @@ func runStream(stdout io.Writer, g *globalFlags, arg string, stdin io.Reader, ty
 		b64 := base64.StdEncoding.EncodeToString(raw)
 		val, err := decodeValue(b64, typeName)
 		if err != nil {
-			return fmt.Errorf("chunk [%d]: %w", parser.ChunkIndex()-1, err)
+			return fmt.Errorf("chunk [%d]: %w", idx, err)
+		}
+
+		var buf bytes.Buffer
+		target := stdout
+		if dirSink != nil {
+			target = &buf
 		}
 
 		if asJSON {
@@ -522,19 +601,24 @@ func runStream(stdout io.Writer, g *globalFlags, arg string, stdin io.Reader, ty
 				format.WithIndent(indent),
 				format.WithAnnotations(annotate),
 			)
-			if err := f.Format(stdout, val); err != nil {
+			if err := f.Format(target, val); err != nil {
 				return err
 			}
-			continue
+		} else {
+			f := format.NewTreeFormatter(
+				format.WithPalette(format.PaletteFor(target, g.color)),
+				format.WithMaxDepth(maxDepth),
+				format.WithTypeNames(showTypes),
+			)
+			if err := f.Format(target, val); err != nil {
+				return err
+			}
 		}
 
-		f := format.NewTreeFormatter(
-			format.WithPalette(format.PaletteFor(stdout, g.color)),
-			format.WithMaxDepth(maxDepth),
-			format.WithTypeNames(showTypes),
-		)
-		if err := f.Format(stdout, val); err != nil {
-			return err
+		if dirSink != nil {
+			if _, err := dirSink.WriteElement(idx, val.Type, buf.Bytes()); err != nil {
+				return err
+			}
 		}
 	}
 }
@@ -556,7 +640,7 @@ func decodeValue(payload, typeName string) (*lens.Value, error) {
 }
 
 // runMultiStream decodes and formats multiple concatenated records.
-func runMultiStream(r io.Reader, stdout io.Writer, g *globalFlags, typeName string, isHex, asJSON, asYAML, compactOut, annotate bool, maxDepth int, showTypes bool) error {
+func runMultiStream(r io.Reader, stdout io.Writer, g *globalFlags, typeName string, isHex, asJSON, asYAML, compactOut, annotate bool, maxDepth int, showTypes bool, dirSink *DirectoryOutputSink) error {
 	opts := []lens.MultiStreamOption{
 		lens.WithMultiStreamHex(isHex),
 		lens.WithMultiStreamStopOnError(true),
@@ -569,6 +653,47 @@ func runMultiStream(r io.Reader, stdout io.Writer, g *globalFlags, typeName stri
 	records, err := decoder.DecodeAll()
 	if err != nil {
 		return err
+	}
+
+	if dirSink != nil {
+		if err := dirSink.EnsureDir(); err != nil {
+			return err
+		}
+		for _, rec := range records {
+			var buf bytes.Buffer
+			switch {
+			case asYAML:
+				y, err := lens.ValueToYAML(rec.Value, annotate)
+				if err != nil {
+					return err
+				}
+				if _, err := buf.Write(y); err != nil {
+					return err
+				}
+			case asJSON:
+				indent := "  "
+				if compactOut {
+					indent = ""
+				}
+				f := format.NewJSONFormatter(format.WithIndent(indent), format.WithAnnotations(annotate))
+				if err := f.Format(&buf, rec.Value); err != nil {
+					return err
+				}
+			default:
+				tf := format.NewTreeFormatter(
+					format.WithPalette(format.PaletteFor(&buf, g.color)),
+					format.WithMaxDepth(maxDepth),
+					format.WithTypeNames(showTypes),
+				)
+				if err := tf.Format(&buf, rec.Value); err != nil {
+					return err
+				}
+			}
+			if _, err := dirSink.WriteElement(rec.Index, rec.Value.Type, buf.Bytes()); err != nil {
+				return err
+			}
+		}
+		return nil
 	}
 
 	if asYAML {
