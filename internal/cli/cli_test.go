@@ -1316,3 +1316,115 @@ func TestDecodeOpTypeFilter(t *testing.T) {
 		})
 	}
 }
+
+func TestDecodeOutputDir(t *testing.T) {
+	t.Parallel()
+
+	envXDR := fixture(t, "tx_success.env")
+	resXDR := fixture(t, "tx_failed.res")
+
+	t.Run("batch_creates_dir_and_writes_individual_json_files", func(t *testing.T) {
+		t.Parallel()
+
+		inDir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(inDir, "01_env.txt"), []byte(envXDR+"\n"), 0o644); err != nil {
+			t.Fatalf("writing fixture 1: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(inDir, "02_res.txt"), []byte(resXDR+"\n"), 0o644); err != nil {
+			t.Fatalf("writing fixture 2: %v", err)
+		}
+
+		outDir := filepath.Join(t.TempDir(), "nested", "out")
+		stdout, _, err := run(t, "", "decode", "--batch", inDir, "--json", "--output-dir", outDir)
+		if err != nil {
+			t.Fatalf("decode --batch --output-dir error = %v", err)
+		}
+		if !strings.Contains(stdout, "Batch summary: 2 file(s) processed, all succeeded") {
+			t.Errorf("unexpected stdout:\n%s", stdout)
+		}
+
+		wantFiles := []struct {
+			name     string
+			wantType string
+		}{
+			{name: "0_TransactionEnvelope.json", wantType: "TransactionEnvelope"},
+			{name: "1_TransactionResult.json", wantType: "TransactionResult"},
+		}
+		for _, wf := range wantFiles {
+			data, readErr := os.ReadFile(filepath.Join(outDir, wf.name))
+			if readErr != nil {
+				t.Fatalf("expected file %s: %v", wf.name, readErr)
+			}
+			var doc struct {
+				Type string `json:"type"`
+			}
+			if err := json.Unmarshal(data, &doc); err != nil {
+				t.Fatalf("file %s is not valid JSON: %v\n%s", wf.name, err, string(data))
+			}
+			if doc.Type != wf.wantType {
+				t.Errorf("file %s type = %q, want %q", wf.name, doc.Type, wf.wantType)
+			}
+		}
+	})
+
+	t.Run("multi_stream_writes_separate_files", func(t *testing.T) {
+		t.Parallel()
+
+		outDir := filepath.Join(t.TempDir(), "multi_out")
+		input := envXDR + "\n" + resXDR + "\n"
+		_, _, err := run(t, input, "decode", "--multi", "--json", "--output-dir", outDir)
+		if err != nil {
+			t.Fatalf("decode --multi --output-dir error = %v", err)
+		}
+
+		for _, name := range []string{"0_TransactionEnvelope.json", "1_TransactionResult.json"} {
+			data, readErr := os.ReadFile(filepath.Join(outDir, name))
+			if readErr != nil {
+				t.Fatalf("expected file %s: %v", name, readErr)
+			}
+			if !json.Valid(data) {
+				t.Errorf("file %s does not contain valid JSON", name)
+			}
+		}
+	})
+
+	t.Run("stream_writes_separate_files", func(t *testing.T) {
+		t.Parallel()
+
+		outDir := filepath.Join(t.TempDir(), "stream_out")
+		input := envXDR + "\n" + resXDR + "\n"
+		_, _, err := run(t, input, "decode", "--stream", "--output-dir", outDir)
+		if err != nil {
+			t.Fatalf("decode --stream --output-dir error = %v", err)
+		}
+
+		first, err := os.ReadFile(filepath.Join(outDir, "0_TransactionEnvelope.txt"))
+		if err != nil {
+			t.Fatalf("expected 0_TransactionEnvelope.txt: %v", err)
+		}
+		if !strings.Contains(string(first), "TransactionEnvelope") {
+			t.Errorf("0_TransactionEnvelope.txt missing type header:\n%s", string(first))
+		}
+
+		second, err := os.ReadFile(filepath.Join(outDir, "1_TransactionResult.txt"))
+		if err != nil {
+			t.Fatalf("expected 1_TransactionResult.txt: %v", err)
+		}
+		if !strings.Contains(string(second), "TransactionResult") {
+			t.Errorf("1_TransactionResult.txt missing type header:\n%s", string(second))
+		}
+	})
+
+	t.Run("rejects_combining_output_and_output_dir", func(t *testing.T) {
+		t.Parallel()
+
+		dir := t.TempDir()
+		_, _, err := run(t, "", "decode", "--output", filepath.Join(dir, "out.txt"), "--output-dir", filepath.Join(dir, "dir"), envXDR)
+		if err == nil {
+			t.Fatal("expected error when combining --output and --output-dir")
+		}
+		if !errors.Is(err, lens.ErrInvalidArgument) {
+			t.Errorf("error = %v, want ErrInvalidArgument", err)
+		}
+	})
+}

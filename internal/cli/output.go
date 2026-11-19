@@ -123,3 +123,101 @@ func (s *outputSink) discard() {
 		s.tempPath = ""
 	}
 }
+
+// DirectoryOutputSink writes each decoded element to its own file inside a
+// target directory, named <index>_<type>.<format>. The directory is created
+// automatically if it does not yet exist.
+type DirectoryOutputSink struct {
+	dir     string
+	format  string
+	created bool
+}
+
+// NewDirectoryOutputSink constructs a DirectoryOutputSink targeting dir with
+// the given format file extension (defaulting to "txt" when empty).
+func NewDirectoryOutputSink(dir, format string) *DirectoryOutputSink {
+	ext := sanitizeFileToken(format)
+	if ext == "" {
+		ext = "txt"
+	}
+	return &DirectoryOutputSink{
+		dir:    dir,
+		format: ext,
+	}
+}
+
+// EnsureDir creates the target directory and any missing parents if they do
+// not already exist.
+func (d *DirectoryOutputSink) EnsureDir() error {
+	if d.created {
+		return nil
+	}
+	if err := os.MkdirAll(d.dir, 0o755); err != nil {
+		return fmt.Errorf("creating output directory %s: %w", d.dir, err)
+	}
+	d.created = true
+	return nil
+}
+
+// WriteElement atomically writes content for the element at index with the
+// given XDR type name to <dir>/<index>_<type>.<format>, returning the path.
+func (d *DirectoryOutputSink) WriteElement(index int, typeName string, content []byte) (string, error) {
+	if err := d.EnsureDir(); err != nil {
+		return "", err
+	}
+	safeType := sanitizeFileToken(typeName)
+	if safeType == "" {
+		safeType = "unknown"
+	}
+	filename := fmt.Sprintf("%d_%s.%s", index, safeType, d.format)
+	finalPath := filepath.Join(d.dir, filename)
+
+	tmp, err := os.CreateTemp(d.dir, "."+filename+".tmp-*")
+	if err != nil {
+		return "", fmt.Errorf("creating output file %s: %w", finalPath, err)
+	}
+	tmpPath := tmp.Name()
+	cleanup := func() {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+	}
+
+	if _, err := tmp.Write(content); err != nil {
+		cleanup()
+		return "", fmt.Errorf("writing %s: %w", finalPath, err)
+	}
+	if err := tmp.Sync(); err != nil {
+		cleanup()
+		return "", fmt.Errorf("writing %s: %w", finalPath, err)
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return "", fmt.Errorf("writing %s: %w", finalPath, err)
+	}
+	if err := os.Chmod(tmpPath, 0o644); err != nil {
+		_ = os.Remove(tmpPath)
+		return "", fmt.Errorf("setting permissions on %s: %w", finalPath, err)
+	}
+	if err := os.Rename(tmpPath, finalPath); err != nil {
+		_ = os.Remove(tmpPath)
+		return "", fmt.Errorf("replacing %s: %w", finalPath, err)
+	}
+	return finalPath, nil
+}
+
+func sanitizeFileToken(s string) string {
+	if s == "" {
+		return ""
+	}
+	buf := make([]byte, 0, len(s))
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		isAlphaNum := (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
+		if isAlphaNum || c == '-' || c == '_' {
+			buf = append(buf, c)
+		} else {
+			buf = append(buf, '_')
+		}
+	}
+	return string(buf)
+}
