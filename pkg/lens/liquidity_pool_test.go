@@ -229,3 +229,260 @@ func TestLiquidityPoolEntryExplainNotSupported(t *testing.T) {
 		t.Errorf("Explain() error = %v, want 'cannot explain'", err)
 	}
 }
+
+func TestDiagnosePoolDeposit(t *testing.T) {
+	t.Parallel()
+
+	deposit := func(a, b xdr.Int64, minPrice, maxPrice xdr.Price) *xdr.LiquidityPoolDepositOp {
+		return &xdr.LiquidityPoolDepositOp{
+			LiquidityPoolId: testPoolID,
+			MaxAmountA:      a,
+			MaxAmountB:      b,
+			MinPrice:        minPrice,
+			MaxPrice:        maxPrice,
+		}
+	}
+	const (
+		malformed = xdr.LiquidityPoolDepositResultCodeLiquidityPoolDepositMalformed
+		badPrice  = xdr.LiquidityPoolDepositResultCodeLiquidityPoolDepositBadPrice
+		poolFull  = xdr.LiquidityPoolDepositResultCodeLiquidityPoolDepositPoolFull
+	)
+
+	tests := []struct {
+		name    string
+		op      *xdr.LiquidityPoolDepositOp
+		code    xdr.LiquidityPoolDepositResultCode
+		want    []string
+		notWant []string
+	}{
+		{
+			name: "implied price below minPrice",
+			op:   deposit(10000000, 40000000, xdr.Price{N: 1, D: 2}, xdr.Price{N: 2, D: 1}),
+			code: badPrice,
+			want: []string{"1/4 (≈0.2500000)", "below minPrice 1/2 (≈0.5000000)", "price ratio drift"},
+		},
+		{
+			name: "implied price above maxPrice",
+			op:   deposit(40000000, 10000000, xdr.Price{N: 1, D: 2}, xdr.Price{N: 2, D: 1}),
+			code: badPrice,
+			want: []string{"4/1 (≈4.0000000)", "above maxPrice 2/1 (≈2.0000000)", "price ratio drift"},
+		},
+		{
+			name:    "implied price on the minPrice boundary is inside the window",
+			op:      deposit(10000000, 20000000, xdr.Price{N: 1, D: 2}, xdr.Price{N: 2, D: 1}),
+			code:    badPrice,
+			want:    []string{"1/2 (≈0.5000000)", "inside the window", "reserve ratio drifted"},
+			notWant: []string{"below minPrice"},
+		},
+		{
+			name:    "implied price on the maxPrice boundary is inside the window",
+			op:      deposit(20000000, 10000000, xdr.Price{N: 1, D: 2}, xdr.Price{N: 2, D: 1}),
+			code:    badPrice,
+			want:    []string{"2/1 (≈2.0000000)", "inside the window"},
+			notWant: []string{"above maxPrice"},
+		},
+		{
+			name: "comparison stays exact where rounding would hide the breach",
+			op:   deposit(1000000001, 1000000000, xdr.Price{N: 1, D: 1}, xdr.Price{N: 1, D: 1}),
+			code: badPrice,
+			want: []string{"1000000001/1000000000", "above maxPrice 1/1"},
+		},
+		{
+			name: "extreme amounts and bounds do not overflow",
+			op:   deposit(9223372036854775807, 1, xdr.Price{N: 1, D: 2147483647}, xdr.Price{N: 2147483647, D: 1}),
+			code: badPrice,
+			want: []string{"9223372036854775807/1", "above maxPrice 2147483647/1"},
+		},
+		{
+			name: "bad price with an empty window defers to malformed",
+			op:   deposit(10000000, 10000000, xdr.Price{N: 2, D: 1}, xdr.Price{N: 1, D: 2}),
+			code: badPrice,
+		},
+		{
+			name: "bad price with a zero amount does not divide by zero",
+			op:   deposit(10000000, 0, xdr.Price{N: 1, D: 2}, xdr.Price{N: 2, D: 1}),
+			code: badPrice,
+		},
+		{
+			name: "malformed names the violated boundary",
+			op:   deposit(10000000, 10000000, xdr.Price{N: 2, D: 1}, xdr.Price{N: 1, D: 2}),
+			code: malformed,
+			want: []string{"boundary rule", "minPrice 2/1 exceeds maxPrice 1/2"},
+		},
+		{
+			name: "malformed without a provable cause says nothing",
+			op:   deposit(10000000, 10000000, xdr.Price{N: 1, D: 2}, xdr.Price{N: 2, D: 1}),
+			code: malformed,
+		},
+		{
+			name: "pool full names the amounts and the protocol maximum",
+			op:   deposit(10000000, 20000000, xdr.Price{N: 1, D: 2}, xdr.Price{N: 2, D: 1}),
+			code: poolFull,
+			want: []string{"1.0000000", "2.0000000", "2^63-1"},
+		},
+		{
+			name: "unrelated code says nothing",
+			op:   deposit(10000000, 20000000, xdr.Price{N: 1, D: 2}, xdr.Price{N: 2, D: 1}),
+			code: xdr.LiquidityPoolDepositResultCodeLiquidityPoolDepositNoTrust,
+		},
+		{
+			name: "nil operation says nothing",
+			code: badPrice,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := lens.DiagnosePoolDeposit(tc.op, tc.code)
+			if len(tc.want) == 0 && got != "" {
+				t.Fatalf("DiagnosePoolDeposit() = %q, want empty", got)
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(got, want) {
+					t.Errorf("DiagnosePoolDeposit() = %q, want it to contain %q", got, want)
+				}
+			}
+			for _, notWant := range tc.notWant {
+				if strings.Contains(got, notWant) {
+					t.Errorf("DiagnosePoolDeposit() = %q, must not contain %q", got, notWant)
+				}
+			}
+		})
+	}
+}
+
+func TestDiagnosePoolWithdraw(t *testing.T) {
+	t.Parallel()
+
+	valid := &xdr.LiquidityPoolWithdrawOp{
+		LiquidityPoolId: testPoolID,
+		Amount:          100000000,
+		MinAmountA:      5000000,
+		MinAmountB:      7000000,
+	}
+
+	tests := []struct {
+		name string
+		op   *xdr.LiquidityPoolWithdrawOp
+		code xdr.LiquidityPoolWithdrawResultCode
+		want []string
+	}{
+		{
+			name: "under minimum states the burn, both minimums and the remedy",
+			op:   valid,
+			code: xdr.LiquidityPoolWithdrawResultCodeLiquidityPoolWithdrawUnderMinimum,
+			want: []string{
+				"10.0000000 pool shares", "0.5000000 of asset A", "0.7000000 of asset B",
+				"slippage tolerance", "check the pool balance",
+			},
+		},
+		{
+			name: "underfunded states the share burn",
+			op:   valid,
+			code: xdr.LiquidityPoolWithdrawResultCodeLiquidityPoolWithdrawUnderfunded,
+			want: []string{"10.0000000 pool shares", "pool-share trustline"},
+		},
+		{
+			name: "malformed flags a non-positive burn",
+			op:   &xdr.LiquidityPoolWithdrawOp{LiquidityPoolId: testPoolID, MinAmountA: 1, MinAmountB: 1},
+			code: xdr.LiquidityPoolWithdrawResultCodeLiquidityPoolWithdrawMalformed,
+			want: []string{"0.0000000 pool shares", "must be positive"},
+		},
+		{
+			name: "malformed flags a negative minimum",
+			op:   &xdr.LiquidityPoolWithdrawOp{LiquidityPoolId: testPoolID, Amount: 1, MinAmountB: -1},
+			code: xdr.LiquidityPoolWithdrawResultCodeLiquidityPoolWithdrawMalformed,
+			want: []string{"-0.0000001 for asset B", "negative"},
+		},
+		{
+			name: "malformed without a provable cause says nothing",
+			op:   valid,
+			code: xdr.LiquidityPoolWithdrawResultCodeLiquidityPoolWithdrawMalformed,
+		},
+		{
+			name: "unrelated code says nothing",
+			op:   valid,
+			code: xdr.LiquidityPoolWithdrawResultCodeLiquidityPoolWithdrawNoTrust,
+		},
+		{
+			name: "nil operation says nothing",
+			code: xdr.LiquidityPoolWithdrawResultCodeLiquidityPoolWithdrawUnderMinimum,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := lens.DiagnosePoolWithdraw(tc.op, tc.code)
+			if len(tc.want) == 0 && got != "" {
+				t.Fatalf("DiagnosePoolWithdraw() = %q, want empty", got)
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(got, want) {
+					t.Errorf("DiagnosePoolWithdraw() = %q, want it to contain %q", got, want)
+				}
+			}
+		})
+	}
+}
+
+// TestExplainPairAttachesPoolDiagnoses pins the wiring: the diagnosis reaches
+// the operation's Reason when an envelope is paired with its result.
+func TestExplainPairAttachesPoolDiagnoses(t *testing.T) {
+	t.Parallel()
+
+	depositOp := xdr.LiquidityPoolDepositOp{
+		LiquidityPoolId: testPoolID,
+		MaxAmountA:      10000000,
+		MaxAmountB:      40000000,
+		MinPrice:        xdr.Price{N: 1, D: 2},
+		MaxPrice:        xdr.Price{N: 2, D: 1},
+	}
+	withdrawOp := xdr.LiquidityPoolWithdrawOp{
+		LiquidityPoolId: testPoolID,
+		Amount:          100000000,
+		MinAmountA:      5000000,
+		MinAmountB:      7000000,
+	}
+
+	tests := []struct {
+		name  string
+		body  xdr.OperationBody
+		inner xdr.OperationResultTr
+		want  string
+	}{
+		{
+			name: "deposit bad price",
+			body: xdr.OperationBody{Type: xdr.OperationTypeLiquidityPoolDeposit, LiquidityPoolDepositOp: &depositOp},
+			inner: xdr.OperationResultTr{
+				Type: xdr.OperationTypeLiquidityPoolDeposit,
+				LiquidityPoolDepositResult: &xdr.LiquidityPoolDepositResult{
+					Code: xdr.LiquidityPoolDepositResultCodeLiquidityPoolDepositBadPrice,
+				},
+			},
+			want: "below minPrice 1/2",
+		},
+		{
+			name: "withdraw under minimum",
+			body: xdr.OperationBody{Type: xdr.OperationTypeLiquidityPoolWithdraw, LiquidityPoolWithdrawOp: &withdrawOp},
+			inner: xdr.OperationResultTr{
+				Type: xdr.OperationTypeLiquidityPoolWithdraw,
+				LiquidityPoolWithdrawResult: &xdr.LiquidityPoolWithdrawResult{
+					Code: xdr.LiquidityPoolWithdrawResultCodeLiquidityPoolWithdrawUnderMinimum,
+				},
+			},
+			want: "0.5000000 of asset A",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			r := explainSingleOperation(t, tc.body, tc.inner)
+			if !strings.Contains(r.Context, tc.want) {
+				t.Errorf("Context = %q, want it to contain %q", r.Context, tc.want)
+			}
+		})
+	}
+}

@@ -235,3 +235,126 @@ func TestAccountEntryExtensionsRejectTruncatedInput(t *testing.T) {
 		})
 	}
 }
+
+func TestDiagnoseBumpSequence(t *testing.T) {
+	t.Parallel()
+
+	const badSeq = xdr.BumpSequenceResultCodeBumpSequenceBadSeq
+
+	tests := []struct {
+		name   string
+		txSeq  int64
+		bumpTo xdr.SequenceNumber
+		code   xdr.BumpSequenceResultCode
+		want   []string
+	}{
+		{
+			name:   "target equal to the envelope sequence",
+			txSeq:  100,
+			bumpTo: 100,
+			code:   badSeq,
+			want:   []string{"bumpTo 100 equals the envelope sequence number 100", "cannot rewind or stay", "bumpTo > 100", "no-op"},
+		},
+		{
+			name:   "target below the envelope sequence",
+			txSeq:  100,
+			bumpTo: 99,
+			code:   badSeq,
+			want:   []string{"bumpTo 99 is below the envelope sequence number 100", "cannot rewind or stay", "bumpTo > 100"},
+		},
+		{
+			name:   "negative target",
+			txSeq:  100,
+			bumpTo: -1,
+			code:   badSeq,
+			want:   []string{"bumpTo -1 is negative", "envelope sequence number 100", "bumpTo > 100"},
+		},
+		{
+			name:   "maximum envelope sequence does not overflow the guidance",
+			txSeq:  9223372036854775807,
+			bumpTo: 9223372036854775807,
+			code:   badSeq,
+			want:   []string{"equals", "bumpTo > 9223372036854775807"},
+		},
+		{
+			name:   "target above the envelope sequence proves nothing",
+			txSeq:  100,
+			bumpTo: 101,
+			code:   badSeq,
+		},
+		{
+			name:   "success says nothing",
+			txSeq:  100,
+			bumpTo: 100,
+			code:   xdr.BumpSequenceResultCodeBumpSequenceSuccess,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := lens.DiagnoseBumpSequence(tc.txSeq, tc.bumpTo, tc.code)
+			if len(tc.want) == 0 && got != "" {
+				t.Fatalf("DiagnoseBumpSequence() = %q, want empty", got)
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(got, want) {
+					t.Errorf("DiagnoseBumpSequence() = %q, want it to contain %q", got, want)
+				}
+			}
+		})
+	}
+}
+
+// TestExplainPairDiagnosesBumpSequence pins the wiring against the envelope's
+// real sequence number, which explainPreparedOperation fixes at 4242.
+func TestExplainPairDiagnosesBumpSequence(t *testing.T) {
+	t.Parallel()
+
+	override := xdr.MuxedAccount{
+		Type:    xdr.CryptoKeyTypeKeyTypeEd25519,
+		Ed25519: explainTestKey(0xB2),
+	}
+
+	tests := []struct {
+		name        string
+		bumpTo      xdr.SequenceNumber
+		source      *xdr.MuxedAccount
+		wantContext string
+	}{
+		{name: "target equal to the envelope sequence", bumpTo: 4242, wantContext: "bumpTo 4242 equals the envelope sequence number 4242"},
+		{name: "target below the envelope sequence", bumpTo: 7, wantContext: "bumpTo 7 is below the envelope sequence number 4242"},
+		{name: "negative target", bumpTo: -5, wantContext: "bumpTo -5 is negative"},
+		{name: "target above the envelope sequence keeps the generic reason", bumpTo: 5000},
+		{name: "source override is not compared with the envelope sequence", bumpTo: 7, source: &override},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			op := xdr.Operation{
+				SourceAccount: tc.source,
+				Body: xdr.OperationBody{
+					Type:           xdr.OperationTypeBumpSequence,
+					BumpSequenceOp: &xdr.BumpSequenceOp{BumpTo: tc.bumpTo},
+				},
+			}
+			r := explainPreparedOperation(t, op, xdr.OperationResultTr{
+				Type:          xdr.OperationTypeBumpSequence,
+				BumpSeqResult: &xdr.BumpSequenceResult{Code: xdr.BumpSequenceResultCodeBumpSequenceBadSeq},
+			})
+			if tc.wantContext == "" {
+				if r.Context != "" {
+					t.Fatalf("Context = %q, want empty", r.Context)
+				}
+				return
+			}
+			if !strings.Contains(r.Context, tc.wantContext) {
+				t.Errorf("Context = %q, want it to contain %q", r.Context, tc.wantContext)
+			}
+			if !strings.Contains(r.Hint, "greater than the source account's current sequence number") {
+				t.Errorf("Hint = %q, want bumpTo guidance", r.Hint)
+			}
+		})
+	}
+}

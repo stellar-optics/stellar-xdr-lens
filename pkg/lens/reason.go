@@ -360,8 +360,8 @@ var reasons = map[string]reasonText{
 	// ---- Inflation --------------------------------------------------------
 	"InflationResultCodeInflationSuccess": ok("Inflation ran."),
 	"InflationResultCodeInflationNotTime": bad(
-		"It is not yet time to run inflation.",
-		"Inflation was disabled by protocol 12; this operation is obsolete."),
+		"Inflation can never run again: CAP-0026 permanently disabled the inflation mechanism in Protocol 12.",
+		"Remove this operation; it can never succeed on a current network. Before Protocol 12 this code meant the weekly inflation run was not due yet."),
 
 	// ---- Manage data ------------------------------------------------------
 	"ManageDataResultCodeManageDataSuccess": ok("The data entry was set or removed."),
