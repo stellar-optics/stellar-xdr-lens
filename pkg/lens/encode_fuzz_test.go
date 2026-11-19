@@ -3,7 +3,9 @@ package lens
 import (
 	"bytes"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,15 +14,65 @@ import (
 
 // RunStreamParserFuzz executes the stream parser against arbitrary byte input without panicking.
 func RunStreamParserFuzz(data []byte) error {
-	defer func() {
-		if r := recover(); r != nil {
-			panic(r)
-		}
-	}()
+	const maxRecSize = 1024 * 1024
 
-	p := NewStreamParser(bytes.NewReader(data), WithMaxRecordSize(1024*1024))
-	_, err := p.Drain()
-	return err
+	framings := []StreamFraming{
+		FramingAuto,
+		FramingRecordMarking,
+		FramingLengthPrefixed,
+		FramingBase64Lines,
+	}
+
+	var firstErr error
+	for _, framing := range framings {
+		p := NewStreamParser(
+			bytes.NewReader(data),
+			WithFraming(framing),
+			WithMaxRecordSize(maxRecSize),
+		)
+		for {
+			rec, err := p.Next()
+			if err != nil {
+				if !errors.Is(err, io.EOF) && firstErr == nil {
+					firstErr = err
+				}
+				break
+			}
+			if uint32(len(rec)) > maxRecSize {
+				panic("stream parser returned record exceeding maxRecordSize")
+			}
+		}
+	}
+	return firstErr
+}
+
+// RunHexInputFuzz exercises hex and base64 input normalization and decoding routines
+// against arbitrary string inputs without panicking.
+func RunHexInputFuzz(input string) {
+	isHex := IsHexString(input)
+	norm, normErr := NormalizeHex(input)
+	if isHex && normErr != nil {
+		panic("IsHexString returned true but NormalizeHex returned error")
+	}
+	if !isHex && normErr == nil {
+		panic("IsHexString returned false but NormalizeHex succeeded")
+	}
+
+	raw, bytesErr := HexToBytes(input)
+	if bytesErr == nil {
+		if BytesToHex(raw) != norm {
+			panic("HexToBytes -> BytesToHex did not round-trip to NormalizeHex")
+		}
+		if b64, err := HexToBase64(input); err != nil {
+			panic("HexToBytes succeeded but HexToBase64 failed")
+		} else if roundHex, err := Base64ToHex(b64); err != nil || roundHex != norm {
+			panic("HexToBase64 -> Base64ToHex did not round-trip")
+		}
+	}
+
+	_, _ = Base64ToHex(input)
+	_, _ = DecodeHex(input)
+	_, _ = Decode(input)
 }
 
 // RunCanonicalFuzz executes canonical validation and canonicalization against arbitrary byte input without panicking.
@@ -52,23 +104,69 @@ func RunDiagnosticFuzz(data []byte, path string) {
 
 // FuzzStreamParser fuzzes the stream parser with arbitrary byte sequences.
 func FuzzStreamParser(f *testing.F) {
-	// Seed with valid and invalid framing structures
+	// Seed with valid and invalid framing structures, base64, hex, and whitespace variations.
 	f.Add([]byte{})
 	f.Add([]byte{0x80, 0x00, 0x00, 0x04, 0x01, 0x02, 0x03, 0x04})
 	f.Add([]byte{0x00, 0x00, 0x00, 0x04, 0x01, 0x02, 0x03, 0x04})
+	f.Add([]byte{0x80, 0x00, 0x00, 0x00})             // empty final RFC 5531 fragment
+	f.Add([]byte{0x00, 0x00, 0x00, 0x00})             // zero length prefix
+	f.Add([]byte{0x80, 0x0F, 0xFF, 0xFF, 0x01, 0x02}) // truncated large RFC 5531 fragment
+	f.Add([]byte{0x00, 0x0F, 0xFF, 0xFF, 0x01, 0x02}) // truncated large length-prefixed record
 	f.Add([]byte("AAAAAA==\n"))
+	f.Add([]byte("  \t AAAAAA== \r\n\n  AAAAAA==  \n"))
+	f.Add([]byte("0x00000000\n"))
 	f.Add([]byte("invalid base64!!!\n"))
 	f.Add([]byte{0xFF, 0xFF, 0xFF, 0xFF})
 
-	// Add testdata fixture seed
+	// Add testdata fixture seeds in RFC 5531, multi-fragment, length-prefixed, base64, and hex forms.
 	if fixture, err := loadFuzzFixture("tx_success.env.txt"); err == nil {
-		var buf bytes.Buffer
-		_ = WriteRecordMarking(&buf, fixture, 0)
-		f.Add(buf.Bytes())
+		var rfcBuf bytes.Buffer
+		_ = WriteRecordMarking(&rfcBuf, fixture, 0)
+		f.Add(rfcBuf.Bytes())
+
+		var fragBuf bytes.Buffer
+		_ = WriteRecordMarking(&fragBuf, fixture, 32)
+		f.Add(fragBuf.Bytes())
+
+		var lenBuf bytes.Buffer
+		_ = WriteLengthPrefixed(&lenBuf, fixture)
+		f.Add(lenBuf.Bytes())
+
+		var b64Buf bytes.Buffer
+		_ = WriteBase64Line(&b64Buf, fixture)
+		f.Add(b64Buf.Bytes())
+
+		f.Add([]byte(hex.EncodeToString(fixture) + "\n"))
 	}
 
 	f.Fuzz(func(t *testing.T, data []byte) {
 		_ = RunStreamParserFuzz(data)
+	})
+}
+
+// FuzzHexInput fuzzes hex and base64 input normalization and decoder entry points.
+func FuzzHexInput(f *testing.F) {
+	f.Add("")
+	f.Add("   \t\r\n  ")
+	f.Add("0x")
+	f.Add("0X00000000")
+	f.Add("00 00 00 00")
+	f.Add("deadBEEF")
+	f.Add("0xdead\n\tbeef")
+	f.Add("abc")      // odd length
+	f.Add("0xzzzz")   // invalid hex
+	f.Add("AAAAAA==") // valid base64
+	f.Add("  AAAAAA==\r\n")
+	f.Add("not!valid@base64#")
+
+	if fixture, err := loadFuzzFixture("tx_success.env.txt"); err == nil {
+		f.Add(hex.EncodeToString(fixture))
+		f.Add("0x" + strings.ToUpper(hex.EncodeToString(fixture)))
+		f.Add(base64.StdEncoding.EncodeToString(fixture))
+	}
+
+	f.Fuzz(func(t *testing.T, input string) {
+		RunHexInputFuzz(input)
 	})
 }
 
@@ -162,9 +260,28 @@ func TestFuzzHarnessNeverPanics(t *testing.T) {
 		RunDiagnosticFuzz(tc.json, tc.path)
 	}
 
-	// 4. Test with canonical fixture
+	// 4. Hex and base64 normalization inputs
+	hexCorpus := []string{
+		"",
+		"   ",
+		"0x",
+		"0x00000000",
+		"0XDEADBEEF",
+		"abc",
+		"zzzz",
+		"AAAAAA==",
+		"  AAAAAA== \n",
+		"invalid!base64",
+	}
+	for _, input := range hexCorpus {
+		RunHexInputFuzz(input)
+	}
+
+	// 5. Test with canonical fixture
 	if fixture, err := loadFuzzFixture("tx_success.env.txt"); err == nil {
 		RunCanonicalFuzz(fixture)
+		RunHexInputFuzz(hex.EncodeToString(fixture))
+		RunHexInputFuzz(base64.StdEncoding.EncodeToString(fixture))
 		var buf bytes.Buffer
 		_ = WriteRecordMarking(&buf, fixture, 256)
 		_ = RunStreamParserFuzz(buf.Bytes())

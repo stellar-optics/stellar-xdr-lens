@@ -23,10 +23,11 @@ var (
 
 // Default limits for streaming parser.
 const (
-	DefaultMaxRecordSize = 64 * 1024 * 1024 // 64 MB maximum record size
-	DefaultBufferSize    = 64 * 1024        // 64 KB read buffer
-	RFC5531LastFragMask  = 0x80000000       // Highest bit indicates final fragment
-	RFC5531LengthMask    = 0x7FFFFFFF       // Lower 31 bits encode fragment length
+	DefaultMaxRecordSize  = 64 * 1024 * 1024 // 64 MB maximum record size
+	DefaultBufferSize     = 64 * 1024        // 64 KB read buffer
+	RFC5531LastFragMask   = 0x80000000       // Highest bit indicates final fragment
+	RFC5531LengthMask     = 0x7FFFFFFF       // Lower 31 bits encode fragment length
+	maxFragmentsPerRecord = 65536            // Maximum RFC 5531 fragments per single record
 )
 
 // StreamFraming defines the framing protocol used by the stream.
@@ -262,16 +263,22 @@ func (p *StreamParser) detectFraming() (StreamFraming, error) {
 func (p *StreamParser) readRecordMarking() ([]byte, error) {
 	var record bytes.Buffer
 	var totalSize uint32
+	fragments := 0
 
 	for {
 		var headerBuf [4]byte
 		n, err := io.ReadFull(p.reader, headerBuf[:])
 		p.totalBytes += int64(n)
 		if err != nil {
-			if errors.Is(err, io.EOF) && record.Len() == 0 {
+			if errors.Is(err, io.EOF) && record.Len() == 0 && fragments == 0 {
 				return nil, io.EOF
 			}
 			return nil, fmt.Errorf("%w: record marking fragment header: %w", ErrPrematureEOF, err)
+		}
+
+		fragments++
+		if fragments > maxFragmentsPerRecord {
+			return nil, fmt.Errorf("%w: record exceeds maximum fragment count %d", ErrInvalidFraming, maxFragmentsPerRecord)
 		}
 
 		header := binary.BigEndian.Uint32(headerBuf[:])
@@ -282,19 +289,18 @@ func (p *StreamParser) readRecordMarking() ([]byte, error) {
 			break
 		}
 
-		totalSize += fragLen
-		if totalSize > p.maxRecordSize {
-			return nil, fmt.Errorf("%w: size %d exceeds limit %d", ErrRecordTooLarge, totalSize, p.maxRecordSize)
+		if fragLen > p.maxRecordSize || totalSize > p.maxRecordSize-fragLen {
+			return nil, fmt.Errorf("%w: size exceeds limit %d", ErrRecordTooLarge, p.maxRecordSize)
 		}
+		totalSize += fragLen
 
-		fragBuf := make([]byte, fragLen)
-		n, err = io.ReadFull(p.reader, fragBuf)
-		p.totalBytes += int64(n)
+		// Stream fragment bytes incrementally so a forged header cannot force
+		// an upfront multi-megabyte allocation before bytes actually arrive.
+		written, err := io.CopyN(&record, p.reader, int64(fragLen))
+		p.totalBytes += written
 		if err != nil {
 			return nil, fmt.Errorf("%w: record marking fragment data: %w", ErrPrematureEOF, err)
 		}
-
-		record.Write(fragBuf)
 
 		if isLast {
 			break
@@ -320,24 +326,35 @@ func (p *StreamParser) readLengthPrefixed() ([]byte, error) {
 		return nil, fmt.Errorf("%w: length %d exceeds limit %d", ErrRecordTooLarge, length, p.maxRecordSize)
 	}
 
-	data := make([]byte, length)
-	n, err = io.ReadFull(p.reader, data)
-	p.totalBytes += int64(n)
+	if length == 0 {
+		return []byte{}, nil
+	}
+
+	// Copy incrementally instead of pre-allocating make([]byte, length) so a
+	// short truncated payload with a large declared length cannot cause OOM.
+	var data bytes.Buffer
+	written, err := io.CopyN(&data, p.reader, int64(length))
+	p.totalBytes += written
 	if err != nil {
 		return nil, fmt.Errorf("%w: record data: %w", ErrPrematureEOF, err)
 	}
 
-	return data, nil
+	return data.Bytes(), nil
 }
 
 func (p *StreamParser) readBase64Line() ([]byte, error) {
-	for {
-		line, err := p.reader.ReadString('\n')
-		p.totalBytes += int64(len(line))
-		line = strings.TrimSpace(line)
+	// Base64 expands 3 bytes to 4 characters; allow modest overhead for padding/whitespace.
+	maxLineBytes := (int64(p.maxRecordSize)/3+1)*4 + 1024
 
-		if line != "" {
-			data, decErr := base64.StdEncoding.DecodeString(line)
+	for {
+		line, err := p.readBoundedLine(maxLineBytes)
+		if err != nil && !errors.Is(err, io.EOF) {
+			return nil, err
+		}
+		trimmed := strings.TrimSpace(line)
+
+		if trimmed != "" {
+			data, decErr := base64.StdEncoding.DecodeString(trimmed)
 			if decErr != nil {
 				return nil, fmt.Errorf("%w: malformed base64 line: %w", ErrInvalidFraming, decErr)
 			}
@@ -347,12 +364,31 @@ func (p *StreamParser) readBase64Line() ([]byte, error) {
 			return data, nil
 		}
 
+		if errors.Is(err, io.EOF) {
+			return nil, io.EOF
+		}
+	}
+}
+
+func (p *StreamParser) readBoundedLine(maxBytes int64) (string, error) {
+	var buf bytes.Buffer
+	for {
+		frag, err := p.reader.ReadSlice('\n')
+		p.totalBytes += int64(len(frag))
+		if int64(buf.Len())+int64(len(frag)) > maxBytes {
+			return "", fmt.Errorf("%w: base64 line exceeds maximum length %d", ErrRecordTooLarge, maxBytes)
+		}
+		buf.Write(frag)
+		if errors.Is(err, bufio.ErrBufferFull) {
+			continue
+		}
 		if err != nil {
 			if errors.Is(err, io.EOF) {
-				return nil, io.EOF
+				return buf.String(), io.EOF
 			}
-			return nil, fmt.Errorf("reading base64 stream: %w", err)
+			return "", fmt.Errorf("reading base64 stream: %w", err)
 		}
+		return buf.String(), nil
 	}
 }
 
