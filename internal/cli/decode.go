@@ -62,7 +62,10 @@ Use --summary for single-line output suited for grep and shell pipelines.
 Use --txrep for SEP-0011 human-readable representation of transaction envelopes.
 Use --csv for a flat, RFC 4180 row of the high-level transaction fields, which
 is what batch exports concatenate (see pkg/lens/format for the batch API).
-Use --spec to supply a contract WASM or spec file for decoded Soroban contract fields.
+Use --spec to supply a contract WASM, or the JSON spec export printed by
+'stellar contract info interface --output json', so Soroban values render with
+the contract's struct field names, union cases and enum variants; values the
+spec does not describe keep their wire shape.
 Use --interactive (or 'lens explore') for an interactive terminal tree viewer.`,
 		Example: `  lens decode "$XDR"
   lens decode --hex "$HEX"
@@ -74,6 +77,7 @@ Use --interactive (or 'lens explore') for an interactive terminal tree viewer.`,
   lens decode --txrep "$XDR"
   lens decode --csv "$XDR" >> envelopes.csv
   lens decode --spec contract.wasm "$XDR"
+  lens decode --spec contract.json --type ScVal "$SCVAL"
   lens decode --interactive "$XDR"
   lens decode --type TransactionResult "$XDR"
   lens decode --candidates "AAAAAA=="
@@ -321,7 +325,7 @@ Use --interactive (or 'lens explore') for an interactive terminal tree viewer.`,
 	cmd.Flags().BoolVar(&asTxRep, "txrep", false, "emit SEP-0011 TxRep format for transaction envelopes")
 	cmd.Flags().BoolVar(&asCSV, "csv", false, "emit a flat CSV row of the high-level transaction fields")
 	cmd.Flags().BoolVarP(&interactive, "interactive", "i", false, "explore the decoded tree interactively")
-	cmd.Flags().StringVar(&specPath, "spec", "", "path to contract WASM or ScSpecEntry file for spec-aware decoding")
+	cmd.Flags().StringVar(&specPath, "spec", "", "path to a contract WASM, JSON spec export or ScSpecEntry file for spec-aware decoding")
 	cmd.Flags().StringVar(&formatName, "format", "", `output format: "tree", "json", "summary", "txrep", "csv", "html", "mermaid", or "junit"`)
 	cmd.Flags().StringVar(&network, "network", "", "network passphrase for txrep formatting")
 	cmd.Flags().StringVarP(&typeName, "type", "t", "",
@@ -393,7 +397,7 @@ Use arrow keys or j/k to navigate, Enter or Space to toggle node expansion,
 	cmd.Flags().StringVarP(&typeName, "type", "t", "",
 		"decode as this XDR type instead of detecting it")
 	cmd.Flags().StringVar(&specPath, "spec", "",
-		"path to contract WASM or ScSpecEntry file for spec-aware decoding")
+		"path to a contract WASM, JSON spec export or ScSpecEntry file for spec-aware decoding")
 
 	return cmd
 }

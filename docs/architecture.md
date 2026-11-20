@@ -1365,13 +1365,14 @@ Jenkins, GitLab CI, CircleCI and other CI systems already know how to display.
 ## Contract spec-aware ScVal decoding (`pkg/lens/spec_decode.go`)
 
 Soroban smart contracts encode arguments, return types, storage entries, and events as opaque `xdr.ScVal` structures. `pkg/lens/spec_decode.go` resolves these generic values against contract specifications:
-- Accepts contract specs as raw XDR byte slices/streams or extracted from WebAssembly (`.wasm`) binaries via the `contractspecv0` custom section.
+- Accepts contract specs as raw XDR byte slices/streams, extracted from WebAssembly (`.wasm`) binaries via the `contractspecv0` custom section, or as the JSON export of `stellar contract info interface --output json` (`pkg/lens/spec_json.go`).
 - Resolves:
   - UDT Structs (`ScSpecUdtStructV0`): Maps tuple/map fields to human-readable struct member names.
   - UDT Enums (`ScSpecUdtEnumV0`): Maps numeric discriminant values to enum variant identifiers.
   - UDT Unions (`ScSpecUdtUnionV0`): Labels case names and associated values.
   - Function Invocations (`ScSpecFunctionV0`): Resolves function names and parameter lists in `InvokeHostFunctionOp`.
-- Usable via `--spec <spec.xdr|contract.wasm>` in `lens decode`.
+- Decoded `ScVal` trees are mapped by a `SpecResolver`: positions with a declared type (function arguments, struct fields, union payloads) are resolved against that type, and untyped values are matched by shape only when exactly one struct or union fits. Anything else keeps its wire shape.
+- Usable via `--spec <spec.xdr|contract.wasm|contract.json>` in `lens decode`.
 
 ## Streaming XDR Architecture (`stream_parser.go`)
 

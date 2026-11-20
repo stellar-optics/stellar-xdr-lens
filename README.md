@@ -363,8 +363,10 @@ $ lens decode -i --file envelope.xdr
 # or use the dedicated command:
 $ lens explore --file envelope.xdr
 
-# Contract spec-aware ScVal decoding from contract WASM or spec XDR
+# Contract spec-aware ScVal decoding from contract WASM, spec JSON or spec XDR
 $ lens decode --spec contract.wasm --file invocation.xdr
+$ stellar contract info interface --wasm contract.wasm --output json > contract.json
+$ lens decode --spec contract.json --type ScVal "$SCVAL"
 ```
 
 #### Batch decoding

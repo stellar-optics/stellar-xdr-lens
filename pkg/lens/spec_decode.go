@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/stellar/go-stellar-sdk/xdr"
@@ -67,7 +68,9 @@ func (cs *ContractSpec) AddEntry(e xdr.ScSpecEntry) {
 }
 
 // LoadContractSpecFile loads and parses a contract specification from a local file.
-// The file can be a contract WASM (.wasm) or base64/raw XDR ScSpecEntry data.
+// The file can be a contract WASM (.wasm), the JSON interface export printed by
+// `stellar contract info interface --output json`, or base64/raw XDR
+// ScSpecEntry data.
 func LoadContractSpecFile(path string) (*ContractSpec, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -78,9 +81,25 @@ func LoadContractSpecFile(path string) (*ContractSpec, error) {
 
 // ParseContractSpec parses a contract specification from raw bytes or base64 text.
 // If the payload is a WASM binary, it extracts the contractspecv0 section first.
+// A JSON spec export (see LoadContractSpecFile) is also accepted.
 func ParseContractSpec(data []byte) (*ContractSpec, error) {
 	if len(data) == 0 {
 		return nil, fmt.Errorf("%w: empty contract spec data", ErrInvalidContractSpec)
+	}
+
+	if isSpecJSON(data) {
+		entries, err := parseSpecJSON(data)
+		if err != nil {
+			return nil, err
+		}
+		if len(entries) == 0 {
+			return nil, fmt.Errorf("%w: no ScSpecEntry definitions found", ErrInvalidContractSpec)
+		}
+		cs := NewContractSpec()
+		for _, e := range entries {
+			cs.AddEntry(e)
+		}
+		return cs, nil
 	}
 
 	// If it's a WASM binary, extract custom section
@@ -302,55 +321,527 @@ func (cs *ContractSpec) ApplyToValue(v *Value) {
 
 // ApplyToNode recursively searches for Soroban structures (such as InvokeContract or ScVal)
 // and decorates them with real field names, function arguments, and enum variant names.
+// Decoded ScVal subtrees are mapped by a SpecResolver; values the spec does not
+// describe keep their wire shape.
 func (cs *ContractSpec) ApplyToNode(n *Node) {
+	if n == nil || cs == nil {
+		return
+	}
+	cs.applyToNode(n, NewSpecResolver(cs))
+}
+
+func (cs *ContractSpec) applyToNode(n *Node, r *SpecResolver) {
 	if n == nil {
 		return
 	}
 
 	// Look for InvokeContract nodes
-	if n.Name == "InvokeContract" {
-		funcNode := n.Child("FunctionName")
-		argsNode := n.Child("Args")
-		if funcNode != nil && argsNode != nil {
-			funcName := fmt.Sprintf("%v", funcNode.Value)
-			if fn, ok := cs.Functions[funcName]; ok {
-				funcNode.Note = "contract method"
-				for i, argChild := range argsNode.Children {
-					if i < len(fn.Inputs) {
-						input := fn.Inputs[i]
-						argChild.Name = input.Name
-						typeName := specTypeName(input.Type)
-						if argChild.Note == "" {
-							argChild.Note = typeName
-						} else {
-							argChild.Note = typeName + " (" + argChild.Note + ")"
-						}
-						// If the input type is a UDT, enrich inner fields
-						if input.Type.Type == xdr.ScSpecTypeScSpecTypeUdt && input.Type.Udt != nil {
-							cs.enrichUdtChild(argChild, input.Type.Udt.Name)
-						}
-					}
-				}
+	if n.Name == "InvokeContract" && cs.applyToInvocation(n, r) {
+		for _, child := range n.Children {
+			if child.Name != "Args" {
+				cs.applyToNode(child, r)
 			}
 		}
+		return
 	}
 
-	// Look for U32 nodes that might match an enum
-	if n.TypeName == "ScVal" || strings.HasPrefix(n.Name, "Scv") || n.Kind == KindScalar {
-		if valUint, ok := toUint32(n.Value); ok {
-			for enumName, en := range cs.Enums {
-				for _, c := range en.Cases {
-					if uint32(c.Value) == valUint {
-						n.Note = fmt.Sprintf("%s::%s", enumName, c.Name)
-						break
-					}
-				}
-			}
-		}
+	// A decoded ScVal is resolved as a whole: the resolver knows which
+	// positions are typed, so nothing below it is guessed at again.
+	if isScValNode(n) {
+		r.MapScValWithSpec(n, nil)
+		return
 	}
 
 	for _, child := range n.Children {
-		cs.ApplyToNode(child)
+		cs.applyToNode(child, r)
+	}
+}
+
+// applyToInvocation names the arguments of a call to a function the spec
+// declares and resolves each argument against its declared type. It reports
+// false when the function is unknown, leaving the node to the generic walk.
+func (cs *ContractSpec) applyToInvocation(n *Node, r *SpecResolver) bool {
+	funcNode := n.Child("FunctionName")
+	argsNode := n.Child("Args")
+	if funcNode == nil || argsNode == nil {
+		return false
+	}
+	fn, ok := cs.Functions[fmt.Sprintf("%v", funcNode.Value)]
+	if !ok {
+		return false
+	}
+	funcNode.Note = "contract method"
+	for i, argChild := range argsNode.Children {
+		if i >= len(fn.Inputs) {
+			cs.applyToNode(argChild, r)
+			continue
+		}
+		input := fn.Inputs[i]
+		argChild.Name = input.Name
+		typeName := specTypeName(input.Type)
+		if argChild.Note == "" {
+			argChild.Note = typeName
+		} else {
+			argChild.Note = typeName + " (" + argChild.Note + ")"
+		}
+		if isScValNode(argChild) {
+			td := input.Type
+			if !r.MapScValWithSpec(argChild, &td) {
+				// The argument does not have the declared shape; still
+				// resolve anything recognisable inside it.
+				r.MapScValWithSpec(argChild, nil)
+			}
+			continue
+		}
+		// If the input type is a UDT, enrich inner fields
+		if input.Type.Type == xdr.ScSpecTypeScSpecTypeUdt && input.Type.Udt != nil {
+			cs.enrichUdtChild(argChild, input.Type.Udt.Name)
+		}
+	}
+	return true
+}
+
+// SpecResolver maps decoded ScVal nodes onto the named types of a contract
+// spec. On the wire a struct is a map keyed by field-name symbols (or a vector
+// for tuple structs), a union is a vector led by the case-name symbol, and an
+// enum is a bare u32; the resolver recognises those shapes and decorates the
+// node tree with the struct, case and variant names while leaving the wire
+// values themselves untouched.
+type SpecResolver struct {
+	spec *ContractSpec
+}
+
+// NewSpecResolver returns a resolver for the types declared in cs.
+func NewSpecResolver(cs *ContractSpec) *SpecResolver {
+	return &SpecResolver{spec: cs}
+}
+
+// MapScValWithSpec decorates n, a decoded ScVal node, with names from the
+// spec. Map entries and tuple elements of a recognised struct are renamed to
+// the struct's field names, and the ScVal's Type leaf gains a note naming the
+// struct, union case or enum variant.
+//
+// When td is nil the type is inferred from the value's shape: a map whose
+// symbol keys are exactly the fields of one struct, or a vector led by a case
+// name of one union. A value that matches no declaration, or more than one,
+// keeps its wire shape. MapScValWithSpec reports whether n was matched; when
+// it returns false for a typed call, n is unchanged.
+func (r *SpecResolver) MapScValWithSpec(n *Node, td *xdr.ScSpecTypeDef) bool {
+	if r == nil || r.spec == nil || !isScValNode(n) {
+		return false
+	}
+	if td != nil {
+		return r.mapTyped(n, *td)
+	}
+	return r.mapInferred(n)
+}
+
+func (r *SpecResolver) mapTyped(n *Node, td xdr.ScSpecTypeDef) bool {
+	wire, arm := scValArm(n)
+	switch td.Type {
+	case xdr.ScSpecTypeScSpecTypeUdt:
+		if td.Udt == nil {
+			return false
+		}
+		return r.mapUdt(n, td.Udt.Name)
+	case xdr.ScSpecTypeScSpecTypeOption:
+		if td.Option == nil {
+			return false
+		}
+		if wire == "ScValTypeScvVoid" {
+			return true
+		}
+		return r.mapTyped(n, td.Option.ValueType)
+	case xdr.ScSpecTypeScSpecTypeResult:
+		if td.Result == nil {
+			return false
+		}
+		return r.mapTyped(n, td.Result.OkType) || r.mapTyped(n, td.Result.ErrorType)
+	case xdr.ScSpecTypeScSpecTypeVec:
+		if td.Vec == nil || wire != "ScValTypeScvVec" || arm == nil {
+			return false
+		}
+		for _, elem := range arm.Children {
+			r.mapTyped(elem, td.Vec.ElementType)
+		}
+		return true
+	case xdr.ScSpecTypeScSpecTypeMap:
+		if td.Map == nil || wire != "ScValTypeScvMap" || arm == nil {
+			return false
+		}
+		for _, entry := range arm.Children {
+			if key := entry.Child("Key"); key != nil {
+				r.mapTyped(key, td.Map.KeyType)
+			}
+			if val := entry.Child("Val"); val != nil {
+				r.mapTyped(val, td.Map.ValueType)
+			}
+		}
+		return true
+	case xdr.ScSpecTypeScSpecTypeTuple:
+		if td.Tuple == nil || wire != "ScValTypeScvVec" || arm == nil || len(arm.Children) != len(td.Tuple.ValueTypes) {
+			return false
+		}
+		for i, elem := range arm.Children {
+			r.mapTyped(elem, td.Tuple.ValueTypes[i])
+		}
+		return true
+	case xdr.ScSpecTypeScSpecTypeError:
+		return wire == "ScValTypeScvError"
+	}
+	// Primitive types need no renaming; they match when the wire type
+	// agrees.
+	want, ok := primitiveWireTypes[td.Type]
+	return ok && want == wire
+}
+
+// primitiveWireTypes maps the payload-free spec types to the ScVal type that
+// carries them.
+var primitiveWireTypes = map[xdr.ScSpecType]string{
+	xdr.ScSpecTypeScSpecTypeBool:         "ScValTypeScvBool",
+	xdr.ScSpecTypeScSpecTypeVoid:         "ScValTypeScvVoid",
+	xdr.ScSpecTypeScSpecTypeU32:          "ScValTypeScvU32",
+	xdr.ScSpecTypeScSpecTypeI32:          "ScValTypeScvI32",
+	xdr.ScSpecTypeScSpecTypeU64:          "ScValTypeScvU64",
+	xdr.ScSpecTypeScSpecTypeI64:          "ScValTypeScvI64",
+	xdr.ScSpecTypeScSpecTypeTimepoint:    "ScValTypeScvTimepoint",
+	xdr.ScSpecTypeScSpecTypeDuration:     "ScValTypeScvDuration",
+	xdr.ScSpecTypeScSpecTypeU128:         "ScValTypeScvU128",
+	xdr.ScSpecTypeScSpecTypeI128:         "ScValTypeScvI128",
+	xdr.ScSpecTypeScSpecTypeU256:         "ScValTypeScvU256",
+	xdr.ScSpecTypeScSpecTypeI256:         "ScValTypeScvI256",
+	xdr.ScSpecTypeScSpecTypeBytes:        "ScValTypeScvBytes",
+	xdr.ScSpecTypeScSpecTypeBytesN:       "ScValTypeScvBytes",
+	xdr.ScSpecTypeScSpecTypeString:       "ScValTypeScvString",
+	xdr.ScSpecTypeScSpecTypeSymbol:       "ScValTypeScvSymbol",
+	xdr.ScSpecTypeScSpecTypeAddress:      "ScValTypeScvAddress",
+	xdr.ScSpecTypeScSpecTypeMuxedAddress: "ScValTypeScvAddress",
+}
+
+func (r *SpecResolver) mapUdt(n *Node, name string) bool {
+	cs := r.spec
+	if st, ok := cs.Structs[name]; ok {
+		return r.mapStruct(n, st)
+	}
+	if un, ok := cs.Unions[name]; ok {
+		return r.mapUnion(n, un)
+	}
+	if en, ok := cs.Enums[name]; ok {
+		return mapEnumCase(n, en.Name, enumCases(en))
+	}
+	if en, ok := cs.ErrorEnums[name]; ok {
+		return mapEnumCase(n, en.Name, errorEnumCases(en))
+	}
+	return false
+}
+
+// mapStruct matches a struct in either wire form: a map with one symbol key
+// per field, or, for tuple structs, a vector with one element per field.
+func (r *SpecResolver) mapStruct(n *Node, st xdr.ScSpecUdtStructV0) bool {
+	wire, arm := scValArm(n)
+	if arm == nil || len(arm.Children) != len(st.Fields) {
+		return false
+	}
+	switch wire {
+	case "ScValTypeScvMap":
+		fields := make(map[string]xdr.ScSpecUdtStructFieldV0, len(st.Fields))
+		for _, f := range st.Fields {
+			fields[f.Name] = f
+		}
+		for _, entry := range arm.Children {
+			if _, ok := fields[mapEntrySymbol(entry)]; !ok {
+				return false
+			}
+		}
+		for _, entry := range arm.Children {
+			f := fields[mapEntrySymbol(entry)]
+			entry.Name = f.Name
+			if val := entry.Child("Val"); val != nil {
+				r.mapTyped(val, f.Type)
+			}
+		}
+	case "ScValTypeScvVec":
+		for i, elem := range arm.Children {
+			elem.Name = st.Fields[i].Name
+			r.mapTyped(elem, st.Fields[i].Type)
+		}
+	default:
+		return false
+	}
+	setTypeNote(n, st.Name)
+	return true
+}
+
+// mapUnion matches a union value: a vector whose first element is the case
+// name and whose remaining elements are the case's tuple payload.
+func (r *SpecResolver) mapUnion(n *Node, un xdr.ScSpecUdtUnionV0) bool {
+	c, ok := unionCaseFor(n, un)
+	if !ok {
+		return false
+	}
+	_, arm := scValArm(n)
+	if c.TupleCase != nil {
+		for i, t := range c.TupleCase.Type {
+			r.mapTyped(arm.Children[i+1], t)
+		}
+	}
+	setTypeNote(n, un.Name+"::"+unionCaseName(c))
+	return true
+}
+
+// unionCaseFor returns the case of un that n encodes, if any.
+func unionCaseFor(n *Node, un xdr.ScSpecUdtUnionV0) (xdr.ScSpecUdtUnionCaseV0, bool) {
+	wire, arm := scValArm(n)
+	if wire != "ScValTypeScvVec" || arm == nil || len(arm.Children) == 0 {
+		return xdr.ScSpecUdtUnionCaseV0{}, false
+	}
+	tag, ok := scValSymbol(arm.Children[0])
+	if !ok {
+		return xdr.ScSpecUdtUnionCaseV0{}, false
+	}
+	for _, c := range un.Cases {
+		if unionCaseName(c) != tag {
+			continue
+		}
+		arity := 0
+		if c.TupleCase != nil {
+			arity = len(c.TupleCase.Type)
+		}
+		if len(arm.Children) == arity+1 {
+			return c, true
+		}
+	}
+	return xdr.ScSpecUdtUnionCaseV0{}, false
+}
+
+func unionCaseName(c xdr.ScSpecUdtUnionCaseV0) string {
+	switch {
+	case c.VoidCase != nil:
+		return c.VoidCase.Name
+	case c.TupleCase != nil:
+		return c.TupleCase.Name
+	}
+	return ""
+}
+
+type namedCase struct {
+	name  string
+	value uint32
+}
+
+func enumCases(en xdr.ScSpecUdtEnumV0) []namedCase {
+	out := make([]namedCase, 0, len(en.Cases))
+	for _, c := range en.Cases {
+		out = append(out, namedCase{c.Name, uint32(c.Value)})
+	}
+	return out
+}
+
+func errorEnumCases(en xdr.ScSpecUdtErrorEnumV0) []namedCase {
+	out := make([]namedCase, 0, len(en.Cases))
+	for _, c := range en.Cases {
+		out = append(out, namedCase{c.Name, uint32(c.Value)})
+	}
+	return out
+}
+
+// mapEnumCase matches an enum variant carried as a u32, or a contract error
+// code carried as Error(Contract, #n), and notes the variant name on it.
+func mapEnumCase(n *Node, enumName string, cases []namedCase) bool {
+	wire, arm := scValArm(n)
+	var leaf *Node
+	switch wire {
+	case "ScValTypeScvU32":
+		leaf = arm
+	case "ScValTypeScvError":
+		if arm != nil {
+			leaf = arm.Child("ContractCode")
+		}
+	}
+	if leaf == nil {
+		return false
+	}
+	v, ok := toUint32(leaf.Value)
+	if !ok {
+		return false
+	}
+	for _, c := range cases {
+		if c.value == v {
+			note := enumName + "::" + c.name
+			leaf.Note = note
+			setTypeNote(n, note)
+			return true
+		}
+	}
+	return false
+}
+
+// mapInferred resolves an ScVal whose type is not declared at this position.
+// Only shapes that identify exactly one declaration are mapped; everything
+// else is searched for nested values that do.
+func (r *SpecResolver) mapInferred(n *Node) bool {
+	wire, arm := scValArm(n)
+	if arm == nil {
+		return false
+	}
+	switch wire {
+	case "ScValTypeScvMap":
+		if st, ok := r.uniqueStructFor(arm); ok {
+			return r.mapStruct(n, st)
+		}
+		matched := false
+		for _, entry := range arm.Children {
+			for _, part := range []string{"Key", "Val"} {
+				if child := entry.Child(part); child != nil && r.mapInferred(child) {
+					matched = true
+				}
+			}
+		}
+		return matched
+	case "ScValTypeScvVec":
+		if un, ok := r.uniqueUnionFor(n); ok {
+			return r.mapUnion(n, un)
+		}
+		matched := false
+		for _, elem := range arm.Children {
+			if r.mapInferred(elem) {
+				matched = true
+			}
+		}
+		return matched
+	case "ScValTypeScvU32":
+		return r.noteEnumCandidates(arm)
+	}
+	return false
+}
+
+// uniqueStructFor returns the only struct whose field names are exactly the
+// symbol keys of the map arm.
+func (r *SpecResolver) uniqueStructFor(arm *Node) (xdr.ScSpecUdtStructV0, bool) {
+	keys := make(map[string]bool, len(arm.Children))
+	for _, entry := range arm.Children {
+		sym := mapEntrySymbol(entry)
+		if sym == "" {
+			return xdr.ScSpecUdtStructV0{}, false
+		}
+		keys[sym] = true
+	}
+	var found []xdr.ScSpecUdtStructV0
+	for _, name := range sortedKeys(r.spec.Structs) {
+		st := r.spec.Structs[name]
+		if len(st.Fields) != len(keys) {
+			continue
+		}
+		all := true
+		for _, f := range st.Fields {
+			if !keys[f.Name] {
+				all = false
+				break
+			}
+		}
+		if all {
+			found = append(found, st)
+		}
+	}
+	if len(found) != 1 {
+		return xdr.ScSpecUdtStructV0{}, false
+	}
+	return found[0], true
+}
+
+// uniqueUnionFor returns the only union with a case that n encodes.
+func (r *SpecResolver) uniqueUnionFor(n *Node) (xdr.ScSpecUdtUnionV0, bool) {
+	var found []xdr.ScSpecUdtUnionV0
+	for _, name := range sortedKeys(r.spec.Unions) {
+		un := r.spec.Unions[name]
+		if _, ok := unionCaseFor(n, un); ok {
+			found = append(found, un)
+		}
+	}
+	if len(found) != 1 {
+		return xdr.ScSpecUdtUnionV0{}, false
+	}
+	return found[0], true
+}
+
+// noteEnumCandidates annotates an untyped u32 with every enum variant it
+// could be. Without a declared type this is a hint, not a resolution, so the
+// value is not reported as matched.
+func (r *SpecResolver) noteEnumCandidates(leaf *Node) bool {
+	v, ok := toUint32(leaf.Value)
+	if !ok {
+		return false
+	}
+	var candidates []string
+	for _, name := range sortedKeys(r.spec.Enums) {
+		for _, c := range r.spec.Enums[name].Cases {
+			if uint32(c.Value) == v {
+				candidates = append(candidates, name+"::"+c.Name)
+				break
+			}
+		}
+	}
+	if len(candidates) > 0 {
+		leaf.Note = strings.Join(candidates, " | ")
+	}
+	return false
+}
+
+func sortedKeys[V any](m map[string]V) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// isScValNode reports whether n is the node of a decoded xdr.ScVal.
+func isScValNode(n *Node) bool {
+	return n != nil && n.Kind == KindStruct && n.TypeName == "ScVal"
+}
+
+// scValArm returns an ScVal node's wire type name and its populated arm.
+func scValArm(n *Node) (string, *Node) {
+	typeNode := n.Child("Type")
+	if typeNode == nil {
+		return "", nil
+	}
+	wire, ok := typeNode.Value.(string)
+	if !ok {
+		return "", nil
+	}
+	for _, c := range n.Children {
+		if c != typeNode {
+			return wire, c
+		}
+	}
+	return wire, nil
+}
+
+// scValSymbol returns the symbol an ScVal node carries.
+func scValSymbol(n *Node) (string, bool) {
+	if !isScValNode(n) {
+		return "", false
+	}
+	wire, arm := scValArm(n)
+	if wire != "ScValTypeScvSymbol" || arm == nil {
+		return "", false
+	}
+	s, ok := arm.Value.(string)
+	return s, ok
+}
+
+// mapEntrySymbol returns the symbol key of a decoded ScMapEntry node, or ""
+// when the key is not a symbol.
+func mapEntrySymbol(entry *Node) string {
+	s, _ := scValSymbol(entry.Child("Key"))
+	return s
+}
+
+func setTypeNote(n *Node, note string) {
+	if typeNode := n.Child("Type"); typeNode != nil {
+		typeNode.Note = note
 	}
 }
 
