@@ -1050,6 +1050,13 @@ mainnet XDR. The library API may still shift before v1.0 — it is not yet froze
 See [docs/roadmap.md](docs/roadmap.md) for what is planned and what is deliberately
 out of scope.
 
+## Documentation
+
+- [Architecture & Internals](docs/architecture.md) — design principles, pipeline layout, and extension guides.
+- [Consensus & SCP Diagnostics](docs/reference/consensus_scp.md) — reference guide for SCP envelopes, quorum sets, ballots, and Mermaid visualization.
+- [Safe Untrusted XDR Parsing](docs/security/untrusted_xdr.md) — security considerations, depth limits, size caps, and hardening guidelines.
+- [Roadmap](docs/roadmap.md) — future plans and non-goals.
+
 ## Contributing
 
 Contributions are welcome — especially new XDR type handlers and better failure

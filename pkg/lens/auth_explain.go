@@ -24,6 +24,10 @@ type AuthFailure struct {
 	Summary string
 	// Hint suggests the next debugging step.
 	Hint string
+	// ExpiredLedger is the ledger at which the authorization signature expired.
+	ExpiredLedger uint32
+	// CurrentLedger is the ledger sequence against which expiration was verified.
+	CurrentLedger uint32
 }
 
 // NewAuthFailure creates a new AuthFailure diagnosis.
@@ -35,6 +39,19 @@ func NewAuthFailure(failureKind string, operationIndex int, missingAuthenticator
 		NonceExpiry:          nonceExpiry,
 		Summary:              summary,
 		Hint:                 hint,
+	}
+}
+
+// NewAuthExpirationFailure creates an AuthFailure for an expired signature expiration ledger.
+func NewAuthExpirationFailure(operationIndex int, expiredLedger, currentLedger uint32) *AuthFailure {
+	return &AuthFailure{
+		FailureKind:    "signature_expired",
+		OperationIndex: operationIndex,
+		NonceExpiry:    fmt.Sprintf("expired at ledger %d (current ledger: %d)", expiredLedger, currentLedger),
+		Summary:        fmt.Sprintf("Authorization expired at ledger %d (current ledger: %d)", expiredLedger, currentLedger),
+		Hint:           fmt.Sprintf("Authorization expired at ledger %d (current ledger: %d). Refresh signature nonce and expiration before resubmitting.", expiredLedger, currentLedger),
+		ExpiredLedger:  expiredLedger,
+		CurrentLedger:  currentLedger,
 	}
 }
 
@@ -166,6 +183,96 @@ func getFailureKind(missingAuth, nonceExpiry string) string {
 		return "nonce_expired"
 	}
 	return "auth_failure"
+}
+
+// getAddressCredentials extracts the SorobanAddressCredentials from any of the address-based credentials arms.
+func getAddressCredentials(creds xdr.SorobanCredentials) *xdr.SorobanAddressCredentials {
+	switch creds.Type {
+	case xdr.SorobanCredentialsTypeSorobanCredentialsAddress:
+		return creds.Address
+	case xdr.SorobanCredentialsTypeSorobanCredentialsAddressV2:
+		return creds.AddressV2
+	case xdr.SorobanCredentialsTypeSorobanCredentialsAddressWithDelegates:
+		if creds.AddressWithDelegates != nil {
+			return &creds.AddressWithDelegates.AddressCredentials
+		}
+	}
+	return nil
+}
+
+// DiagnoseAuthExpiration evaluates Soroban authorization credentials against the current ledger sequence.
+// If any entry's signatureExpirationLedger is less than currentLedger, it flags the authorization as expired.
+func DiagnoseAuthExpiration(auth []xdr.SorobanAuthorizationEntry, currentLedger uint32, operationIndex int) *AuthFailure {
+	if currentLedger == 0 {
+		return nil
+	}
+	for _, entry := range auth {
+		addr := getAddressCredentials(entry.Credentials)
+		if addr == nil {
+			continue
+		}
+		exp := uint32(addr.SignatureExpirationLedger)
+		if exp < currentLedger {
+			return NewAuthExpirationFailure(operationIndex, exp, currentLedger)
+		}
+	}
+	return nil
+}
+
+// DiagnoseAuthExpirationFromBounds evaluates authorization entries against transaction precondition ledger bounds.
+func DiagnoseAuthExpirationFromBounds(auth []xdr.SorobanAuthorizationEntry, lb *xdr.LedgerBounds, operationIndex int) *AuthFailure {
+	if lb == nil {
+		return nil
+	}
+	currentLedger := uint32(lb.MinLedger)
+	if currentLedger == 0 {
+		currentLedger = uint32(lb.MaxLedger)
+	}
+	return DiagnoseAuthExpiration(auth, currentLedger, operationIndex)
+}
+
+// DiagnoseAuthExpirationFromHeader evaluates authorization entries against a ledger header sequence.
+func DiagnoseAuthExpirationFromHeader(auth []xdr.SorobanAuthorizationEntry, header *xdr.LedgerHeader, operationIndex int) *AuthFailure {
+	if header == nil {
+		return nil
+	}
+	return DiagnoseAuthExpiration(auth, uint32(header.LedgerSeq), operationIndex)
+}
+
+// DiagnoseInvokeHostFunctionAuth checks an InvokeHostFunctionOp for expired authorization signatures.
+func DiagnoseInvokeHostFunctionAuth(op xdr.InvokeHostFunctionOp, currentLedger uint32, operationIndex int) *AuthFailure {
+	return DiagnoseAuthExpiration(op.Auth, currentLedger, operationIndex)
+}
+
+// DiagnoseAuthExpirationFromEnvelope checks all InvokeHostFunction operations in an envelope
+// against its precondition ledger bounds (or explicit currentLedger if provided).
+func DiagnoseAuthExpirationFromEnvelope(env *xdr.TransactionEnvelope, currentLedger uint32) []*AuthFailure {
+	if env == nil {
+		return nil
+	}
+	if currentLedger == 0 {
+		if lb := env.LedgerBounds(); lb != nil {
+			currentLedger = uint32(lb.MinLedger)
+			if currentLedger == 0 {
+				currentLedger = uint32(lb.MaxLedger)
+			}
+		}
+	}
+	if currentLedger == 0 {
+		return nil
+	}
+
+	var failures []*AuthFailure
+	for i, op := range env.Operations() {
+		if op.Body.Type == xdr.OperationTypeInvokeHostFunction {
+			if hostOp, ok := op.Body.GetInvokeHostFunctionOp(); ok {
+				if fail := DiagnoseInvokeHostFunctionAuth(hostOp, currentLedger, i); fail != nil {
+					failures = append(failures, fail)
+				}
+			}
+		}
+	}
+	return failures
 }
 
 // init registers the diagnosis function with the lens framework.
