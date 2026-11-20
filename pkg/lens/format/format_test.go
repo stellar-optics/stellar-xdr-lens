@@ -971,3 +971,31 @@ func TestJSONFormatterDeterministicMapKeys(t *testing.T) {
 		}
 	}
 }
+
+func TestSummaryFormatterHighlightsFailingDiagnosticEvents(t *testing.T) {
+	t.Parallel()
+
+	summary, err := lens.ExplainPair(loadValue(t, "tx_failed.env"), loadValue(t, "tx_failed.res"))
+	if err != nil {
+		t.Fatalf("ExplainPair() error = %v", err)
+	}
+	summary.Outcome.Diagnostics = []lens.DiagnosticEventSummary{
+		{Index: 0, Kind: "fn_call", Failed: true, Text: "[failed] fn_call CABC::harvest()"},
+		{Index: 1, Kind: "core_metrics", Text: "[success] core_metrics cpu_insn = 1"},
+	}
+
+	var buf bytes.Buffer
+	if err := format.NewSummaryFormatter().Format(&buf, summary); err != nil {
+		t.Fatalf("Format() error = %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"Diagnostic events (2)",
+		"✗ [0] [failed] fn_call CABC::harvest()",
+		"· [1] [success] core_metrics cpu_insn = 1",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("summary output does not contain %q\n%s", want, out)
+		}
+	}
+}

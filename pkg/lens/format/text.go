@@ -155,6 +155,25 @@ func (f *SummaryFormatter) outcome(b *strings.Builder, o *lens.Outcome) {
 		fmt.Fprintf(b, "  %sinner transaction:%s\n", p.Dim, p.Reset)
 		f.reason(b, "  ", *o.InnerReason)
 	}
+	f.diagnostics(b, o.Diagnostics)
+}
+
+// diagnostics lists the diagnostic event trace, marking the events emitted
+// inside the failed call so the error trace stands out from the calls that
+// completed.
+func (f *SummaryFormatter) diagnostics(b *strings.Builder, events []lens.DiagnosticEventSummary) {
+	if len(events) == 0 {
+		return
+	}
+	p := f.palette
+	fmt.Fprintf(b, "\n%sDiagnostic events (%d)%s\n", p.Key, len(events), p.Reset)
+	for _, e := range events {
+		marker, colour := "·", p.Dim
+		if e.Failed {
+			marker, colour = "✗", p.Remove
+		}
+		fmt.Fprintf(b, "  %s%s [%d] %s%s\n", colour, marker, e.Index, e.Text, p.Reset)
+	}
 }
 
 func (f *SummaryFormatter) reason(b *strings.Builder, indent string, r lens.Reason) {

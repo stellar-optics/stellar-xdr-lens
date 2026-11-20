@@ -76,6 +76,22 @@ type Outcome struct {
 	InnerReason *Reason `json:"innerReason,omitempty"`
 	// FailedOps lists the indexes of operations that did not succeed.
 	FailedOps []int `json:"failedOperations,omitempty"`
+	// Diagnostics is the Soroban diagnostic event trace of a failed
+	// transaction, present when transaction meta was supplied (see
+	// AttachDiagnosticEvents). Events with Failed set were emitted inside
+	// the contract call that failed.
+	Diagnostics []DiagnosticEventSummary `json:"diagnostics,omitempty"`
+}
+
+// AttachDiagnosticEvents adds the diagnostic events of a failed transaction
+// to its outcome, so the explanation carries the call trace that led to the
+// failure. It does nothing for a summary without an outcome, for a
+// successful transaction, or when there are no events.
+func AttachDiagnosticEvents(s *Summary, events []xdr.DiagnosticEvent) {
+	if s == nil || s.Outcome == nil || s.Outcome.Success || len(events) == 0 {
+		return
+	}
+	s.Outcome.Diagnostics = DecodeDiagnosticEvents(events)
 }
 
 // Explain summarises a single decoded value.

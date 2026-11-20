@@ -1431,3 +1431,70 @@ func TestDecodeSpecFlag(t *testing.T) {
 		}
 	})
 }
+
+func TestExplainMetaIncludesDiagnosticTrace(t *testing.T) {
+	t.Parallel()
+
+	fn := xdr.ScSymbol("fn_call")
+	errSym := xdr.ScSymbol("error")
+	harvest := xdr.ScSymbol("harvest")
+	callee := xdr.ScBytes(make([]byte, 32))
+	missing := xdr.ScErrorCodeScecMissingValue
+	msg := xdr.ScString("trying to invoke non-existent contract function")
+	meta := xdr.TransactionMeta{V: 4, V4: &xdr.TransactionMetaV4{DiagnosticEvents: []xdr.DiagnosticEvent{
+		{Event: xdr.ContractEvent{Type: xdr.ContractEventTypeDiagnostic, Body: xdr.ContractEventBody{V0: &xdr.ContractEventV0{
+			Topics: []xdr.ScVal{
+				{Type: xdr.ScValTypeScvSymbol, Sym: &fn},
+				{Type: xdr.ScValTypeScvBytes, Bytes: &callee},
+				{Type: xdr.ScValTypeScvSymbol, Sym: &harvest},
+			},
+			Data: xdr.ScVal{Type: xdr.ScValTypeScvVoid},
+		}}}},
+		{Event: xdr.ContractEvent{Type: xdr.ContractEventTypeDiagnostic, Body: xdr.ContractEventBody{V0: &xdr.ContractEventV0{
+			Topics: []xdr.ScVal{
+				{Type: xdr.ScValTypeScvSymbol, Sym: &errSym},
+				{Type: xdr.ScValTypeScvError, Error: &xdr.ScError{Type: xdr.ScErrorTypeSceWasmVm, Code: &missing}},
+			},
+			Data: xdr.ScVal{Type: xdr.ScValTypeScvString, Str: &msg},
+		}}}},
+	}}}
+	metaB64, err := xdr.MarshalBase64(meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	out, _, err := run(t, "", "explain", "--color", "never",
+		"--file", fixturePath("tx_failed.env"), "--result-file", fixturePath("tx_failed.res"), "--meta", metaB64)
+	if err != nil {
+		t.Fatalf("explain --meta error = %v", err)
+	}
+	for _, want := range []string{
+		"Diagnostic events (2)",
+		"✗ [0] [failed] fn_call",
+		"✗ [1] [failed] error Error(WasmVm, MissingValue)",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("explain output missing %q:\n%s", want, out)
+		}
+	}
+
+	jsonOut, _, err := run(t, "", "explain", "--json",
+		"--file", fixturePath("tx_failed.env"), "--result-file", fixturePath("tx_failed.res"), "--meta", metaB64)
+	if err != nil {
+		t.Fatalf("explain --json --meta error = %v", err)
+	}
+	var doc struct {
+		Outcome struct {
+			Diagnostics []lens.DiagnosticEventSummary `json:"diagnostics"`
+		} `json:"outcome"`
+	}
+	if err := json.Unmarshal([]byte(jsonOut), &doc); err != nil {
+		t.Fatalf("explain --json output is not JSON: %v", err)
+	}
+	if got := len(doc.Outcome.Diagnostics); got != 2 {
+		t.Fatalf("JSON outcome has %d diagnostics, want 2", got)
+	}
+	if got := doc.Outcome.Diagnostics[1].Error; got != "Error(WasmVm, MissingValue)" {
+		t.Errorf("diagnostics[1].error = %q, want Error(WasmVm, MissingValue)", got)
+	}
+}

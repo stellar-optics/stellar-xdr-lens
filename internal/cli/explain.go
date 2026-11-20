@@ -106,6 +106,10 @@ lumen buying liabilities behind dest_full.`,
 				}
 			}
 
+			if metaVal != nil {
+				lens.AttachDiagnosticEvents(summary, lens.DiagnosticEventsFromValue(metaVal))
+			}
+
 			var breakdown *lens.ResourceBreakdown
 			if resources {
 				breakdown, err = lens.ExplainResourcesWithMeta(primary, metaVal, lens.DefaultResourceLimits())

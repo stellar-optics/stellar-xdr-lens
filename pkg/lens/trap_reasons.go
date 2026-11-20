@@ -324,8 +324,27 @@ func ExtractDiagnosticEvents(meta *xdr.TransactionMeta) []xdr.DiagnosticEvent {
 		if meta.V3 != nil && meta.V3.SorobanMeta != nil {
 			return meta.V3.SorobanMeta.DiagnosticEvents
 		}
+	case 4:
+		// Protocol 23 moved diagnostic events out of SorobanMeta to the top
+		// level of TransactionMetaV4.
+		if meta.V4 != nil {
+			return meta.V4.DiagnosticEvents
+		}
 	}
 	return nil
+}
+
+// DiagnosticEventsFromValue returns the diagnostic events of a decoded
+// TransactionMeta, or nil for any other value.
+func DiagnosticEventsFromValue(meta *Value) []xdr.DiagnosticEvent {
+	if meta == nil {
+		return nil
+	}
+	m, ok := meta.Raw.(*xdr.TransactionMeta)
+	if !ok {
+		return nil
+	}
+	return ExtractDiagnosticEvents(m)
 }
 
 // DecodeTrapFromMeta extracts diagnostic events from a TransactionMeta and decodes
@@ -413,25 +432,4 @@ func CorrelateTrapFromValues(resVal *Value, metaVal *Value) (*TrappedReason, err
 	}
 
 	return CorrelateTrap(res, meta)
-}
-
-// FormatDiagnosticEvent formats a single DiagnosticEvent into a readable string.
-func FormatDiagnosticEvent(event xdr.DiagnosticEvent) string {
-	detail := parseDiagnosticDetail(event)
-	var sb strings.Builder
-	status := "success"
-	if !detail.InSuccessfulCall {
-		status = "failed"
-	}
-	fmt.Fprintf(&sb, "[%s] %s event", status, detail.Type)
-	if detail.ContractID != "" {
-		fmt.Fprintf(&sb, " from %s", shortContractID(detail.ContractID))
-	}
-	if len(detail.Topics) > 0 {
-		fmt.Fprintf(&sb, " topics=[%s]", strings.Join(detail.Topics, ", "))
-	}
-	if detail.Data != "" {
-		fmt.Fprintf(&sb, " data=%q", detail.Data)
-	}
-	return sb.String()
 }
