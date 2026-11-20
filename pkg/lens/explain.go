@@ -63,6 +63,8 @@ type OpSummary struct {
 	PathPayment *PathPaymentSlippageDiagnosis `json:"pathPayment,omitempty"`
 	// TrustLine provides contextual diagnostics for SetTrustLineFlags failures.
 	TrustLine *SetTrustLineFlagsDiagnosis `json:"trustLine,omitempty"`
+	// Auth provides contextual diagnostics for Soroban contract authorization failures.
+	Auth *AuthFailure `json:"auth,omitempty"`
 }
 
 // Outcome is the resolved result of a transaction.
@@ -136,12 +138,29 @@ func explainEnvelope(env *xdr.TransactionEnvelope, res *xdr.TransactionResult) (
 
 	ops := env.Operations()
 	for i, op := range ops {
-		s.Operations = append(s.Operations, OpSummary{
+		opSum := OpSummary{
 			Index:  i,
 			Type:   operationTypeLabel(op.Body.Type),
 			Source: operationSource(op),
 			Detail: describeOperation(op),
-		})
+		}
+		if op.Body.Type == xdr.OperationTypeInvokeHostFunction {
+			if hostOp, ok := op.Body.GetInvokeHostFunctionOp(); ok {
+				var currentLedger uint32
+				if lb := env.LedgerBounds(); lb != nil {
+					currentLedger = uint32(lb.MinLedger)
+					if currentLedger == 0 {
+						currentLedger = uint32(lb.MaxLedger)
+					}
+				}
+				if currentLedger > 0 {
+					if authDiag := DiagnoseInvokeHostFunctionAuth(hostOp, currentLedger, i); authDiag != nil {
+						opSum.Auth = authDiag
+					}
+				}
+			}
+		}
+		s.Operations = append(s.Operations, opSum)
 	}
 
 	if res == nil {
@@ -154,11 +173,33 @@ func explainEnvelope(env *xdr.TransactionEnvelope, res *xdr.TransactionResult) (
 		return nil, err
 	}
 	for i, op := range env.Operations() {
-		if i >= len(s.Operations) || s.Operations[i].Result == nil {
+		if i >= len(s.Operations) {
 			continue
 		}
-		reason := contextualizeChangeTrustFailure(op, *s.Operations[i].Result)
-		s.Operations[i].Result = &reason
+		if s.Operations[i].Result != nil {
+			reason := contextualizeChangeTrustFailure(op, *s.Operations[i].Result)
+			s.Operations[i].Result = &reason
+		}
+		if op.Body.Type == xdr.OperationTypeInvokeHostFunction {
+			if hostOp, ok := op.Body.GetInvokeHostFunctionOp(); ok {
+				var currentLedger uint32
+				if lb := env.LedgerBounds(); lb != nil {
+					currentLedger = uint32(lb.MinLedger)
+					if currentLedger == 0 {
+						currentLedger = uint32(lb.MaxLedger)
+					}
+				}
+				if currentLedger > 0 {
+					if authDiag := DiagnoseInvokeHostFunctionAuth(hostOp, currentLedger, i); authDiag != nil {
+						s.Operations[i].Auth = authDiag
+						if s.Operations[i].Result != nil && !s.Operations[i].Result.Success {
+							s.Operations[i].Result.Summary = authDiag.Summary
+							s.Operations[i].Result.Hint = authDiag.Hint
+						}
+					}
+				}
+			}
+		}
 	}
 	s.Headline = resultHeadline(s, s.Outcome)
 	return s, nil
