@@ -6,6 +6,10 @@ where to make the three changes contributors most often want to make:
 - [Adding a new XDR type](#adding-a-new-xdr-type)
 - [Improving how a type is rendered](#adding-an-enricher)
 - [Adding a new output format](#adding-a-formatter)
+- [XDR Type Detection Heuristics & Scoring Guide](architecture/detection.md)
+- [Debugging Failed Transactions Guide](guides/debugging_failures.md)
+- [Soroban Smart Contract Specifications Guide](guides/soroban_specs.md)
+- [JSON Schema & Encoding Reference](encode/schema_reference.md)
 
 ## The pipeline
 
@@ -498,6 +502,8 @@ identical input produce byte-identical output. This property is tested by
 `TestJSONFormatterDeterministicMapKeys` in `format/format_test.go`.
 
 ## Adding a new XDR type
+
+For an in-depth reference on candidate scoring, wire size filters, and resolving ambiguous payloads, see the [XDR Type Detection & Scoring Guide](architecture/detection.md).
 
 Add one line to `registry` in [`decode.go`](../pkg/lens/decode.go):
 
