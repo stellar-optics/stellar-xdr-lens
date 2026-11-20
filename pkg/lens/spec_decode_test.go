@@ -590,3 +590,474 @@ func TestSpecTypeNameAndToUint32(t *testing.T) {
 		}
 	}
 }
+
+// fixtureContractSpec returns the spec entries embedded in the
+// testdata/contract_code.txt module, read through the real decode path.
+func fixtureContractSpec(t *testing.T) []xdr.ScSpecEntry {
+	t.Helper()
+	v, err := lens.DecodeAs(loadFixture(t, "contract_code"), "ContractCodeEntry")
+	if err != nil {
+		t.Fatalf("DecodeAs(contract_code) error = %v", err)
+	}
+	entry, ok := v.Raw.(*xdr.ContractCodeEntry)
+	if !ok {
+		t.Fatalf("Raw = %T, want *xdr.ContractCodeEntry", v.Raw)
+	}
+	parsed, err := lens.ParseContractCode(entry.Code)
+	if err != nil {
+		t.Fatalf("ParseContractCode() error = %v", err)
+	}
+	return parsed.Spec
+}
+
+func TestFormatContractSpecFromFixture(t *testing.T) {
+	t.Parallel()
+
+	got := lens.FormatContractSpec(fixtureContractSpec(t))
+	want := `/// Adds one to the counter
+/// caller: account paying for the call
+fn increment(caller: Address) -> u32
+
+/// A 2-D point
+struct Point {
+    x: u32,
+    y: u32,
+}
+
+/// Maybe a counter
+union MaybeCounter {
+    None,
+    Some(u32),
+}
+
+/// Traffic light states
+enum Color {
+    Red = 0,
+    Green = 1,
+}
+
+/// Errors the contract can raise
+error Error {
+    NotInitialized = 1,
+}
+
+/// Emitted on every increment
+event increment {
+    topic "counter",
+    data value: u32,
+}
+`
+	if got != want {
+		t.Errorf("FormatContractSpec() mismatch\n--- got ---\n%s\n--- want ---\n%s", got, want)
+	}
+}
+
+func TestContractCodeDecodeListsInterface(t *testing.T) {
+	t.Parallel()
+
+	v, err := lens.DecodeAs(loadFixture(t, "contract_code"), "ContractCodeEntry")
+	if err != nil {
+		t.Fatalf("DecodeAs(contract_code) error = %v", err)
+	}
+	iface := v.Node.Child("Interface")
+	if iface == nil {
+		t.Fatal("Interface node is missing")
+	}
+	want := []string{
+		"fn increment(caller: Address) -> u32",
+		"struct Point { x: u32, y: u32 }",
+		"union MaybeCounter { None, Some(u32) }",
+		"enum Color { Red = 0, Green = 1 }",
+		"error Error { NotInitialized = 1 }",
+		`event increment { topic "counter", data value: u32 }`,
+	}
+	if len(iface.Children) != len(want) {
+		t.Fatalf("Interface has %d entries, want %d", len(iface.Children), len(want))
+	}
+	for i, w := range want {
+		if got := iface.Children[i].Value; got != w {
+			t.Errorf("Interface[%d] = %q, want %q", i, got, w)
+		}
+	}
+}
+
+func TestSpecTypeSignature(t *testing.T) {
+	t.Parallel()
+
+	u32 := xdr.ScSpecTypeDef{Type: xdr.ScSpecTypeScSpecTypeU32}
+	addr := xdr.ScSpecTypeDef{Type: xdr.ScSpecTypeScSpecTypeAddress}
+	sym := xdr.ScSpecTypeDef{Type: xdr.ScSpecTypeScSpecTypeSymbol}
+	point := xdr.ScSpecTypeDef{Type: xdr.ScSpecTypeScSpecTypeUdt, Udt: &xdr.ScSpecTypeUdt{Name: "Point"}}
+
+	tests := []struct {
+		name string
+		td   xdr.ScSpecTypeDef
+		want string
+	}{
+		{name: "primitive", td: u32, want: "u32"},
+		{name: "address", td: addr, want: "Address"},
+		{name: "void", td: xdr.ScSpecTypeDef{Type: xdr.ScSpecTypeScSpecTypeVoid}, want: "()"},
+		{name: "udt", td: point, want: "Point"},
+		{name: "option", td: xdr.ScSpecTypeDef{Type: xdr.ScSpecTypeScSpecTypeOption, Option: &xdr.ScSpecTypeOption{ValueType: point}}, want: "Option<Point>"},
+		{name: "result", td: xdr.ScSpecTypeDef{Type: xdr.ScSpecTypeScSpecTypeResult, Result: &xdr.ScSpecTypeResult{OkType: u32, ErrorType: xdr.ScSpecTypeDef{Type: xdr.ScSpecTypeScSpecTypeError}}}, want: "Result<u32, Error>"},
+		{name: "vec", td: xdr.ScSpecTypeDef{Type: xdr.ScSpecTypeScSpecTypeVec, Vec: &xdr.ScSpecTypeVec{ElementType: sym}}, want: "Vec<Symbol>"},
+		{name: "map", td: xdr.ScSpecTypeDef{Type: xdr.ScSpecTypeScSpecTypeMap, Map: &xdr.ScSpecTypeMap{KeyType: addr, ValueType: u32}}, want: "Map<Address, u32>"},
+		{name: "tuple", td: xdr.ScSpecTypeDef{Type: xdr.ScSpecTypeScSpecTypeTuple, Tuple: &xdr.ScSpecTypeTuple{ValueTypes: []xdr.ScSpecTypeDef{u32, sym}}}, want: "(u32, Symbol)"},
+		{name: "bytes_n", td: xdr.ScSpecTypeDef{Type: xdr.ScSpecTypeScSpecTypeBytesN, BytesN: &xdr.ScSpecTypeBytesN{N: 32}}, want: "BytesN<32>"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := lens.SpecTypeSignature(tc.td); got != tc.want {
+				t.Errorf("SpecTypeSignature() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestFormatSpecEntrySignatureFunctionOutputs(t *testing.T) {
+	t.Parallel()
+
+	u32 := xdr.ScSpecTypeDef{Type: xdr.ScSpecTypeScSpecTypeU32}
+	tests := []struct {
+		name    string
+		outputs []xdr.ScSpecTypeDef
+		want    string
+	}{
+		{name: "no output", outputs: nil, want: "fn reset(n: u32)"},
+		{name: "one output", outputs: []xdr.ScSpecTypeDef{u32}, want: "fn reset(n: u32) -> u32"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			entry := xdr.ScSpecEntry{
+				Kind: xdr.ScSpecEntryKindScSpecEntryFunctionV0,
+				FunctionV0: &xdr.ScSpecFunctionV0{
+					Name:    "reset",
+					Inputs:  []xdr.ScSpecFunctionInputV0{{Name: "n", Type: u32}},
+					Outputs: tc.outputs,
+				},
+			}
+			if got := lens.FormatSpecEntrySignature(entry); got != tc.want {
+				t.Errorf("FormatSpecEntrySignature() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// fixtureSpecJSON is the output of
+//
+//	stellar contract info interface --wasm contract.wasm --output json
+//
+// (stellar-cli 27.1.0) for the module embedded in testdata/contract_code.txt.
+const fixtureSpecJSON = `[{"function_v0":{"doc":"Adds one to the counter","name":"increment","inputs":[{"doc":"account paying for the call","name":"caller","type_":"address"}],"outputs":["u32"]}},{"udt_struct_v0":{"doc":"A 2-D point","lib":"","name":"Point","fields":[{"doc":"","name":"x","type_":"u32"},{"doc":"","name":"y","type_":"u32"}]}},{"udt_union_v0":{"doc":"Maybe a counter","lib":"","name":"MaybeCounter","cases":[{"void_v0":{"doc":"","name":"None"}},{"tuple_v0":{"doc":"","name":"Some","type_":["u32"]}}]}},{"udt_enum_v0":{"doc":"Traffic light states","lib":"","name":"Color","cases":[{"doc":"","name":"Red","value":0},{"doc":"","name":"Green","value":1}]}},{"udt_error_enum_v0":{"doc":"Errors the contract can raise","lib":"","name":"Error","cases":[{"doc":"","name":"NotInitialized","value":1}]}},{"event_v0":{"doc":"Emitted on every increment","lib":"","name":"increment","prefix_topics":["counter"],"params":[{"doc":"","name":"value","type_":"u32","location":"data"}],"data_format":"single_value"}}]`
+
+func TestParseContractSpecFromJSONMatchesWasm(t *testing.T) {
+	t.Parallel()
+
+	fromJSON, err := lens.ParseContractSpec([]byte(fixtureSpecJSON))
+	if err != nil {
+		t.Fatalf("ParseContractSpec(JSON) error = %v", err)
+	}
+	want := fixtureContractSpec(t)
+	if len(fromJSON.Entries) != len(want) {
+		t.Fatalf("JSON spec has %d entries, want %d", len(fromJSON.Entries), len(want))
+	}
+	for i := range want {
+		got, err := fromJSON.Entries[i].MarshalBinary()
+		if err != nil {
+			t.Fatalf("entry %d: MarshalBinary() error = %v", i, err)
+		}
+		wantBytes, err := want[i].MarshalBinary()
+		if err != nil {
+			t.Fatalf("entry %d: MarshalBinary() error = %v", i, err)
+		}
+		if !bytes.Equal(got, wantBytes) {
+			t.Errorf("entry %d (%s) differs from the WASM spec entry", i, lens.FormatSpecEntrySignature(want[i]))
+		}
+	}
+}
+
+func TestParseContractSpecJSONComposites(t *testing.T) {
+	t.Parallel()
+
+	data := `[{"function_v0":{"doc":"","name":"pay","inputs":[
+		{"doc":"","name":"to","type_":{"option":{"value_type":"address"}}},
+		{"doc":"","name":"ids","type_":{"vec":{"element_type":{"bytes_n":{"n":32}}}}},
+		{"doc":"","name":"book","type_":{"map":{"key_type":"symbol","value_type":{"udt":{"name":"Point"}}}}},
+		{"doc":"","name":"pair","type_":{"tuple":{"value_types":["i128","muxed_address"]}}}
+	],"outputs":[{"result":{"ok_type":"void","error_type":"error"}}]}}]`
+	cs, err := lens.ParseContractSpec([]byte(data))
+	if err != nil {
+		t.Fatalf("ParseContractSpec() error = %v", err)
+	}
+	got := lens.FormatSpecEntrySignature(cs.Entries[0])
+	want := "fn pay(to: Option<Address>, ids: Vec<BytesN<32>>, book: Map<Symbol, Point>, pair: (i128, MuxedAddress)) -> Result<(), Error>"
+	if got != want {
+		t.Errorf("signature = %q, want %q", got, want)
+	}
+}
+
+func TestParseContractSpecJSONErrors(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		data string
+	}{
+		{name: "not json", data: `[{"function_v0":`},
+		{name: "empty array", data: `[]`},
+		{name: "unknown entry kind", data: `[{"function_v9":{}}]`},
+		{name: "two keys", data: `[{"function_v0":{},"udt_struct_v0":{}}]`},
+		{name: "unknown type", data: `[{"udt_struct_v0":{"name":"P","fields":[{"name":"x","type_":"u33"}]}}]`},
+		{name: "unknown union case", data: `[{"udt_union_v0":{"name":"U","cases":[{"maybe_v0":{"name":"A"}}]}}]`},
+		{name: "udt without name", data: `[{"function_v0":{"name":"f","inputs":[{"name":"a","type_":{"udt":{}}}]}}]`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := lens.ParseContractSpec([]byte(tc.data))
+			if !errors.Is(err, lens.ErrInvalidContractSpec) {
+				t.Errorf("ParseContractSpec() error = %v, want ErrInvalidContractSpec", err)
+			}
+		})
+	}
+}
+
+func specSym(s string) xdr.ScVal {
+	v := xdr.ScSymbol(s)
+	return xdr.ScVal{Type: xdr.ScValTypeScvSymbol, Sym: &v}
+}
+
+func specU32(n uint32) xdr.ScVal {
+	v := xdr.Uint32(n)
+	return xdr.ScVal{Type: xdr.ScValTypeScvU32, U32: &v}
+}
+
+func specMap(entries ...xdr.ScMapEntry) xdr.ScVal {
+	m := xdr.ScMap(entries)
+	p := &m
+	return xdr.ScVal{Type: xdr.ScValTypeScvMap, Map: &p}
+}
+
+func specVec(elems ...xdr.ScVal) xdr.ScVal {
+	v := xdr.ScVec(elems)
+	p := &v
+	return xdr.ScVal{Type: xdr.ScValTypeScvVec, Vec: &p}
+}
+
+// decodeScValNode round-trips v through the real decode path.
+func decodeScValNode(t *testing.T, v xdr.ScVal) *lens.Node {
+	t.Helper()
+	b64, err := xdr.MarshalBase64(v)
+	if err != nil {
+		t.Fatalf("MarshalBase64() error = %v", err)
+	}
+	decoded, err := lens.DecodeAs(b64, "ScVal")
+	if err != nil {
+		t.Fatalf("DecodeAs(ScVal) error = %v", err)
+	}
+	return decoded.Node
+}
+
+func TestSpecResolverInfersTypesFromShape(t *testing.T) {
+	t.Parallel()
+
+	cs, err := lens.ParseContractSpec([]byte(fixtureSpecJSON))
+	if err != nil {
+		t.Fatalf("ParseContractSpec() error = %v", err)
+	}
+	point := specMap(
+		xdr.ScMapEntry{Key: specSym("x"), Val: specU32(3)},
+		xdr.ScMapEntry{Key: specSym("y"), Val: specU32(4)},
+	)
+
+	tests := []struct {
+		name      string
+		val       xdr.ScVal
+		wantMatch bool
+		wantNote  string
+		wantNames []string
+	}{
+		{name: "struct map", val: point, wantMatch: true, wantNote: "Point", wantNames: []string{"x", "y"}},
+		{name: "union tuple case", val: specVec(specSym("Some"), specU32(7)), wantMatch: true, wantNote: "MaybeCounter::Some", wantNames: []string{"", ""}},
+		{name: "union void case", val: specVec(specSym("None")), wantMatch: true, wantNote: "MaybeCounter::None", wantNames: []string{""}},
+		{name: "map with unknown key", val: specMap(
+			xdr.ScMapEntry{Key: specSym("x"), Val: specU32(3)},
+			xdr.ScMapEntry{Key: specSym("z"), Val: specU32(4)},
+		)},
+		{name: "union case with wrong arity", val: specVec(specSym("Some"))},
+		{name: "plain vector", val: specVec(specU32(1), specU32(2))},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			n := decodeScValNode(t, tc.val)
+			before := n.String()
+			matched := lens.NewSpecResolver(cs).MapScValWithSpec(n, nil)
+			if matched != tc.wantMatch {
+				t.Fatalf("MapScValWithSpec() = %v, want %v", matched, tc.wantMatch)
+			}
+			if !tc.wantMatch {
+				if after := n.String(); after != before {
+					t.Errorf("unmatched value was modified:\n%s\nwant:\n%s", after, before)
+				}
+				return
+			}
+			if got := n.Child("Type").Note; got != tc.wantNote {
+				t.Errorf("Type note = %q, want %q", got, tc.wantNote)
+			}
+			var arm *lens.Node
+			for _, c := range n.Children {
+				if c.Name != "Type" {
+					arm = c
+				}
+			}
+			if len(arm.Children) != len(tc.wantNames) {
+				t.Fatalf("%s has %d children, want %d", arm.Name, len(arm.Children), len(tc.wantNames))
+			}
+			for i, want := range tc.wantNames {
+				if got := arm.Children[i].Name; got != want {
+					t.Errorf("%s[%d].Name = %q, want %q", arm.Name, i, got, want)
+				}
+			}
+		})
+	}
+}
+
+func TestSpecResolverTypedValues(t *testing.T) {
+	t.Parallel()
+
+	cs, err := lens.ParseContractSpec([]byte(fixtureSpecJSON))
+	if err != nil {
+		t.Fatalf("ParseContractSpec() error = %v", err)
+	}
+	udt := func(name string) *xdr.ScSpecTypeDef {
+		return &xdr.ScSpecTypeDef{Type: xdr.ScSpecTypeScSpecTypeUdt, Udt: &xdr.ScSpecTypeUdt{Name: name}}
+	}
+	code := xdr.Uint32(1)
+	contractErr := xdr.ScVal{Type: xdr.ScValTypeScvError, Error: &xdr.ScError{Type: xdr.ScErrorTypeSceContract, ContractCode: &code}}
+
+	tests := []struct {
+		name      string
+		val       xdr.ScVal
+		td        *xdr.ScSpecTypeDef
+		wantMatch bool
+		wantNote  string
+	}{
+		{name: "enum variant", val: specU32(1), td: udt("Color"), wantMatch: true, wantNote: "Color::Green"},
+		{name: "enum value out of range", val: specU32(9), td: udt("Color")},
+		{name: "contract error code", val: contractErr, td: udt("Error"), wantMatch: true, wantNote: "Error::NotInitialized"},
+		{name: "struct expected, u32 given", val: specU32(1), td: udt("Point")},
+		{name: "primitive", val: specU32(1), td: &xdr.ScSpecTypeDef{Type: xdr.ScSpecTypeScSpecTypeU32}, wantMatch: true},
+		{name: "unknown udt", val: specU32(1), td: udt("Nope")},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			n := decodeScValNode(t, tc.val)
+			before := n.String()
+			if got := lens.NewSpecResolver(cs).MapScValWithSpec(n, tc.td); got != tc.wantMatch {
+				t.Fatalf("MapScValWithSpec() = %v, want %v", got, tc.wantMatch)
+			}
+			if !tc.wantMatch {
+				if after := n.String(); after != before {
+					t.Errorf("unmatched value was modified:\n%s\nwant:\n%s", after, before)
+				}
+				return
+			}
+			if got := n.Child("Type").Note; got != tc.wantNote {
+				t.Errorf("Type note = %q, want %q", got, tc.wantNote)
+			}
+		})
+	}
+}
+
+func TestApplyToValueResolvesInvokeContractArgs(t *testing.T) {
+	t.Parallel()
+
+	cs, err := lens.ParseContractSpec([]byte(fixtureSpecJSON))
+	if err != nil {
+		t.Fatalf("ParseContractSpec() error = %v", err)
+	}
+	// A function taking the fixture's struct and enum types, so the
+	// arguments are resolved by declared type rather than by shape.
+	udt := func(name string) xdr.ScSpecTypeDef {
+		return xdr.ScSpecTypeDef{Type: xdr.ScSpecTypeScSpecTypeUdt, Udt: &xdr.ScSpecTypeUdt{Name: name}}
+	}
+	cs.AddEntry(xdr.ScSpecEntry{
+		Kind: xdr.ScSpecEntryKindScSpecEntryFunctionV0,
+		FunctionV0: &xdr.ScSpecFunctionV0{
+			Name: "paint",
+			Inputs: []xdr.ScSpecFunctionInputV0{
+				{Name: "at", Type: udt("Point")},
+				{Name: "color", Type: udt("Color")},
+				{Name: "times", Type: xdr.ScSpecTypeDef{Type: xdr.ScSpecTypeScSpecTypeU32}},
+			},
+		},
+	})
+
+	contract := xdr.ContractId{1, 2, 3}
+	source := xdr.MustMuxedAddress("GCJNHFXJEQEY54NPKU4DBMT5WOBJUHMYSFBDAQF4OMTEGJN4BQU7ZST6")
+	env := xdr.TransactionEnvelope{
+		Type: xdr.EnvelopeTypeEnvelopeTypeTx,
+		V1: &xdr.TransactionV1Envelope{Tx: xdr.Transaction{
+			SourceAccount: source,
+			Fee:           100,
+			SeqNum:        1,
+			Operations: []xdr.Operation{{Body: xdr.OperationBody{
+				Type: xdr.OperationTypeInvokeHostFunction,
+				InvokeHostFunctionOp: &xdr.InvokeHostFunctionOp{HostFunction: xdr.HostFunction{
+					Type: xdr.HostFunctionTypeHostFunctionTypeInvokeContract,
+					InvokeContract: &xdr.InvokeContractArgs{
+						ContractAddress: xdr.ScAddress{Type: xdr.ScAddressTypeScAddressTypeContract, ContractId: &contract},
+						FunctionName:    "paint",
+						Args: []xdr.ScVal{
+							specMap(
+								xdr.ScMapEntry{Key: specSym("x"), Val: specU32(3)},
+								xdr.ScMapEntry{Key: specSym("y"), Val: specU32(4)},
+							),
+							specU32(1),
+							specU32(0),
+						},
+					},
+				}},
+			}}},
+		}},
+	}
+	b64, err := xdr.MarshalBase64(env)
+	if err != nil {
+		t.Fatalf("MarshalBase64() error = %v", err)
+	}
+	val, err := lens.DecodeAs(b64, "TransactionEnvelope")
+	if err != nil {
+		t.Fatalf("DecodeAs() error = %v", err)
+	}
+	cs.ApplyToValue(val)
+
+	args := val.Node.Find("V1.Tx.Operations[0].Body.InvokeHostFunctionOp.HostFunction.InvokeContract.Args")
+	if args == nil {
+		t.Fatal("Args node not found")
+	}
+	at, color, times := args.Children[0], args.Children[1], args.Children[2]
+	if at.Name != "at" || color.Name != "color" || times.Name != "times" {
+		t.Fatalf("argument names = %q, %q, %q; want at, color, times", at.Name, color.Name, times.Name)
+	}
+	if got := at.Child("Type").Note; got != "Point" {
+		t.Errorf("at Type note = %q, want Point", got)
+	}
+	if got := at.Child("Map").Children[1].Name; got != "y" {
+		t.Errorf("at.Map[1].Name = %q, want y", got)
+	}
+	if got := color.Child("U32").Note; got != "Color::Green" {
+		t.Errorf("color note = %q, want Color::Green", got)
+	}
+	// A u32 declared as u32 is not an enum, even though Color has a case 0.
+	if got := times.Child("U32").Note; got != "" {
+		t.Errorf("times note = %q, want none", got)
+	}
+	// Integers outside any ScVal are never guessed at.
+	if got := val.Node.Find("V1.Tx.SeqNum"); got == nil || got.Note != "" {
+		t.Errorf("SeqNum note = %v, want none", got)
+	}
+}

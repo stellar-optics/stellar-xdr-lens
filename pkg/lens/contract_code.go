@@ -215,10 +215,10 @@ func readU32(b []byte) (uint32, int, error) {
 
 func init() {
 	nodeHooks[reflect.TypeOf(xdr.ContractCodeEntry{})] = decorateContractCode
-	// Spec, EnvMeta and Meta are parsed from the Code bytes and appended to
-	// the decoded tree; they are not XDR fields, so the JSON encoder ignores
-	// them rather than treating them as unknown keys.
-	registerDerivedNodeFields(reflect.TypeOf(xdr.ContractCodeEntry{}), "Spec", "EnvMeta", "Meta")
+	// Interface, Spec, EnvMeta and Meta are parsed from the Code bytes and
+	// appended to the decoded tree; they are not XDR fields, so the JSON
+	// encoder ignores them rather than treating them as unknown keys.
+	registerDerivedNodeFields(reflect.TypeOf(xdr.ContractCodeEntry{}), "Interface", "Spec", "EnvMeta", "Meta")
 }
 
 // decorateContractCode attaches the parsed metadata to a decoded
@@ -237,6 +237,9 @@ func decorateContractCode(n *Node, v any) {
 	}
 	if err != nil {
 		return
+	}
+	if list := interfaceListNode(parsed.Spec); list != nil {
+		n.Children = append(n.Children, list)
 	}
 	if list := specListNode(parsed.Spec); list != nil {
 		n.Children = append(n.Children, list)
@@ -264,6 +267,23 @@ func contractCodeNote(code []byte, err error) string {
 	default:
 		return fmt.Sprintf("WASM module, %d byte(s)", len(code))
 	}
+}
+
+// interfaceListNode builds the Interface child: one human-readable signature
+// per declaration, so the contract's functions and types can be read at a
+// glance before the full ScSpecEntry trees under Spec.
+func interfaceListNode(entries []xdr.ScSpecEntry) *Node {
+	if len(entries) == 0 {
+		return nil
+	}
+	list := &Node{Name: "Interface", Kind: KindList}
+	for _, entry := range entries {
+		list.Children = append(list.Children, &Node{
+			Kind:  KindScalar,
+			Value: FormatSpecEntrySignature(entry),
+		})
+	}
+	return list
 }
 
 // specListNode builds the Spec child: one entry per declaration, named by the

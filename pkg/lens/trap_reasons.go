@@ -79,6 +79,11 @@ func DecodeTrapReason(events []xdr.DiagnosticEvent) (*TrappedReason, error) {
 		if len(topics) > 0 {
 			switch topics[0] {
 			case "fn_call":
+				// The callee is the fn_call topic's contract-id bytes;
+				// the event's own contract id is the caller.
+				if callee := decodeDiagnosticEvent(diag).ContractID; callee != "" {
+					lastContractID = callee
+				}
 				if len(topics) >= 3 {
 					lastFnName = topics[2]
 				} else if len(topics) >= 2 {
@@ -97,6 +102,13 @@ func DecodeTrapReason(events []xdr.DiagnosticEvent) (*TrappedReason, error) {
 			if v0.Data.Type == xdr.ScValTypeScvError {
 				errVal := v0.Data.MustError()
 				scErr = &errVal
+			}
+			// The host's own error events carry the ScError as the second
+			// topic: [error, Error(type, code)].
+			if len(v0.Topics) > 1 && len(topics) > 0 && topics[0] == "error" {
+				if errVal, ok := v0.Topics[1].GetError(); ok {
+					scErr = &errVal
+				}
 			}
 			// If data is a string or symbol with panic content
 			if lastPanicMsg == "" {
@@ -126,6 +138,11 @@ func DecodeTrapReason(events []xdr.DiagnosticEvent) (*TrappedReason, error) {
 		explainedErr := ExplainScError(*scErr)
 		reason.ErrorCode = explainedErr.Code
 		reason.ErrorType = ExplainHostErrorType(scErr.Type)
+		if summary, hint, ok := classifyTrap(*scErr, reason.ContractID, reason.FunctionName); ok {
+			reason.Summary = summary
+			reason.Hint = hint
+			return reason, nil
+		}
 		if reason.PanicMessage != "" {
 			reason.Summary = fmt.Sprintf("Contract execution trapped in %s: %s (panic: %q)",
 				formatTarget(reason.ContractID, reason.FunctionName),
@@ -154,24 +171,50 @@ func DecodeTrapReason(events []xdr.DiagnosticEvent) (*TrappedReason, error) {
 	return reason, nil
 }
 
+// classifyTrap explains the host errors whose cause is known from the error
+// alone: a call to a function the contract does not export, a failed
+// authorization check, and an exhausted CPU or memory budget.
+func classifyTrap(scErr xdr.ScError, contractID, fnName string) (string, string, bool) {
+	code := xdr.ScErrorCode(-1)
+	if scErr.Code != nil {
+		code = *scErr.Code
+	}
+	switch {
+	case scErr.Type == xdr.ScErrorTypeSceWasmVm && code == xdr.ScErrorCodeScecMissingValue:
+		target := "the contract"
+		if contractID != "" {
+			target = "contract " + contractID
+		}
+		fn := "the requested function"
+		if fnName != "" {
+			fn = fmt.Sprintf("a function named %q", fnName)
+		}
+		return fmt.Sprintf("Entry point not found: %s does not export %s (%s).", target, fn, FormatScError(scErr)),
+			"Check the function name and the contract ID against the contract's interface; lens decode on its ContractCodeEntry lists the exported functions.",
+			true
+	case scErr.Type == xdr.ScErrorTypeSceAuth:
+		return fmt.Sprintf("Authorization verification failed in %s (%s).", formatTarget(contractID, fnName), FormatScError(scErr)),
+			"An authorization entry is missing, was signed for different arguments or invoker, has expired, or reuses a nonce. Re-simulate to get the required entries and sign them again.",
+			true
+	case scErr.Type == xdr.ScErrorTypeSceBudget && code == xdr.ScErrorCodeScecExceededLimit:
+		return fmt.Sprintf("%s exhausted its CPU instruction or memory budget (%s).", formatTarget(contractID, fnName), FormatScError(scErr)),
+			"Re-simulate and declare the instructions it reports, with headroom; if the call is already near the network limit, reduce the work it does.",
+			true
+	}
+	return "", "", false
+}
+
 func formatTarget(contractID, fnName string) string {
 	if contractID != "" && fnName != "" {
-		return fmt.Sprintf("%s::%s", shortContractID(contractID), fnName)
+		return fmt.Sprintf("%s::%s", contractID, fnName)
 	}
 	if contractID != "" {
-		return fmt.Sprintf("contract %s", shortContractID(contractID))
+		return fmt.Sprintf("contract %s", contractID)
 	}
 	if fnName != "" {
 		return fmt.Sprintf("function %s", fnName)
 	}
 	return "host function"
-}
-
-func shortContractID(id string) string {
-	if len(id) > 12 {
-		return id[:6] + "..." + id[len(id)-4:]
-	}
-	return id
 }
 
 // parseDiagnosticDetail parses a raw DiagnosticEvent into a clean DiagnosticDetail.
@@ -324,8 +367,27 @@ func ExtractDiagnosticEvents(meta *xdr.TransactionMeta) []xdr.DiagnosticEvent {
 		if meta.V3 != nil && meta.V3.SorobanMeta != nil {
 			return meta.V3.SorobanMeta.DiagnosticEvents
 		}
+	case 4:
+		// Protocol 23 moved diagnostic events out of SorobanMeta to the top
+		// level of TransactionMetaV4.
+		if meta.V4 != nil {
+			return meta.V4.DiagnosticEvents
+		}
 	}
 	return nil
+}
+
+// DiagnosticEventsFromValue returns the diagnostic events of a decoded
+// TransactionMeta, or nil for any other value.
+func DiagnosticEventsFromValue(meta *Value) []xdr.DiagnosticEvent {
+	if meta == nil {
+		return nil
+	}
+	m, ok := meta.Raw.(*xdr.TransactionMeta)
+	if !ok {
+		return nil
+	}
+	return ExtractDiagnosticEvents(m)
 }
 
 // DecodeTrapFromMeta extracts diagnostic events from a TransactionMeta and decodes
@@ -413,25 +475,4 @@ func CorrelateTrapFromValues(resVal *Value, metaVal *Value) (*TrappedReason, err
 	}
 
 	return CorrelateTrap(res, meta)
-}
-
-// FormatDiagnosticEvent formats a single DiagnosticEvent into a readable string.
-func FormatDiagnosticEvent(event xdr.DiagnosticEvent) string {
-	detail := parseDiagnosticDetail(event)
-	var sb strings.Builder
-	status := "success"
-	if !detail.InSuccessfulCall {
-		status = "failed"
-	}
-	fmt.Fprintf(&sb, "[%s] %s event", status, detail.Type)
-	if detail.ContractID != "" {
-		fmt.Fprintf(&sb, " from %s", shortContractID(detail.ContractID))
-	}
-	if len(detail.Topics) > 0 {
-		fmt.Fprintf(&sb, " topics=[%s]", strings.Join(detail.Topics, ", "))
-	}
-	if detail.Data != "" {
-		fmt.Fprintf(&sb, " data=%q", detail.Data)
-	}
-	return sb.String()
 }

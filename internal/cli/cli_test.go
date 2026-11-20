@@ -1316,3 +1316,185 @@ func TestDecodeOpTypeFilter(t *testing.T) {
 		})
 	}
 }
+
+// contractSpecJSON is the output of
+//
+//	stellar contract info interface --wasm contract.wasm --output json
+//
+// (stellar-cli 27.1.0) for the module embedded in testdata/contract_code.txt.
+const contractSpecJSON = `[{"function_v0":{"doc":"Adds one to the counter","name":"increment","inputs":[{"doc":"account paying for the call","name":"caller","type_":"address"}],"outputs":["u32"]}},{"udt_struct_v0":{"doc":"A 2-D point","lib":"","name":"Point","fields":[{"doc":"","name":"x","type_":"u32"},{"doc":"","name":"y","type_":"u32"}]}},{"udt_union_v0":{"doc":"Maybe a counter","lib":"","name":"MaybeCounter","cases":[{"void_v0":{"doc":"","name":"None"}},{"tuple_v0":{"doc":"","name":"Some","type_":["u32"]}}]}},{"udt_enum_v0":{"doc":"Traffic light states","lib":"","name":"Color","cases":[{"doc":"","name":"Red","value":0},{"doc":"","name":"Green","value":1}]}},{"udt_error_enum_v0":{"doc":"Errors the contract can raise","lib":"","name":"Error","cases":[{"doc":"","name":"NotInitialized","value":1}]}},{"event_v0":{"doc":"Emitted on every increment","lib":"","name":"increment","prefix_topics":["counter"],"params":[{"doc":"","name":"value","type_":"u32","location":"data"}],"data_format":"single_value"}}]`
+
+// writeSpecFiles writes the contract_code fixture's WASM module and its JSON
+// spec export to a temporary directory and returns both paths.
+func writeSpecFiles(t *testing.T) (wasmPath, jsonPath string) {
+	t.Helper()
+	v, err := lens.DecodeAs(fixture(t, "contract_code"), "ContractCodeEntry")
+	if err != nil {
+		t.Fatalf("decoding contract_code fixture: %v", err)
+	}
+	entry, ok := v.Raw.(*xdr.ContractCodeEntry)
+	if !ok {
+		t.Fatalf("Raw = %T, want *xdr.ContractCodeEntry", v.Raw)
+	}
+	dir := t.TempDir()
+	wasmPath = filepath.Join(dir, "contract.wasm")
+	jsonPath = filepath.Join(dir, "contract.json")
+	if err := os.WriteFile(wasmPath, entry.Code, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(jsonPath, []byte(contractSpecJSON), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return wasmPath, jsonPath
+}
+
+func TestDecodeSpecFlag(t *testing.T) {
+	t.Parallel()
+
+	wasmPath, jsonPath := writeSpecFiles(t)
+	sym := func(s string) xdr.ScVal {
+		v := xdr.ScSymbol(s)
+		return xdr.ScVal{Type: xdr.ScValTypeScvSymbol, Sym: &v}
+	}
+	u32 := func(n uint32) xdr.ScVal {
+		v := xdr.Uint32(n)
+		return xdr.ScVal{Type: xdr.ScValTypeScvU32, U32: &v}
+	}
+	scMap := func(entries ...xdr.ScMapEntry) string {
+		m := xdr.ScMap(entries)
+		p := &m
+		b64, err := xdr.MarshalBase64(xdr.ScVal{Type: xdr.ScValTypeScvMap, Map: &p})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b64
+	}
+	point := scMap(
+		xdr.ScMapEntry{Key: sym("x"), Val: u32(3)},
+		xdr.ScMapEntry{Key: sym("y"), Val: u32(4)},
+	)
+	notPoint := scMap(
+		xdr.ScMapEntry{Key: sym("x"), Val: u32(3)},
+		xdr.ScMapEntry{Key: sym("z"), Val: u32(4)},
+	)
+
+	tests := []struct {
+		name        string
+		spec        string
+		payload     string
+		wantContain []string
+	}{
+		{name: "wasm spec", spec: wasmPath, payload: point,
+			wantContain: []string{"Type: ScValTypeScvMap  Point", "├─ x\n", "└─ y\n"}},
+		{name: "json spec", spec: jsonPath, payload: point,
+			wantContain: []string{"Type: ScValTypeScvMap  Point", "├─ x\n", "└─ y\n"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			out, _, err := run(t, "", "decode", "--color", "never", "--type", "ScVal", "--spec", tc.spec, tc.payload)
+			if err != nil {
+				t.Fatalf("decode --spec error = %v", err)
+			}
+			for _, want := range tc.wantContain {
+				if !strings.Contains(out, want) {
+					t.Errorf("output missing %q:\n%s", want, out)
+				}
+			}
+		})
+	}
+
+	t.Run("falls back to the wire shape", func(t *testing.T) {
+		t.Parallel()
+		withSpec, _, err := run(t, "", "decode", "--color", "never", "--type", "ScVal", "--spec", jsonPath, notPoint)
+		if err != nil {
+			t.Fatalf("decode --spec error = %v", err)
+		}
+		plain, _, err := run(t, "", "decode", "--color", "never", "--type", "ScVal", notPoint)
+		if err != nil {
+			t.Fatalf("decode error = %v", err)
+		}
+		if withSpec != plain {
+			t.Errorf("unmatched value changed with --spec:\n%s\nwant:\n%s", withSpec, plain)
+		}
+	})
+
+	t.Run("invalid spec file", func(t *testing.T) {
+		t.Parallel()
+		bad := filepath.Join(t.TempDir(), "bad.json")
+		if err := os.WriteFile(bad, []byte(`[{"nope":{}}]`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		_, _, err := run(t, "", "decode", "--type", "ScVal", "--spec", bad, point)
+		if !errors.Is(err, lens.ErrInvalidContractSpec) {
+			t.Errorf("error = %v, want ErrInvalidContractSpec", err)
+		}
+	})
+}
+
+func TestExplainMetaIncludesDiagnosticTrace(t *testing.T) {
+	t.Parallel()
+
+	fn := xdr.ScSymbol("fn_call")
+	errSym := xdr.ScSymbol("error")
+	harvest := xdr.ScSymbol("harvest")
+	callee := xdr.ScBytes(make([]byte, 32))
+	missing := xdr.ScErrorCodeScecMissingValue
+	msg := xdr.ScString("trying to invoke non-existent contract function")
+	meta := xdr.TransactionMeta{V: 4, V4: &xdr.TransactionMetaV4{DiagnosticEvents: []xdr.DiagnosticEvent{
+		{Event: xdr.ContractEvent{Type: xdr.ContractEventTypeDiagnostic, Body: xdr.ContractEventBody{V0: &xdr.ContractEventV0{
+			Topics: []xdr.ScVal{
+				{Type: xdr.ScValTypeScvSymbol, Sym: &fn},
+				{Type: xdr.ScValTypeScvBytes, Bytes: &callee},
+				{Type: xdr.ScValTypeScvSymbol, Sym: &harvest},
+			},
+			Data: xdr.ScVal{Type: xdr.ScValTypeScvVoid},
+		}}}},
+		{Event: xdr.ContractEvent{Type: xdr.ContractEventTypeDiagnostic, Body: xdr.ContractEventBody{V0: &xdr.ContractEventV0{
+			Topics: []xdr.ScVal{
+				{Type: xdr.ScValTypeScvSymbol, Sym: &errSym},
+				{Type: xdr.ScValTypeScvError, Error: &xdr.ScError{Type: xdr.ScErrorTypeSceWasmVm, Code: &missing}},
+			},
+			Data: xdr.ScVal{Type: xdr.ScValTypeScvString, Str: &msg},
+		}}}},
+	}}}
+	metaB64, err := xdr.MarshalBase64(meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	out, _, err := run(t, "", "explain", "--color", "never",
+		"--file", fixturePath("tx_failed.env"), "--result-file", fixturePath("tx_failed.res"), "--meta", metaB64)
+	if err != nil {
+		t.Fatalf("explain --meta error = %v", err)
+	}
+	for _, want := range []string{
+		"Diagnostic events (2)",
+		"✗ [0] [failed] fn_call",
+		"✗ [1] [failed] error Error(WasmVm, MissingValue)",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("explain output missing %q:\n%s", want, out)
+		}
+	}
+
+	jsonOut, _, err := run(t, "", "explain", "--json",
+		"--file", fixturePath("tx_failed.env"), "--result-file", fixturePath("tx_failed.res"), "--meta", metaB64)
+	if err != nil {
+		t.Fatalf("explain --json --meta error = %v", err)
+	}
+	var doc struct {
+		Outcome struct {
+			Diagnostics []lens.DiagnosticEventSummary `json:"diagnostics"`
+		} `json:"outcome"`
+	}
+	if err := json.Unmarshal([]byte(jsonOut), &doc); err != nil {
+		t.Fatalf("explain --json output is not JSON: %v", err)
+	}
+	if got := len(doc.Outcome.Diagnostics); got != 2 {
+		t.Fatalf("JSON outcome has %d diagnostics, want 2", got)
+	}
+	if got := doc.Outcome.Diagnostics[1].Error; got != "Error(WasmVm, MissingValue)" {
+		t.Errorf("diagnostics[1].error = %q, want Error(WasmVm, MissingValue)", got)
+	}
+}

@@ -76,6 +76,22 @@ type Outcome struct {
 	InnerReason *Reason `json:"innerReason,omitempty"`
 	// FailedOps lists the indexes of operations that did not succeed.
 	FailedOps []int `json:"failedOperations,omitempty"`
+	// Diagnostics is the Soroban diagnostic event trace of a failed
+	// transaction, present when transaction meta was supplied (see
+	// AttachDiagnosticEvents). Events with Failed set were emitted inside
+	// the contract call that failed.
+	Diagnostics []DiagnosticEventSummary `json:"diagnostics,omitempty"`
+}
+
+// AttachDiagnosticEvents adds the diagnostic events of a failed transaction
+// to its outcome, so the explanation carries the call trace that led to the
+// failure. It does nothing for a summary without an outcome, for a
+// successful transaction, or when there are no events.
+func AttachDiagnosticEvents(s *Summary, events []xdr.DiagnosticEvent) {
+	if s == nil || s.Outcome == nil || s.Outcome.Success || len(events) == 0 {
+		return
+	}
+	s.Outcome.Diagnostics = DecodeDiagnosticEvents(events)
 }
 
 // Explain summarises a single decoded value.
@@ -150,7 +166,7 @@ func explainEnvelope(env *xdr.TransactionEnvelope, res *xdr.TransactionResult) (
 	}
 
 	s.Kind = "transaction"
-	if err := attachResult(s, res, ops, s.Source); err != nil {
+	if err := attachResult(s, res, ops, s.Source, sorobanDataFromEnvelope(env)); err != nil {
 		return nil, err
 	}
 	for i, op := range env.Operations() {
@@ -171,7 +187,7 @@ func explainResult(res *xdr.TransactionResult) (*Summary, error) {
 	s := &Summary{Kind: "transaction_result"}
 	// No envelope means no operation bodies, so failures keep their generic
 	// per-code explanation; deepenOperationFailure never runs.
-	if err := attachResult(s, res, nil, ""); err != nil {
+	if err := attachResult(s, res, nil, "", nil); err != nil {
 		return nil, err
 	}
 	return s, nil
@@ -183,8 +199,9 @@ func explainResult(res *xdr.TransactionResult) (*Summary, error) {
 // ops carries the envelope's operations when one was supplied. They let a
 // failed operation's explanation be deepened with the operation's own
 // parameters (see deepenOperationFailure); without them the generic per-code
-// reason stands.
-func attachResult(s *Summary, res *xdr.TransactionResult, ops []xdr.Operation, source string) error {
+// reason stands. soroban is the envelope's Soroban resource declaration, nil
+// when there is none.
+func attachResult(s *Summary, res *xdr.TransactionResult, ops []xdr.Operation, source string, soroban *xdr.SorobanTransactionData) error {
 	s.FeeCharged = int64(res.FeeCharged)
 
 	code, err := resultCodeName(res)
@@ -208,7 +225,7 @@ func attachResult(s *Summary, res *xdr.TransactionResult, ops []xdr.Operation, s
 		for i, opRes := range opResults {
 			reason := explainOperationResult(opRes)
 			if !reason.Success && i < len(ops) {
-				reason = deepenOperationFailure(source, ops[i], reason)
+				reason = deepenOperationFailure(source, ops[i], soroban, reason)
 			}
 			if !reason.Success {
 				outcome.FailedOps = append(outcome.FailedOps, i)
@@ -304,11 +321,15 @@ func explainOperationResult(opRes xdr.OperationResult) Reason {
 // anything it cannot pin down keeps the generic per-code explanation.
 // Everything here is pure analysis of supplied XDR — no network calls, no
 // ledger lookups — so output stays deterministic and offline-first.
-func deepenOperationFailure(source string, op xdr.Operation, r Reason) Reason {
+func deepenOperationFailure(source string, op xdr.Operation, soroban *xdr.SorobanTransactionData, r Reason) Reason {
 	if r.Success {
 		return r
 	}
 	switch {
+	case strings.HasPrefix(r.Constant, "InvokeHostFunctionResultCode"):
+		if body, ok := op.Body.GetInvokeHostFunctionOp(); ok {
+			return deepenInvokeHostFunctionFailure(body, soroban, r)
+		}
 	case strings.HasPrefix(r.Constant, "SetOptionsResultCode"):
 		if body, ok := op.Body.GetSetOptionsOp(); ok {
 			return deepenSetOptionsFailure(operationEffectiveSource(source, op), body, r)
@@ -345,6 +366,71 @@ func deepenOperationFailure(source string, op xdr.Operation, r Reason) Reason {
 		return withOperationContext(r, op, source)
 	}
 	return r
+}
+
+// deepenInvokeHostFunctionFailure names the host function, contract and
+// function behind a failed Soroban invocation, and for a resource-limit
+// failure says which declared resource is to blame when the envelope proves
+// it.
+func deepenInvokeHostFunctionFailure(o xdr.InvokeHostFunctionOp, soroban *xdr.SorobanTransactionData, r Reason) Reason {
+	inv := DescribeHostFunctionInvocation(o)
+	r.Context = inv.Context()
+
+	switch r.Constant {
+	case "InvokeHostFunctionResultCodeInvokeHostFunctionTrapped":
+		r.Summary = fmt.Sprintf("The %s trapped: it panicked, returned an error, or failed a host check.", inv.Target())
+		if inv.Kind == HostFunctionInvokeContract {
+			r.Hint = fmt.Sprintf("The trap's cause is in the diagnostic events (lens explain --meta, or simulate the call). "+
+				"Error(WasmVm, MissingValue) means contract %s does not export a function named %q: "+
+				"check the name against the contract interface. Error(Auth, ...) means an authorization entry "+
+				"failed verification: it is missing, signed for other arguments, expired, or reuses a nonce. "+
+				"Error(Contract, #n) is the contract's own error code n.",
+				inv.ContractID, inv.FunctionName)
+		}
+	case "InvokeHostFunctionResultCodeInvokeHostFunctionResourceLimitExceeded":
+		summary, hint := resourceLimitExplanation(inv, soroban)
+		r.Summary = summary
+		if hint != "" {
+			r.Hint = hint
+		}
+	}
+	return r
+}
+
+// resourceLimitExplanation distinguishes a declaration above the Protocol 27
+// per-transaction limits, which the envelope proves, from execution running
+// past declared values that are within them, which only the result reports.
+func resourceLimitExplanation(inv HostFunctionInvocation, soroban *xdr.SorobanTransactionData) (string, string) {
+	if soroban == nil {
+		return fmt.Sprintf("The %s used more resources than the transaction declared.", inv.Target()), ""
+	}
+	limits := DefaultResourceLimits()
+	declared := []struct {
+		name        string
+		used, limit int64
+	}{
+		{"CPU instructions", int64(soroban.Resources.Instructions), limits.Instructions},
+		{"disk read bytes", int64(soroban.Resources.DiskReadBytes), limits.DiskReadBytes},
+		{"write bytes", int64(soroban.Resources.WriteBytes), limits.WriteBytes},
+	}
+
+	var over, within []string
+	for _, d := range declared {
+		text := fmt.Sprintf("%s %s of %s", d.name, formatResourceNumber(d.used), formatResourceNumber(d.limit))
+		if d.used > d.limit {
+			over = append(over, text)
+		} else {
+			within = append(within, text)
+		}
+	}
+	if len(over) > 0 {
+		return fmt.Sprintf("The %s declared more than the Protocol 27 per-transaction limit allows: %s.",
+				inv.Target(), strings.Join(over, ", ")),
+			"Lower the declared value to the network limit; if the call genuinely needs more, split the work across transactions or reduce the contract's computation or storage access."
+	}
+	return fmt.Sprintf("The %s ran past its declared resources; the declared values are within the Protocol 27 limits (%s).",
+			inv.Target(), strings.Join(within, ", ")),
+		"Execution consumed more than one of the declared values. Re-run simulation and declare the instructions, read bytes and write bytes it returns, with headroom."
 }
 
 func deepenExtendFootprintTtlFailure(o xdr.ExtendFootprintTtlOp, r Reason) Reason {

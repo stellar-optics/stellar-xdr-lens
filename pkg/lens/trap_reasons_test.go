@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stellar/go-stellar-sdk/strkey"
 	"github.com/stellar/go-stellar-sdk/xdr"
 
 	"github.com/stellar-optics/stellar-xdr-lens/pkg/lens"
@@ -402,4 +403,222 @@ func ptrTimePoint(t uint64) *uint64 {
 
 func ptrDuration(d uint64) *uint64 {
 	return &d
+}
+
+// hostErrorTrace is what the host emits when a call fails with a host
+// error: the fn_call into the callee, then an error event whose second topic
+// is the ScError and whose data is the host's message.
+func hostErrorTrace(errType xdr.ScErrorType, code xdr.ScErrorCode, msg string) []xdr.DiagnosticEvent {
+	callee := xdr.ContractId{0x10, 0x20}
+	calleeBytes := xdr.ScBytes(callee[:])
+	sym := func(s string) xdr.ScVal {
+		v := xdr.ScSymbol(s)
+		return xdr.ScVal{Type: xdr.ScValTypeScvSymbol, Sym: &v}
+	}
+	text := xdr.ScString(msg)
+	return []xdr.DiagnosticEvent{
+		{Event: xdr.ContractEvent{Type: xdr.ContractEventTypeDiagnostic, Body: xdr.ContractEventBody{V0: &xdr.ContractEventV0{
+			Topics: []xdr.ScVal{sym("fn_call"), {Type: xdr.ScValTypeScvBytes, Bytes: &calleeBytes}, sym("harvest")},
+			Data:   xdr.ScVal{Type: xdr.ScValTypeScvVoid},
+		}}}},
+		{Event: xdr.ContractEvent{ContractId: &callee, Type: xdr.ContractEventTypeDiagnostic, Body: xdr.ContractEventBody{V0: &xdr.ContractEventV0{
+			Topics: []xdr.ScVal{sym("error"), {Type: xdr.ScValTypeScvError, Error: &xdr.ScError{Type: errType, Code: &code}}},
+			Data:   xdr.ScVal{Type: xdr.ScValTypeScvString, Str: &text},
+		}}}},
+	}
+}
+
+func TestDecodeTrapReasonClassifiesHostErrors(t *testing.T) {
+	t.Parallel()
+
+	callee := xdr.ContractId{0x10, 0x20}
+	calleeID := strkey.MustEncode(strkey.VersionByteContract, callee[:])
+
+	tests := []struct {
+		name        string
+		errType     xdr.ScErrorType
+		code        xdr.ScErrorCode
+		msg         string
+		wantSummary []string
+	}{
+		{
+			name: "entry point not found", errType: xdr.ScErrorTypeSceWasmVm, code: xdr.ScErrorCodeScecMissingValue,
+			msg:         "trying to invoke non-existent contract function",
+			wantSummary: []string{"Entry point not found", "contract " + calleeID, `does not export a function named "harvest"`, "Error(WasmVm, MissingValue)"},
+		},
+		{
+			name: "auth verification failure", errType: xdr.ScErrorTypeSceAuth, code: xdr.ScErrorCodeScecInvalidAction,
+			msg:         "failed account authentication",
+			wantSummary: []string{"Authorization verification failed", calleeID + "::harvest", "Error(Auth, InvalidAction)"},
+		},
+		{
+			name: "budget exceeded", errType: xdr.ScErrorTypeSceBudget, code: xdr.ScErrorCodeScecExceededLimit,
+			msg:         "budget exceeded",
+			wantSummary: []string{calleeID + "::harvest", "CPU instruction or memory budget", "Error(Budget, ExceededLimit)"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			reason, err := lens.DecodeTrapReason(hostErrorTrace(tc.errType, tc.code, tc.msg))
+			if err != nil {
+				t.Fatalf("DecodeTrapReason() error = %v", err)
+			}
+			if reason.ContractID != calleeID || reason.FunctionName != "harvest" {
+				t.Errorf("target = %s::%s, want %s::harvest", reason.ContractID, reason.FunctionName, calleeID)
+			}
+			for _, want := range tc.wantSummary {
+				if !strings.Contains(reason.Summary, want) {
+					t.Errorf("Summary %q does not contain %q", reason.Summary, want)
+				}
+			}
+			if reason.Hint == "" {
+				t.Error("Hint is empty")
+			}
+		})
+	}
+}
+
+// explainWithInvokeResult pairs the real trapped fixture envelope, after
+// edit has adjusted it, with its real result re-coded to code.
+func explainWithInvokeResult(t *testing.T, code xdr.InvokeHostFunctionResultCode, edit func(*xdr.SorobanTransactionData)) *lens.Summary {
+	t.Helper()
+	envVal, err := lens.Decode(loadFixture(t, "tx_failed.env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resVal, err := lens.Decode(loadFixture(t, "tx_failed.res"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := *envVal.Raw.(*xdr.TransactionEnvelope)
+	res := *resVal.Raw.(*xdr.TransactionResult)
+
+	if edit != nil {
+		data, ok := env.FeeBump.Tx.InnerTx.V1.Tx.Ext.GetSorobanData()
+		if !ok {
+			t.Fatal("fixture envelope carries no Soroban data")
+		}
+		edit(&data)
+		env.FeeBump.Tx.InnerTx.V1.Tx.Ext.SorobanData = &data
+	}
+	inner := res.Result.InnerResultPair.Result.Result.Results
+	(*inner)[0].Tr.InvokeHostFunctionResult.Code = code
+
+	envB64, err := xdr.MarshalBase64(env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resB64, err := xdr.MarshalBase64(res)
+	if err != nil {
+		t.Fatal(err)
+	}
+	envOut, err := lens.Decode(envB64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resOut, err := lens.Decode(resB64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	summary, err := lens.ExplainPair(envOut, resOut)
+	if err != nil {
+		t.Fatalf("ExplainPair() error = %v", err)
+	}
+	return summary
+}
+
+func TestExplainInvokeHostFunctionFailureNamesTarget(t *testing.T) {
+	t.Parallel()
+
+	// The real fixture calls harvest on this contract with two arguments.
+	const target = "contract CBGSBKYMYO6OMGHQXXNOBRGVUDFUDVC2XLC3SXON5R2SNXILR7XCKKY3 function harvest"
+
+	tests := []struct {
+		name        string
+		code        xdr.InvokeHostFunctionResultCode
+		edit        func(*xdr.SorobanTransactionData)
+		wantSummary []string
+		wantHint    string
+	}{
+		{
+			name:        "trapped",
+			code:        xdr.InvokeHostFunctionResultCodeInvokeHostFunctionTrapped,
+			wantSummary: []string{target, "trapped"},
+			wantHint:    `does not export a function named "harvest"`,
+		},
+		{
+			name: "resource limit with declared values within the protocol limits",
+			code: xdr.InvokeHostFunctionResultCodeInvokeHostFunctionResourceLimitExceeded,
+			wantSummary: []string{target, "ran past its declared resources",
+				"CPU instructions 2,367,776 of 400,000,000", "disk read bytes 116 of 200,000", "write bytes 116 of 132,096"},
+			wantHint: "Re-run simulation",
+		},
+		{
+			name: "resource limit with a declaration above the protocol limit",
+			code: xdr.InvokeHostFunctionResultCodeInvokeHostFunctionResourceLimitExceeded,
+			edit: func(d *xdr.SorobanTransactionData) { d.Resources.WriteBytes = 200_000 },
+			wantSummary: []string{target, "declared more than the Protocol 27 per-transaction limit",
+				"write bytes 200,000 of 132,096"},
+			wantHint: "Lower the declared value",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			summary := explainWithInvokeResult(t, tc.code, tc.edit)
+			r := summary.Operations[0].Result
+			if r == nil {
+				t.Fatal("operation 0 has no result")
+			}
+			for _, want := range tc.wantSummary {
+				if !strings.Contains(r.Summary, want) {
+					t.Errorf("Summary %q does not contain %q", r.Summary, want)
+				}
+			}
+			if !strings.Contains(r.Hint, tc.wantHint) {
+				t.Errorf("Hint %q does not contain %q", r.Hint, tc.wantHint)
+			}
+			if !strings.Contains(r.Context, "invoke_contract: contract CBGSBKYMYO6OMGHQXXNOBRGVUDFUDVC2XLC3SXON5R2SNXILR7XCKKY3, function harvest, 2 argument(s)") {
+				t.Errorf("Context = %q, want the invocation context", r.Context)
+			}
+			if tc.edit == nil && strings.Contains(r.Summary, "declared more than") {
+				t.Error("a within-limit declaration was reported as over the limit")
+			}
+		})
+	}
+}
+
+func TestDescribeHostFunctionInvocation(t *testing.T) {
+	t.Parallel()
+
+	wasm := []byte("\x00asm\x01\x00\x00\x00")
+	tests := []struct {
+		name   string
+		op     xdr.InvokeHostFunctionOp
+		want   string
+		target string
+	}{
+		{
+			name: "upload",
+			op: xdr.InvokeHostFunctionOp{HostFunction: xdr.HostFunction{
+				Type: xdr.HostFunctionTypeHostFunctionTypeUploadContractWasm, Wasm: &wasm}},
+			want: lens.HostFunctionUploadContractWasm, target: "contract upload (8 bytes of WASM)",
+		},
+		{
+			name: "create",
+			op: xdr.InvokeHostFunctionOp{HostFunction: xdr.HostFunction{
+				Type: xdr.HostFunctionTypeHostFunctionTypeCreateContractV2, CreateContractV2: &xdr.CreateContractArgsV2{}}},
+			want: lens.HostFunctionCreateContract, target: "contract creation",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			inv := lens.DescribeHostFunctionInvocation(tc.op)
+			if inv.Kind != tc.want || inv.Target() != tc.target {
+				t.Errorf("got kind %q target %q, want %q %q", inv.Kind, inv.Target(), tc.want, tc.target)
+			}
+		})
+	}
 }

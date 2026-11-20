@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stellar/go-stellar-sdk/strkey"
 	"github.com/stellar/go-stellar-sdk/xdr"
 
 	"github.com/stellar-optics/stellar-xdr-lens/pkg/lens"
@@ -290,5 +291,159 @@ func TestContractScAddressEnrichment(t *testing.T) {
 	const wantContractID = "CBBUGQ2DINBUGQ2DINBUGQ2DINBUGQ2DINBUGQ2DINBUGQ2DINBUHSPU"
 	if addr.Value != wantContractID {
 		t.Errorf("Address = %q, want %q", addr.Value, wantContractID)
+	}
+}
+
+// contractErrorTrace builds the diagnostic events the Soroban host emits when
+// a contract call fails with a contract error: the fn_call into the contract,
+// the contract's log line, the host's error event escalating the contract
+// error, and the core metrics. Topic and data shapes follow soroban-env-host.
+func contractErrorTrace() []xdr.DiagnosticEvent {
+	callee := xdr.ContractId{0xaa, 0xbb, 0xcc}
+	calleeBytes := xdr.ScBytes(callee[:])
+	caller := xdr.MustAddress("GCJNHFXJEQEY54NPKU4DBMT5WOBJUHMYSFBDAQF4OMTEGJN4BQU7ZST6")
+	sym := func(s string) xdr.ScVal {
+		v := xdr.ScSymbol(s)
+		return xdr.ScVal{Type: xdr.ScValTypeScvSymbol, Sym: &v}
+	}
+	str := func(s string) xdr.ScVal {
+		v := xdr.ScString(s)
+		return xdr.ScVal{Type: xdr.ScValTypeScvString, Str: &v}
+	}
+	code := xdr.Uint32(1)
+	insns := xdr.Uint64(1_234_567)
+	event := func(contract *xdr.ContractId, inSuccess bool, data xdr.ScVal, topics ...xdr.ScVal) xdr.DiagnosticEvent {
+		return xdr.DiagnosticEvent{
+			InSuccessfulContractCall: inSuccess,
+			Event: xdr.ContractEvent{
+				ContractId: contract,
+				Type:       xdr.ContractEventTypeDiagnostic,
+				Body:       xdr.ContractEventBody{V: 0, V0: &xdr.ContractEventV0{Topics: topics, Data: data}},
+			},
+		}
+	}
+	return []xdr.DiagnosticEvent{
+		event(nil, false,
+			xdr.ScVal{Type: xdr.ScValTypeScvAddress, Address: &xdr.ScAddress{Type: xdr.ScAddressTypeScAddressTypeAccount, AccountId: &caller}},
+			sym("fn_call"), xdr.ScVal{Type: xdr.ScValTypeScvBytes, Bytes: &calleeBytes}, sym("increment")),
+		event(&callee, false, str("counter is not initialized"), sym("log")),
+		event(&callee, false, str("escalating Ok(ScErrorType::Contract) frame-exit to Err"),
+			sym("error"), xdr.ScVal{Type: xdr.ScValTypeScvError, Error: &xdr.ScError{Type: xdr.ScErrorTypeSceContract, ContractCode: &code}}),
+		event(nil, true, xdr.ScVal{Type: xdr.ScValTypeScvU64, U64: &insns}, sym("core_metrics"), sym("cpu_insn")),
+	}
+}
+
+func TestDecodeDiagnosticEventsFromMeta(t *testing.T) {
+	t.Parallel()
+
+	// Round-trip the trace through a Protocol 23 TransactionMetaV4 so the
+	// events come out of the real decode path.
+	meta := xdr.TransactionMeta{V: 4, V4: &xdr.TransactionMetaV4{DiagnosticEvents: contractErrorTrace()}}
+	val, err := lens.DecodeAs(mustMarshal(t, meta), "TransactionMeta")
+	if err != nil {
+		t.Fatalf("DecodeAs(TransactionMeta) error = %v", err)
+	}
+	events := lens.DiagnosticEventsFromValue(val)
+	if len(events) != 4 {
+		t.Fatalf("DiagnosticEventsFromValue() = %d events, want 4", len(events))
+	}
+
+	// The fn_call topic carries the callee as raw bytes and the later
+	// events carry it as the emitting contract; both must render as the
+	// same strkey.
+	callee := strkey.MustEncode(strkey.VersionByteContract, []byte{0xaa, 0xbb, 0xcc, 31: 0})
+	tests := []struct {
+		kind     string
+		failed   bool
+		contract string
+		function string
+		scError  string
+		text     string
+	}{
+		{kind: "fn_call", failed: true, contract: callee, function: "increment",
+			text: "[failed] fn_call " + callee + "::increment(GCJNHFXJEQEY54NPKU4DBMT5WOBJUHMYSFBDAQF4OMTEGJN4BQU7ZST6)"},
+		{kind: "log", failed: true, contract: callee,
+			text: "[failed] log from " + callee + ` topics=[log] data="counter is not initialized"`},
+		{kind: "error", failed: true, contract: callee, scError: "Error(Contract, #1)",
+			text: "[failed] error in contract " + callee + ` Error(Contract, #1): "escalating Ok(ScErrorType::Contract) frame-exit to Err"`},
+		{kind: "core_metrics", text: "[success] core_metrics cpu_insn = 1234567"},
+	}
+	got := lens.DecodeDiagnosticEvents(events)
+	for i, tc := range tests {
+		t.Run(tc.kind, func(t *testing.T) {
+			t.Parallel()
+			e := got[i]
+			if e.Index != i || e.Kind != tc.kind || e.Failed != tc.failed {
+				t.Errorf("event %d = {Index:%d Kind:%q Failed:%v}, want {%d %q %v}", i, e.Index, e.Kind, e.Failed, i, tc.kind, tc.failed)
+			}
+			if e.ContractID != tc.contract || e.Function != tc.function || e.Error != tc.scError {
+				t.Errorf("event %d = {ContractID:%q Function:%q Error:%q}, want {%q %q %q}",
+					i, e.ContractID, e.Function, e.Error, tc.contract, tc.function, tc.scError)
+			}
+			if e.Text != tc.text {
+				t.Errorf("Text = %q\nwant   %q", e.Text, tc.text)
+			}
+		})
+	}
+}
+
+func TestFormatScError(t *testing.T) {
+	t.Parallel()
+
+	code := xdr.Uint32(42)
+	missing := xdr.ScErrorCodeScecMissingValue
+	invalid := xdr.ScErrorCodeScecInvalidAction
+	tests := []struct {
+		name string
+		err  xdr.ScError
+		want string
+	}{
+		{name: "contract code", err: xdr.ScError{Type: xdr.ScErrorTypeSceContract, ContractCode: &code}, want: "Error(Contract, #42)"},
+		{name: "missing export", err: xdr.ScError{Type: xdr.ScErrorTypeSceWasmVm, Code: &missing}, want: "Error(WasmVm, MissingValue)"},
+		{name: "auth", err: xdr.ScError{Type: xdr.ScErrorTypeSceAuth, Code: &invalid}, want: "Error(Auth, InvalidAction)"},
+		{name: "no code", err: xdr.ScError{Type: xdr.ScErrorTypeSceBudget}, want: "Error(Budget)"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := lens.FormatScError(tc.err); got != tc.want {
+				t.Errorf("FormatScError() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestAttachDiagnosticEventsOnlyOnFailure(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		env     string
+		res     string
+		wantLen int
+	}{
+		{name: "failed transaction", env: "tx_failed.env", res: "tx_failed.res", wantLen: 4},
+		{name: "successful transaction", env: "tx_soroban.env", res: "tx_soroban.res", wantLen: 0},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			env, err := lens.Decode(loadFixture(t, tc.env))
+			if err != nil {
+				t.Fatal(err)
+			}
+			res, err := lens.Decode(loadFixture(t, tc.res))
+			if err != nil {
+				t.Fatal(err)
+			}
+			summary, err := lens.ExplainPair(env, res)
+			if err != nil {
+				t.Fatalf("ExplainPair() error = %v", err)
+			}
+			lens.AttachDiagnosticEvents(summary, contractErrorTrace())
+			if got := len(summary.Outcome.Diagnostics); got != tc.wantLen {
+				t.Errorf("Outcome.Diagnostics has %d events, want %d", got, tc.wantLen)
+			}
+		})
 	}
 }
