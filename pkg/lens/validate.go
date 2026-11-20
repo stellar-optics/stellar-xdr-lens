@@ -519,6 +519,74 @@ func validateOperationDetails(val any, path string) error {
 		if _, ok := m["destination"]; !ok {
 			return fmt.Errorf("account_merge operation requires 'destination'")
 		}
+	case "manage_buy_offer":
+		if _, ok := m["selling"]; !ok {
+			return fmt.Errorf("manage_buy_offer operation requires 'selling'")
+		}
+		if _, ok := m["buying"]; !ok {
+			return fmt.Errorf("manage_buy_offer operation requires 'buying'")
+		}
+		if _, ok := m["buy_amount"]; !ok && m["buyAmount"] == nil {
+			return fmt.Errorf("manage_buy_offer operation requires 'buy_amount'")
+		}
+		if _, ok := m["price"]; !ok {
+			return fmt.Errorf("manage_buy_offer operation requires 'price'")
+		}
+	case "manage_sell_offer":
+		if _, ok := m["selling"]; !ok {
+			return fmt.Errorf("manage_sell_offer operation requires 'selling'")
+		}
+		if _, ok := m["buying"]; !ok {
+			return fmt.Errorf("manage_sell_offer operation requires 'buying'")
+		}
+		if _, ok := m["amount"]; !ok {
+			return fmt.Errorf("manage_sell_offer operation requires 'amount'")
+		}
+		if _, ok := m["price"]; !ok {
+			return fmt.Errorf("manage_sell_offer operation requires 'price'")
+		}
+	case "create_passive_sell_offer":
+		if _, ok := m["selling"]; !ok {
+			return fmt.Errorf("create_passive_sell_offer operation requires 'selling'")
+		}
+		if _, ok := m["buying"]; !ok {
+			return fmt.Errorf("create_passive_sell_offer operation requires 'buying'")
+		}
+		if _, ok := m["amount"]; !ok {
+			return fmt.Errorf("create_passive_sell_offer operation requires 'amount'")
+		}
+		if _, ok := m["price"]; !ok {
+			return fmt.Errorf("create_passive_sell_offer operation requires 'price'")
+		}
+	case "path_payment_strict_receive":
+		if _, ok := m["destination"]; !ok {
+			return fmt.Errorf("path_payment_strict_receive operation requires 'destination'")
+		}
+		if _, ok := m["send_max"]; !ok && m["sendMax"] == nil {
+			return fmt.Errorf("path_payment_strict_receive operation requires 'send_max'")
+		}
+		if _, ok := m["dest_amount"]; !ok && m["destAmount"] == nil {
+			return fmt.Errorf("path_payment_strict_receive operation requires 'dest_amount'")
+		}
+	case "path_payment_strict_send":
+		if _, ok := m["destination"]; !ok {
+			return fmt.Errorf("path_payment_strict_send operation requires 'destination'")
+		}
+		if _, ok := m["send_amount"]; !ok && m["sendAmount"] == nil {
+			return fmt.Errorf("path_payment_strict_send operation requires 'send_amount'")
+		}
+		if _, ok := m["dest_min"]; !ok && m["destMin"] == nil {
+			return fmt.Errorf("path_payment_strict_send operation requires 'dest_min'")
+		}
+	case "set_options":
+		// All fields are optional in set_options
+	case "set_trust_line_flags":
+		if _, ok := m["trustor"]; !ok {
+			return fmt.Errorf("set_trust_line_flags operation requires 'trustor'")
+		}
+		if _, ok := m["asset"]; !ok {
+			return fmt.Errorf("set_trust_line_flags operation requires 'asset'")
+		}
 	case "invoke_host_function":
 		// Can have invoke_contract, create_contract, or upload_wasm
 	}

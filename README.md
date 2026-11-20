@@ -93,6 +93,8 @@ go test ./cmd/lens
 
 ### `lens explain` — why did this fail?
 
+For a comprehensive guide on transaction error hierarchies, operation isolation, reserve math, and Soroban host traps, see the [Debugging Failed Transactions Guide](docs/guides/debugging_failures.md).
+
 Pair an envelope with its result and `lens` names the failing operation, what it
 was attempting, and what to do next:
 
@@ -363,7 +365,7 @@ $ lens decode -i --file envelope.xdr
 # or use the dedicated command:
 $ lens explore --file envelope.xdr
 
-# Contract spec-aware ScVal decoding from contract WASM or spec XDR
+# Contract spec-aware ScVal decoding from contract WASM or spec XDR (see docs/guides/soroban_specs.md)
 $ lens decode --spec contract.wasm --file invocation.xdr
 ```
 
@@ -634,7 +636,7 @@ StellarMessage
 
 ### `lens encode` — build XDR from JSON
 
-Encode simplified JSON specifications into base64-encoded XDR completely offline:
+Encode simplified JSON specifications into base64-encoded XDR completely offline. For the complete schema specification, operation examples, and coercion rules, see the [JSON-to-XDR Schema Reference](docs/encode/schema_reference.md).
 
 ```console
 # Round-trip a decode document straight back to XDR
@@ -1009,6 +1011,8 @@ go test ./pkg/lens -run 'RoundTrip' -v
 ```
 
 ## A note on type detection
+
+For an architectural guide to the candidate scoring engine and ambiguity resolution, see the [Type Detection Heuristics Guide](docs/architecture/detection.md).
 
 `lens decode` detects the XDR type by trying each known type and keeping the ones
 that decode cleanly, relying on the SDK rejecting input it does not fully consume.
