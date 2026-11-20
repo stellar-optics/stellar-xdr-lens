@@ -414,3 +414,101 @@ func TestDetectReturnsMultipleCandidatesForConfigSettingEntry(t *testing.T) {
 func TestEncodeDecodeConfigSettingEntryNotAvailable(t *testing.T) {
 	t.Skip("Library doesn't expose SDK marshal helpers; use CLI for round-trip testing")
 }
+
+func TestConfigSettingEntryEnrichment(t *testing.T) {
+	t.Parallel()
+
+	t.Run("CONFIG_SETTING_CONTRACT_MAX_SIZE_BYTES formats as KB/MB", func(t *testing.T) {
+		payload := loadFixture(t, "config_setting_0")
+		v, err := lens.DecodeAs(payload, "ConfigSettingEntry")
+		if err != nil {
+			t.Fatalf("DecodeAs failed: %v", err)
+		}
+		var sb strings.Builder
+		formatter := format.NewTreeFormatter()
+		if err := formatter.Format(&sb, v); err != nil {
+			t.Fatalf("Format failed: %v", err)
+		}
+		out := sb.String()
+		if !strings.Contains(out, "128 KB") {
+			t.Errorf("output missing KB unit: %s", out)
+		}
+	})
+
+	t.Run("CONFIG_SETTING_CONTRACT_COMPUTE_V0 formats CPU and memory", func(t *testing.T) {
+		payload := loadFixture(t, "config_setting_1")
+		v, err := lens.DecodeAs(payload, "ConfigSettingEntry")
+		if err != nil {
+			t.Fatalf("DecodeAs failed: %v", err)
+		}
+		var sb strings.Builder
+		formatter := format.NewTreeFormatter()
+		if err := formatter.Format(&sb, v); err != nil {
+			t.Fatalf("Format failed: %v", err)
+		}
+		out := sb.String()
+		if !strings.Contains(out, "580M CPU instructions") {
+			t.Errorf("output missing 580M CPU instructions: %s", out)
+		}
+		if !strings.Contains(out, "400M CPU instructions") {
+			t.Errorf("output missing 400M CPU instructions: %s", out)
+		}
+		if !strings.Contains(out, "40 MB") {
+			t.Errorf("output missing 40 MB: %s", out)
+		}
+	})
+
+	t.Run("CONFIG_SETTING_CONTRACT_LEDGER_COST_V0 formats fees in stroops/byte", func(t *testing.T) {
+		payload := loadFixture(t, "config_setting_2")
+		v, err := lens.DecodeAs(payload, "ConfigSettingEntry")
+		if err != nil {
+			t.Fatalf("DecodeAs failed: %v", err)
+		}
+		var sb strings.Builder
+		formatter := format.NewTreeFormatter()
+		if err := formatter.Format(&sb, v); err != nil {
+			t.Fatalf("Format failed: %v", err)
+		}
+		out := sb.String()
+		if !strings.Contains(out, "stroops/byte") {
+			t.Errorf("output missing stroops/byte: %s", out)
+		}
+	})
+
+	t.Run("CONFIG_SETTING_STATE_ARCHIVAL formats min/max TTL in days and ledger counts", func(t *testing.T) {
+		payload := loadFixture(t, "config_setting_10")
+		v, err := lens.DecodeAs(payload, "ConfigSettingEntry")
+		if err != nil {
+			t.Fatalf("DecodeAs failed: %v", err)
+		}
+		var sb strings.Builder
+		formatter := format.NewTreeFormatter()
+		if err := formatter.Format(&sb, v); err != nil {
+			t.Fatalf("Format failed: %v", err)
+		}
+		out := sb.String()
+		if !strings.Contains(out, "180.0 days") {
+			t.Errorf("output missing 180.0 days: %s", out)
+		}
+		if !strings.Contains(out, "3110400") {
+			t.Errorf("output missing 3110400: %s", out)
+		}
+	})
+
+	t.Run("CONFIG_SETTING_CONTRACT_EXECUTION_LANES formats lane counts", func(t *testing.T) {
+		payload := loadFixture(t, "config_setting_11")
+		v, err := lens.DecodeAs(payload, "ConfigSettingEntry")
+		if err != nil {
+			t.Fatalf("DecodeAs failed: %v", err)
+		}
+		var sb strings.Builder
+		formatter := format.NewTreeFormatter()
+		if err := formatter.Format(&sb, v); err != nil {
+			t.Fatalf("Format failed: %v", err)
+		}
+		out := sb.String()
+		if !strings.Contains(out, "2000 concurrent execution lanes") {
+			t.Errorf("output missing concurrent execution lanes: %s", out)
+		}
+	})
+}

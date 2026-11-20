@@ -49,6 +49,7 @@ func registerEnricher(t reflect.Type, fn Enricher) {
 
 func init() {
 	nodeHooks[reflect.TypeOf(xdr.LedgerFootprint{})] = decorateLedgerFootprint
+	nodeHooks[reflect.TypeOf(xdr.ConfigSettingEntry{})] = decorateConfigSettingEntry
 	registerDerivedNodeFields(reflect.TypeOf(xdr.LedgerFootprint{}), "Persistent", "Temporary", "Instance", "Other")
 }
 
