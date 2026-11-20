@@ -6,6 +6,9 @@ where to make the three changes contributors most often want to make:
 - [Adding a new XDR type](#adding-a-new-xdr-type)
 - [Improving how a type is rendered](#adding-an-enricher)
 - [Adding a new output format](#adding-a-formatter)
+- [Authoring Enrichers & Formatters Guide](contributing/authoring_enrichers.md)
+- [Semantic Diffing in CI Guide](guides/semantic_diffing.md)
+- [LedgerCloseMeta & Bucket List Guide](guides/ledger_close_meta.md)
 
 ## The pipeline
 
@@ -545,8 +548,9 @@ decoded with `--type` in practice.
 
 ## Adding an enricher
 
-Enrichers turn an XDR value into something a human recognises. `enricherFor` in
-[`enrich.go`](../pkg/lens/enrich.go) maps a concrete XDR type to its enricher.
+Enrichers turn an XDR value into something a human recognises. For a detailed step-by-step tutorial, see [Authoring Enrichers & Formatters](contributing/authoring_enrichers.md).
+
+`enricherFor` in [`enrich.go`](../pkg/lens/enrich.go) maps a concrete XDR type to its enricher.
 The core entries are a declaration-time literal; a type added by a feature file
 registers itself without touching `enrich.go` at all:
 
@@ -777,6 +781,8 @@ rendering depends on content buried inside a field; use the enricher registries
 when the type or field name is enough.
 
 ## Adding a formatter
+
+Formatters render decoded node trees into concrete outputs. For a step-by-step tutorial on writing formatters, see [Authoring Enrichers & Formatters](contributing/authoring_enrichers.md#the-formatter-interface).
 
 Implement `Formatter` in [`format/format.go`](../pkg/lens/format/format.go):
 

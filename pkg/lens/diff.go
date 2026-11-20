@@ -146,6 +146,9 @@ type DiffOptions struct {
 	// MaskPaths excludes changes matching glob-like patterns (e.g. *.Signatures, Tx.SeqNum)
 	// from diff evaluation (#126).
 	MaskPaths []string
+	// IgnorePaths is an alias for MaskPaths to suppress volatile fields in CI diffs (#345).
+	// Matching paths are omitted from diff evaluation entirely, so differences do not affect Equal().
+	IgnorePaths []string
 	// Mask excludes matching paths from diff evaluation entirely. Unlike
 	// Filter which only narrows output, masked paths are never compared,
 	// so differences in masked paths do not affect the Equal() result.
@@ -185,15 +188,19 @@ func DiffWithOptions(left, right *Value, options DiffOptions) (*DiffResult, erro
 	if left == nil || right == nil {
 		return nil, fmt.Errorf("%w: diff requires two decoded values", ErrInvalidArgument)
 	}
-	if len(options.MaskPaths) > 0 {
-		maskFromPaths, err := NewPathFilter(options.MaskPaths, nil)
+	effectiveMasks := append([]string(nil), options.MaskPaths...)
+	if len(options.IgnorePaths) > 0 {
+		effectiveMasks = append(effectiveMasks, options.IgnorePaths...)
+	}
+	if len(effectiveMasks) > 0 {
+		maskFromPaths, err := NewPathFilter(effectiveMasks, nil)
 		if err != nil {
 			return nil, fmt.Errorf("invalid MaskPaths: %w", err)
 		}
 		if options.Mask == nil || options.Mask.Empty() {
 			options.Mask = maskFromPaths
 		} else {
-			combined, err := NewPathFilter(append(options.Mask.includes, options.MaskPaths...), options.Mask.excludes)
+			combined, err := NewPathFilter(append(options.Mask.includes, effectiveMasks...), options.Mask.excludes)
 			if err != nil {
 				return nil, fmt.Errorf("combining Mask and MaskPaths: %w", err)
 			}
