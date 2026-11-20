@@ -20,6 +20,7 @@ func init() {
 	enricherFor[reflect.TypeOf(xdr.BucketEntryType(0))] = enrichBucketEntryType
 	enricherFor[reflect.TypeOf(xdr.BucketListType(0))] = enrichBucketListType
 	enricherFor[reflect.TypeOf(xdr.HotArchiveBucketEntryType(0))] = enrichHotArchiveBucketEntryType
+	enricherFor[reflect.TypeOf(xdr.LedgerEntryChangeType(0))] = enrichLedgerEntryChangeType
 }
 
 // enrichBucketEntryType names the state each bucket entry records. DEADENTRY
@@ -78,6 +79,31 @@ func enrichHotArchiveBucketEntryType(rv reflect.Value) (string, any, bool) {
 		return "", "archived entry", true
 	case xdr.HotArchiveBucketEntryTypeHotArchiveLive:
 		return "", "restored key", true
+	default:
+		return "", nil, false
+	}
+}
+
+// enrichLedgerEntryChangeType names the transition type of a ledger change:
+// created, updated, removed/deleted, state snapshot, or restored from archive.
+// This clarifies LedgerCloseMeta and TransactionMeta lifecycle transitions
+// for ledger indexers (#346).
+func enrichLedgerEntryChangeType(rv reflect.Value) (string, any, bool) {
+	t, ok := rv.Interface().(xdr.LedgerEntryChangeType)
+	if !ok {
+		return "", nil, false
+	}
+	switch t {
+	case xdr.LedgerEntryChangeTypeLedgerEntryCreated:
+		return "", "created", true
+	case xdr.LedgerEntryChangeTypeLedgerEntryUpdated:
+		return "", "updated", true
+	case xdr.LedgerEntryChangeTypeLedgerEntryRemoved:
+		return "", "deleted (removed)", true
+	case xdr.LedgerEntryChangeTypeLedgerEntryState:
+		return "", "state (snapshot)", true
+	case xdr.LedgerEntryChangeTypeLedgerEntryRestored:
+		return "", "restored from archive", true
 	default:
 		return "", nil, false
 	}

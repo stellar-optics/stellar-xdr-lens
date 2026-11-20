@@ -1500,4 +1500,15 @@ func TestDiffWithOptions_MaskPaths(t *testing.T) {
 	if !masked.Equal() {
 		t.Fatalf("expected Equal() with MaskPaths, got %v", masked.Changes)
 	}
+
+	// With IgnorePaths alias, SeqNum is also excluded (#345)
+	ignored, err := lens.DiffWithOptions(left, right, lens.DiffOptions{
+		IgnorePaths: []string{"SeqNum"},
+	})
+	if err != nil {
+		t.Fatalf("DiffWithOptions() error = %v", err)
+	}
+	if !ignored.Equal() {
+		t.Fatalf("expected Equal() with IgnorePaths, got %v", ignored.Changes)
+	}
 }

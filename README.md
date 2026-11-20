@@ -91,6 +91,8 @@ go test ./cmd/lens
 
 ## Usage
 
+For an exhaustive reference of all subcommands, terminal flags, practical pipeline recipes with `curl`/`jq`, and productivity shell aliases, see the [CLI User Guide & Workflow Recipes](docs/cli/user_guide.md).
+
 ### `lens explain` — why did this fail?
 
 Pair an envelope with its result and `lens` names the failing operation, what it
@@ -441,6 +443,8 @@ $ lens decode --canonical "$XDR"
 ```
 
 ### `lens diff` — what changed?
+
+For an in-depth reference on masking volatile fields, numeric thresholds, and runnable CI workflow templates (GitHub Actions and GitLab CI), see the [Semantic Diffing in CI Guide](docs/guides/semantic_diffing.md).
 
 ```console
 $ lens diff before.xdr after.xdr
@@ -886,8 +890,9 @@ diff, and `format.NewSideBySideFormatter` produces the two-column view. A
 about, either through `DiffOptions.Filter` before the diff or the formatter's
 filter option afterwards.
 
-See the [API reference](https://pkg.go.dev/github.com/stellar-optics/stellar-xdr-lens/pkg/lens)
-and [docs/architecture.md](docs/architecture.md).
+See the [API reference](https://pkg.go.dev/github.com/stellar-optics/stellar-xdr-lens/pkg/lens),
+[docs/architecture.md](docs/architecture.md), and the indexer guide
+[docs/guides/ledger_close_meta.md](docs/guides/ledger_close_meta.md).
 
 ### Failure diagnostics library
 
@@ -1054,7 +1059,8 @@ out of scope.
 
 Contributions are welcome — especially new XDR type handlers and better failure
 explanations, both of which are designed to be one-file changes.
-See [CONTRIBUTING.md](CONTRIBUTING.md).
+See [CONTRIBUTING.md](CONTRIBUTING.md) and the
+[Authoring Enrichers & Formatters Guide](docs/contributing/authoring_enrichers.md).
 
 ## License
 
