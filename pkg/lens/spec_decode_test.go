@@ -590,3 +590,157 @@ func TestSpecTypeNameAndToUint32(t *testing.T) {
 		}
 	}
 }
+
+// fixtureContractSpec returns the spec entries embedded in the
+// testdata/contract_code.txt module, read through the real decode path.
+func fixtureContractSpec(t *testing.T) []xdr.ScSpecEntry {
+	t.Helper()
+	v, err := lens.DecodeAs(loadFixture(t, "contract_code"), "ContractCodeEntry")
+	if err != nil {
+		t.Fatalf("DecodeAs(contract_code) error = %v", err)
+	}
+	entry, ok := v.Raw.(*xdr.ContractCodeEntry)
+	if !ok {
+		t.Fatalf("Raw = %T, want *xdr.ContractCodeEntry", v.Raw)
+	}
+	parsed, err := lens.ParseContractCode(entry.Code)
+	if err != nil {
+		t.Fatalf("ParseContractCode() error = %v", err)
+	}
+	return parsed.Spec
+}
+
+func TestFormatContractSpecFromFixture(t *testing.T) {
+	t.Parallel()
+
+	got := lens.FormatContractSpec(fixtureContractSpec(t))
+	want := `/// Adds one to the counter
+/// caller: account paying for the call
+fn increment(caller: Address) -> u32
+
+/// A 2-D point
+struct Point {
+    x: u32,
+    y: u32,
+}
+
+/// Maybe a counter
+union MaybeCounter {
+    None,
+    Some(u32),
+}
+
+/// Traffic light states
+enum Color {
+    Red = 0,
+    Green = 1,
+}
+
+/// Errors the contract can raise
+error Error {
+    NotInitialized = 1,
+}
+
+/// Emitted on every increment
+event increment {
+    topic "counter",
+    data value: u32,
+}
+`
+	if got != want {
+		t.Errorf("FormatContractSpec() mismatch\n--- got ---\n%s\n--- want ---\n%s", got, want)
+	}
+}
+
+func TestContractCodeDecodeListsInterface(t *testing.T) {
+	t.Parallel()
+
+	v, err := lens.DecodeAs(loadFixture(t, "contract_code"), "ContractCodeEntry")
+	if err != nil {
+		t.Fatalf("DecodeAs(contract_code) error = %v", err)
+	}
+	iface := v.Node.Child("Interface")
+	if iface == nil {
+		t.Fatal("Interface node is missing")
+	}
+	want := []string{
+		"fn increment(caller: Address) -> u32",
+		"struct Point { x: u32, y: u32 }",
+		"union MaybeCounter { None, Some(u32) }",
+		"enum Color { Red = 0, Green = 1 }",
+		"error Error { NotInitialized = 1 }",
+		`event increment { topic "counter", data value: u32 }`,
+	}
+	if len(iface.Children) != len(want) {
+		t.Fatalf("Interface has %d entries, want %d", len(iface.Children), len(want))
+	}
+	for i, w := range want {
+		if got := iface.Children[i].Value; got != w {
+			t.Errorf("Interface[%d] = %q, want %q", i, got, w)
+		}
+	}
+}
+
+func TestSpecTypeSignature(t *testing.T) {
+	t.Parallel()
+
+	u32 := xdr.ScSpecTypeDef{Type: xdr.ScSpecTypeScSpecTypeU32}
+	addr := xdr.ScSpecTypeDef{Type: xdr.ScSpecTypeScSpecTypeAddress}
+	sym := xdr.ScSpecTypeDef{Type: xdr.ScSpecTypeScSpecTypeSymbol}
+	point := xdr.ScSpecTypeDef{Type: xdr.ScSpecTypeScSpecTypeUdt, Udt: &xdr.ScSpecTypeUdt{Name: "Point"}}
+
+	tests := []struct {
+		name string
+		td   xdr.ScSpecTypeDef
+		want string
+	}{
+		{name: "primitive", td: u32, want: "u32"},
+		{name: "address", td: addr, want: "Address"},
+		{name: "void", td: xdr.ScSpecTypeDef{Type: xdr.ScSpecTypeScSpecTypeVoid}, want: "()"},
+		{name: "udt", td: point, want: "Point"},
+		{name: "option", td: xdr.ScSpecTypeDef{Type: xdr.ScSpecTypeScSpecTypeOption, Option: &xdr.ScSpecTypeOption{ValueType: point}}, want: "Option<Point>"},
+		{name: "result", td: xdr.ScSpecTypeDef{Type: xdr.ScSpecTypeScSpecTypeResult, Result: &xdr.ScSpecTypeResult{OkType: u32, ErrorType: xdr.ScSpecTypeDef{Type: xdr.ScSpecTypeScSpecTypeError}}}, want: "Result<u32, Error>"},
+		{name: "vec", td: xdr.ScSpecTypeDef{Type: xdr.ScSpecTypeScSpecTypeVec, Vec: &xdr.ScSpecTypeVec{ElementType: sym}}, want: "Vec<Symbol>"},
+		{name: "map", td: xdr.ScSpecTypeDef{Type: xdr.ScSpecTypeScSpecTypeMap, Map: &xdr.ScSpecTypeMap{KeyType: addr, ValueType: u32}}, want: "Map<Address, u32>"},
+		{name: "tuple", td: xdr.ScSpecTypeDef{Type: xdr.ScSpecTypeScSpecTypeTuple, Tuple: &xdr.ScSpecTypeTuple{ValueTypes: []xdr.ScSpecTypeDef{u32, sym}}}, want: "(u32, Symbol)"},
+		{name: "bytes_n", td: xdr.ScSpecTypeDef{Type: xdr.ScSpecTypeScSpecTypeBytesN, BytesN: &xdr.ScSpecTypeBytesN{N: 32}}, want: "BytesN<32>"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := lens.SpecTypeSignature(tc.td); got != tc.want {
+				t.Errorf("SpecTypeSignature() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestFormatSpecEntrySignatureFunctionOutputs(t *testing.T) {
+	t.Parallel()
+
+	u32 := xdr.ScSpecTypeDef{Type: xdr.ScSpecTypeScSpecTypeU32}
+	tests := []struct {
+		name    string
+		outputs []xdr.ScSpecTypeDef
+		want    string
+	}{
+		{name: "no output", outputs: nil, want: "fn reset(n: u32)"},
+		{name: "one output", outputs: []xdr.ScSpecTypeDef{u32}, want: "fn reset(n: u32) -> u32"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			entry := xdr.ScSpecEntry{
+				Kind: xdr.ScSpecEntryKindScSpecEntryFunctionV0,
+				FunctionV0: &xdr.ScSpecFunctionV0{
+					Name:    "reset",
+					Inputs:  []xdr.ScSpecFunctionInputV0{{Name: "n", Type: u32}},
+					Outputs: tc.outputs,
+				},
+			}
+			if got := lens.FormatSpecEntrySignature(entry); got != tc.want {
+				t.Errorf("FormatSpecEntrySignature() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

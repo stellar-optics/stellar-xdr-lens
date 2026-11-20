@@ -616,3 +616,323 @@ func toUint32(v any) (uint32, bool) {
 		return 0, false
 	}
 }
+
+// FormatContractSpec renders a contract interface as Rust-like pseudo-code:
+// one declaration per spec entry, in stream order, with its doc comment above
+// it. Function inputs, struct fields and enum cases keep their own doc
+// comments, so the output reads the way the contract author wrote it.
+func FormatContractSpec(entries []xdr.ScSpecEntry) string {
+	var b strings.Builder
+	for i, entry := range entries {
+		if i > 0 {
+			b.WriteString("\n")
+		}
+		writeSpecEntry(&b, entry)
+	}
+	return b.String()
+}
+
+// FormatSpecEntrySignature renders a single spec entry as a one-line
+// declaration, such as "fn increment(caller: Address) -> u32" or
+// "struct Point { x: u32, y: u32 }". Doc comments are left out.
+func FormatSpecEntrySignature(entry xdr.ScSpecEntry) string {
+	switch entry.Kind {
+	case xdr.ScSpecEntryKindScSpecEntryFunctionV0:
+		if fn, ok := entry.GetFunctionV0(); ok {
+			return functionSignature(fn)
+		}
+	case xdr.ScSpecEntryKindScSpecEntryUdtStructV0:
+		if st, ok := entry.GetUdtStructV0(); ok {
+			fields := make([]string, 0, len(st.Fields))
+			for _, f := range st.Fields {
+				fields = append(fields, f.Name+": "+SpecTypeSignature(f.Type))
+			}
+			return declarationLine("struct", st.Name, fields)
+		}
+	case xdr.ScSpecEntryKindScSpecEntryUdtUnionV0:
+		if un, ok := entry.GetUdtUnionV0(); ok {
+			cases := make([]string, 0, len(un.Cases))
+			for _, c := range un.Cases {
+				cases = append(cases, unionCaseSignature(c))
+			}
+			return declarationLine("union", un.Name, cases)
+		}
+	case xdr.ScSpecEntryKindScSpecEntryUdtEnumV0:
+		if en, ok := entry.GetUdtEnumV0(); ok {
+			cases := make([]string, 0, len(en.Cases))
+			for _, c := range en.Cases {
+				cases = append(cases, fmt.Sprintf("%s = %d", c.Name, c.Value))
+			}
+			return declarationLine("enum", en.Name, cases)
+		}
+	case xdr.ScSpecEntryKindScSpecEntryUdtErrorEnumV0:
+		if en, ok := entry.GetUdtErrorEnumV0(); ok {
+			cases := make([]string, 0, len(en.Cases))
+			for _, c := range en.Cases {
+				cases = append(cases, fmt.Sprintf("%s = %d", c.Name, c.Value))
+			}
+			return declarationLine("error", en.Name, cases)
+		}
+	case xdr.ScSpecEntryKindScSpecEntryEventV0:
+		if ev, ok := entry.GetEventV0(); ok {
+			return declarationLine("event", string(ev.Name), eventMembers(ev))
+		}
+	}
+	return fmt.Sprintf("<%s>", entry.Kind.String())
+}
+
+// SpecTypeSignature renders a spec type the way the Soroban SDK spells it in
+// Rust source: u32, Address, Vec<Symbol>, Option<Point>, BytesN<32>.
+func SpecTypeSignature(td xdr.ScSpecTypeDef) string {
+	switch td.Type {
+	case xdr.ScSpecTypeScSpecTypeVal:
+		return "Val"
+	case xdr.ScSpecTypeScSpecTypeBool:
+		return "bool"
+	case xdr.ScSpecTypeScSpecTypeVoid:
+		return "()"
+	case xdr.ScSpecTypeScSpecTypeError:
+		return "Error"
+	case xdr.ScSpecTypeScSpecTypeU32:
+		return "u32"
+	case xdr.ScSpecTypeScSpecTypeI32:
+		return "i32"
+	case xdr.ScSpecTypeScSpecTypeU64:
+		return "u64"
+	case xdr.ScSpecTypeScSpecTypeI64:
+		return "i64"
+	case xdr.ScSpecTypeScSpecTypeTimepoint:
+		return "Timepoint"
+	case xdr.ScSpecTypeScSpecTypeDuration:
+		return "Duration"
+	case xdr.ScSpecTypeScSpecTypeU128:
+		return "u128"
+	case xdr.ScSpecTypeScSpecTypeI128:
+		return "i128"
+	case xdr.ScSpecTypeScSpecTypeU256:
+		return "U256"
+	case xdr.ScSpecTypeScSpecTypeI256:
+		return "I256"
+	case xdr.ScSpecTypeScSpecTypeBytes:
+		return "Bytes"
+	case xdr.ScSpecTypeScSpecTypeString:
+		return "String"
+	case xdr.ScSpecTypeScSpecTypeSymbol:
+		return "Symbol"
+	case xdr.ScSpecTypeScSpecTypeAddress:
+		return "Address"
+	case xdr.ScSpecTypeScSpecTypeMuxedAddress:
+		return "MuxedAddress"
+	case xdr.ScSpecTypeScSpecTypeOption:
+		if td.Option != nil {
+			return "Option<" + SpecTypeSignature(td.Option.ValueType) + ">"
+		}
+	case xdr.ScSpecTypeScSpecTypeResult:
+		if td.Result != nil {
+			return "Result<" + SpecTypeSignature(td.Result.OkType) + ", " + SpecTypeSignature(td.Result.ErrorType) + ">"
+		}
+	case xdr.ScSpecTypeScSpecTypeVec:
+		if td.Vec != nil {
+			return "Vec<" + SpecTypeSignature(td.Vec.ElementType) + ">"
+		}
+	case xdr.ScSpecTypeScSpecTypeMap:
+		if td.Map != nil {
+			return "Map<" + SpecTypeSignature(td.Map.KeyType) + ", " + SpecTypeSignature(td.Map.ValueType) + ">"
+		}
+	case xdr.ScSpecTypeScSpecTypeTuple:
+		if td.Tuple != nil {
+			parts := make([]string, 0, len(td.Tuple.ValueTypes))
+			for _, t := range td.Tuple.ValueTypes {
+				parts = append(parts, SpecTypeSignature(t))
+			}
+			return "(" + strings.Join(parts, ", ") + ")"
+		}
+	case xdr.ScSpecTypeScSpecTypeBytesN:
+		if td.BytesN != nil {
+			return fmt.Sprintf("BytesN<%d>", td.BytesN.N)
+		}
+	case xdr.ScSpecTypeScSpecTypeUdt:
+		if td.Udt != nil {
+			return td.Udt.Name
+		}
+	}
+	return td.Type.String()
+}
+
+func functionSignature(fn xdr.ScSpecFunctionV0) string {
+	inputs := make([]string, 0, len(fn.Inputs))
+	for _, in := range fn.Inputs {
+		inputs = append(inputs, in.Name+": "+SpecTypeSignature(in.Type))
+	}
+	sig := fmt.Sprintf("fn %s(%s)", fn.Name, strings.Join(inputs, ", "))
+	switch len(fn.Outputs) {
+	case 0:
+		return sig
+	case 1:
+		return sig + " -> " + SpecTypeSignature(fn.Outputs[0])
+	default:
+		outs := make([]string, 0, len(fn.Outputs))
+		for _, o := range fn.Outputs {
+			outs = append(outs, SpecTypeSignature(o))
+		}
+		return sig + " -> (" + strings.Join(outs, ", ") + ")"
+	}
+}
+
+func unionCaseSignature(c xdr.ScSpecUdtUnionCaseV0) string {
+	switch c.Kind {
+	case xdr.ScSpecUdtUnionCaseV0KindScSpecUdtUnionCaseVoidV0:
+		if c.VoidCase != nil {
+			return c.VoidCase.Name
+		}
+	case xdr.ScSpecUdtUnionCaseV0KindScSpecUdtUnionCaseTupleV0:
+		if c.TupleCase != nil {
+			types := make([]string, 0, len(c.TupleCase.Type))
+			for _, t := range c.TupleCase.Type {
+				types = append(types, SpecTypeSignature(t))
+			}
+			return c.TupleCase.Name + "(" + strings.Join(types, ", ") + ")"
+		}
+	}
+	return c.Kind.String()
+}
+
+// eventMembers lists an event's topics and parameters. Prefix topics are
+// fixed symbols; each parameter is tagged with where it is published.
+func eventMembers(ev xdr.ScSpecEventV0) []string {
+	members := make([]string, 0, len(ev.PrefixTopics)+len(ev.Params))
+	for _, topic := range ev.PrefixTopics {
+		members = append(members, fmt.Sprintf("topic %q", string(topic)))
+	}
+	for _, p := range ev.Params {
+		location := "data"
+		if p.Location == xdr.ScSpecEventParamLocationV0ScSpecEventParamLocationTopicList {
+			location = "topic"
+		}
+		members = append(members, fmt.Sprintf("%s %s: %s", location, p.Name, SpecTypeSignature(p.Type)))
+	}
+	return members
+}
+
+func declarationLine(keyword, name string, members []string) string {
+	if len(members) == 0 {
+		return keyword + " " + name + " {}"
+	}
+	return keyword + " " + name + " { " + strings.Join(members, ", ") + " }"
+}
+
+// writeSpecEntry writes one declaration of FormatContractSpec.
+func writeSpecEntry(b *strings.Builder, entry xdr.ScSpecEntry) {
+	switch entry.Kind {
+	case xdr.ScSpecEntryKindScSpecEntryFunctionV0:
+		fn, ok := entry.GetFunctionV0()
+		if !ok {
+			break
+		}
+		writeDoc(b, "", fn.Doc)
+		for _, in := range fn.Inputs {
+			if in.Doc != "" {
+				writeDoc(b, "", in.Name+": "+in.Doc)
+			}
+		}
+		b.WriteString(functionSignature(fn) + "\n")
+		return
+	case xdr.ScSpecEntryKindScSpecEntryUdtStructV0:
+		st, ok := entry.GetUdtStructV0()
+		if !ok {
+			break
+		}
+		members := make([]specMember, 0, len(st.Fields))
+		for _, f := range st.Fields {
+			members = append(members, specMember{f.Doc, f.Name + ": " + SpecTypeSignature(f.Type)})
+		}
+		writeBlock(b, st.Doc, "struct "+st.Name, members)
+		return
+	case xdr.ScSpecEntryKindScSpecEntryUdtUnionV0:
+		un, ok := entry.GetUdtUnionV0()
+		if !ok {
+			break
+		}
+		members := make([]specMember, 0, len(un.Cases))
+		for _, c := range un.Cases {
+			doc := ""
+			switch {
+			case c.VoidCase != nil:
+				doc = c.VoidCase.Doc
+			case c.TupleCase != nil:
+				doc = c.TupleCase.Doc
+			}
+			members = append(members, specMember{doc, unionCaseSignature(c)})
+		}
+		writeBlock(b, un.Doc, "union "+un.Name, members)
+		return
+	case xdr.ScSpecEntryKindScSpecEntryUdtEnumV0:
+		en, ok := entry.GetUdtEnumV0()
+		if !ok {
+			break
+		}
+		members := make([]specMember, 0, len(en.Cases))
+		for _, c := range en.Cases {
+			members = append(members, specMember{c.Doc, fmt.Sprintf("%s = %d", c.Name, c.Value)})
+		}
+		writeBlock(b, en.Doc, "enum "+en.Name, members)
+		return
+	case xdr.ScSpecEntryKindScSpecEntryUdtErrorEnumV0:
+		en, ok := entry.GetUdtErrorEnumV0()
+		if !ok {
+			break
+		}
+		members := make([]specMember, 0, len(en.Cases))
+		for _, c := range en.Cases {
+			members = append(members, specMember{c.Doc, fmt.Sprintf("%s = %d", c.Name, c.Value)})
+		}
+		writeBlock(b, en.Doc, "error "+en.Name, members)
+		return
+	case xdr.ScSpecEntryKindScSpecEntryEventV0:
+		ev, ok := entry.GetEventV0()
+		if !ok {
+			break
+		}
+		decls := eventMembers(ev)
+		members := make([]specMember, 0, len(decls))
+		for i, decl := range decls {
+			doc := ""
+			if i >= len(ev.PrefixTopics) {
+				doc = ev.Params[i-len(ev.PrefixTopics)].Doc
+			}
+			members = append(members, specMember{doc, decl})
+		}
+		writeBlock(b, ev.Doc, "event "+string(ev.Name), members)
+		return
+	}
+	b.WriteString(FormatSpecEntrySignature(entry) + "\n")
+}
+
+type specMember struct {
+	doc  string
+	decl string
+}
+
+func writeBlock(b *strings.Builder, doc, header string, members []specMember) {
+	writeDoc(b, "", doc)
+	if len(members) == 0 {
+		b.WriteString(header + " {}\n")
+		return
+	}
+	b.WriteString(header + " {\n")
+	for _, m := range members {
+		writeDoc(b, "    ", m.doc)
+		b.WriteString("    " + m.decl + ",\n")
+	}
+	b.WriteString("}\n")
+}
+
+func writeDoc(b *strings.Builder, indent, doc string) {
+	doc = strings.TrimSpace(doc)
+	if doc == "" {
+		return
+	}
+	for _, line := range strings.Split(doc, "\n") {
+		b.WriteString(indent + "/// " + strings.TrimRight(line, " \t") + "\n")
+	}
+}
