@@ -168,6 +168,102 @@ func getFailureKind(missingAuth, nonceExpiry string) string {
 	return "auth_failure"
 }
 
+// Host function kinds reported by HostFunctionInvocation.
+const (
+	HostFunctionInvokeContract     = "invoke_contract"
+	HostFunctionCreateContract     = "create_contract"
+	HostFunctionUploadContractWasm = "upload_contract_wasm"
+)
+
+// HostFunctionInvocation is what an InvokeHostFunction operation asked the
+// host to do: which host function, against which contract and function, and
+// with how many authorization entries attached.
+type HostFunctionInvocation struct {
+	// Kind is one of HostFunctionInvokeContract, HostFunctionCreateContract
+	// or HostFunctionUploadContractWasm.
+	Kind string `json:"kind"`
+	// ContractID is the C... strkey of the contract being called.
+	ContractID string `json:"contractId,omitempty"`
+	// FunctionName is the exported contract function being called.
+	FunctionName string `json:"functionName,omitempty"`
+	// ArgCount is the number of arguments passed to the function.
+	ArgCount int `json:"argCount,omitempty"`
+	// WasmSize is the size in bytes of uploaded contract code.
+	WasmSize int `json:"wasmSize,omitempty"`
+	// AuthEntries is the number of Soroban authorization entries attached,
+	// and AddressAuthEntries how many of them carry their own signature
+	// (address credentials) rather than relying on the source account.
+	AuthEntries        int `json:"authEntries,omitempty"`
+	AddressAuthEntries int `json:"addressAuthEntries,omitempty"`
+}
+
+// DescribeHostFunctionInvocation extracts the invocation context of an
+// InvokeHostFunction operation, the part a failure explanation has to name
+// for a developer to recognise their call.
+func DescribeHostFunctionInvocation(op xdr.InvokeHostFunctionOp) HostFunctionInvocation {
+	inv := HostFunctionInvocation{AuthEntries: len(op.Auth)}
+	for _, entry := range op.Auth {
+		if entry.Credentials.Type != xdr.SorobanCredentialsTypeSorobanCredentialsSourceAccount {
+			inv.AddressAuthEntries++
+		}
+	}
+	switch op.HostFunction.Type {
+	case xdr.HostFunctionTypeHostFunctionTypeInvokeContract:
+		inv.Kind = HostFunctionInvokeContract
+		if args, ok := op.HostFunction.GetInvokeContract(); ok {
+			if addr, err := args.ContractAddress.String(); err == nil {
+				inv.ContractID = addr
+			}
+			inv.FunctionName = string(args.FunctionName)
+			inv.ArgCount = len(args.Args)
+		}
+	case xdr.HostFunctionTypeHostFunctionTypeCreateContract,
+		xdr.HostFunctionTypeHostFunctionTypeCreateContractV2:
+		inv.Kind = HostFunctionCreateContract
+	case xdr.HostFunctionTypeHostFunctionTypeUploadContractWasm:
+		inv.Kind = HostFunctionUploadContractWasm
+		if wasm, ok := op.HostFunction.GetWasm(); ok {
+			inv.WasmSize = len(wasm)
+		}
+	}
+	return inv
+}
+
+// Target names the invocation the way failure messages refer to it:
+// "contract C...::transfer", "contract creation" or "contract upload".
+func (h HostFunctionInvocation) Target() string {
+	switch h.Kind {
+	case HostFunctionInvokeContract:
+		return fmt.Sprintf("contract %s function %s", h.ContractID, h.FunctionName)
+	case HostFunctionCreateContract:
+		return "contract creation"
+	case HostFunctionUploadContractWasm:
+		return fmt.Sprintf("contract upload (%d bytes of WASM)", h.WasmSize)
+	}
+	return "host function"
+}
+
+// Context renders the invocation as one line of detail for a Reason.
+func (h HostFunctionInvocation) Context() string {
+	var b strings.Builder
+	b.WriteString(h.Kind)
+	if h.Kind == HostFunctionInvokeContract {
+		fmt.Fprintf(&b, ": contract %s, function %s, %d argument(s)", h.ContractID, h.FunctionName, h.ArgCount)
+	}
+	if h.AuthEntries > 0 {
+		fmt.Fprintf(&b, "; %d authorization entr", h.AuthEntries)
+		if h.AuthEntries == 1 {
+			b.WriteString("y")
+		} else {
+			b.WriteString("ies")
+		}
+		if h.AddressAuthEntries > 0 {
+			fmt.Fprintf(&b, " (%d with address credentials)", h.AddressAuthEntries)
+		}
+	}
+	return b.String()
+}
+
 // init registers the diagnosis function with the lens framework.
 func init() {
 	_ = AuthFailure{}
