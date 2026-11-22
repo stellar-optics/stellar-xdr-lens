@@ -601,3 +601,140 @@ func TestBuildTransactionV0AndFeeBumpErrors(t *testing.T) {
 		t.Errorf("expected error on invalid signature hex")
 	}
 }
+
+func TestBuildExtendFootprintTtlOp(t *testing.T) {
+	validAccount := "GA2JRQOF6EA3HQWDCEDBPPMLYPJCFLDDGYZLEQGMS5SOBQIB3BAFHVAW"
+
+	spec := &TxSpec{
+		SourceAccount: validAccount,
+		Fee:           500,
+		Sequence:      1,
+		Operations: []OperationSpec{
+			{
+				Type:     "extend_footprint_ttl",
+				ExtendTo: 100000,
+			},
+		},
+	}
+
+	env, err := BuildTransactionEnvelope(spec)
+	if err != nil {
+		t.Fatalf("failed to build extend_footprint_ttl envelope: %v", err)
+	}
+	if env.Type != xdr.EnvelopeTypeEnvelopeTypeTx {
+		t.Fatalf("expected V1 envelope, got %v", env.Type)
+	}
+	op := env.V1.Tx.Operations[0]
+	if op.Body.Type != xdr.OperationTypeExtendFootprintTtl {
+		t.Fatalf("expected ExtendFootprintTtl operation, got %v", op.Body.Type)
+	}
+	if op.Body.ExtendFootprintTtlOp == nil {
+		t.Fatal("ExtendFootprintTtlOp is nil")
+	}
+	if op.Body.ExtendFootprintTtlOp.ExtendTo != 100000 {
+		t.Fatalf("ExtendTo = %d, want 100000", op.Body.ExtendFootprintTtlOp.ExtendTo)
+	}
+
+	// extend_to 0 is rejected
+	bad := &TxSpec{
+		SourceAccount: validAccount,
+		Fee:           500,
+		Sequence:      1,
+		Operations:    []OperationSpec{{Type: "extend_footprint_ttl", ExtendTo: 0}},
+	}
+	if _, err := BuildTransactionEnvelope(bad); err == nil {
+		t.Error("expected error when extend_to is 0")
+	}
+}
+
+func TestBuildRestoreFootprintOp(t *testing.T) {
+	validAccount := "GA2JRQOF6EA3HQWDCEDBPPMLYPJCFLDDGYZLEQGMS5SOBQIB3BAFHVAW"
+
+	spec := &TxSpec{
+		SourceAccount: validAccount,
+		Fee:           500,
+		Sequence:      1,
+		Operations: []OperationSpec{
+			{Type: "restore_footprint"},
+		},
+	}
+
+	env, err := BuildTransactionEnvelope(spec)
+	if err != nil {
+		t.Fatalf("failed to build restore_footprint envelope: %v", err)
+	}
+	op := env.V1.Tx.Operations[0]
+	if op.Body.Type != xdr.OperationTypeRestoreFootprint {
+		t.Fatalf("expected RestoreFootprint operation, got %v", op.Body.Type)
+	}
+	if op.Body.RestoreFootprintOp == nil {
+		t.Fatal("RestoreFootprintOp is nil")
+	}
+}
+
+func TestBuildExtendFootprintTtlValidation(t *testing.T) {
+	validAccount := "GA2JRQOF6EA3HQWDCEDBPPMLYPJCFLDDGYZLEQGMS5SOBQIB3BAFHVAW"
+
+	// extend_footprint_ttl missing extend_to fails strict validation
+	txJSON := []byte(`{
+		"source_account": "` + validAccount + `",
+		"fee": 100,
+		"sequence": 1,
+		"operations": [{"type": "extend_footprint_ttl"}]
+	}`)
+	if _, err := BuildTransactionEnvelopeFromJSONStrict(txJSON); err == nil {
+		t.Error("expected strict validation error when extend_to is missing")
+	}
+}
+
+func TestBuildBumpSequenceRelativeOffset(t *testing.T) {
+	validAccount := "GA2JRQOF6EA3HQWDCEDBPPMLYPJCFLDDGYZLEQGMS5SOBQIB3BAFHVAW"
+
+	// Relative offset "+10" should add to the transaction's sequence number.
+	spec := &TxSpec{
+		SourceAccount: validAccount,
+		Fee:           100,
+		Sequence:      1000,
+		Operations: []OperationSpec{
+			{Type: "bump_sequence", BumpTo: "+10"},
+		},
+	}
+
+	env, err := BuildTransactionEnvelope(spec)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	op := env.V1.Tx.Operations[0]
+	if op.Body.Type != xdr.OperationTypeBumpSequence {
+		t.Fatalf("expected BumpSequence, got %v", op.Body.Type)
+	}
+	if op.Body.BumpSequenceOp.BumpTo != 1010 {
+		t.Fatalf("BumpTo = %d, want 1010", op.Body.BumpSequenceOp.BumpTo)
+	}
+
+	// Absolute value still works.
+	specAbs := &TxSpec{
+		SourceAccount: validAccount,
+		Fee:           100,
+		Sequence:      1000,
+		Operations:    []OperationSpec{{Type: "bump_sequence", BumpTo: 9999}},
+	}
+	envAbs, err := BuildTransactionEnvelope(specAbs)
+	if err != nil {
+		t.Fatalf("unexpected error (absolute): %v", err)
+	}
+	if envAbs.V1.Tx.Operations[0].Body.BumpSequenceOp.BumpTo != 9999 {
+		t.Error("absolute bump_to did not round-trip")
+	}
+
+	// Malformed relative value returns an error.
+	bad := &TxSpec{
+		SourceAccount: validAccount,
+		Fee:           100,
+		Sequence:      1000,
+		Operations:    []OperationSpec{{Type: "bump_sequence", BumpTo: "+abc"}},
+	}
+	if _, err := BuildTransactionEnvelope(bad); err == nil {
+		t.Error("expected error for malformed relative bump_to")
+	}
+}
