@@ -101,6 +101,8 @@ var typeDocs = map[string]typeDoc{
 		"A recursive boolean and time condition that controls when a claimable balance can be claimed."},
 	"ContractCodeEntry": {CategoryLedgerEntry,
 		"The WASM code of a deployed Soroban contract, with the hash it is keyed by."},
+	"ContractIdPreimage": {CategorySoroban,
+		"The preimage used to derive a Soroban contract address: either an address+salt pair or a classic asset."},
 	"ContractDataEntry": {CategoryLedgerEntry,
 		"One Soroban contract data entry: its key, value and storage durability."},
 	"ConfigSettingEntry": {CategoryLedgerEntry,
