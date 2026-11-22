@@ -207,6 +207,16 @@ func DiffWithOptions(left, right *Value, options DiffOptions) (*DiffResult, erro
 			options.Mask = combined
 		}
 	}
+	// ClaimPredicate: use the semantic predicate differ to show structural
+	// changes (time-bound deltas, added/removed sub-expressions) rather than
+	// two opaque description strings.
+	if left.Type == "ClaimPredicate" && right.Type == "ClaimPredicate" {
+		if lp, lok := left.Raw.(*xdr.ClaimPredicate); lok {
+			if rp, rok := right.Raw.(*xdr.ClaimPredicate); rok {
+				return diffPredicateSemantic(*lp, *rp), nil
+			}
+		}
+	}
 	leftNode, rightNode := left.Node, right.Node
 	if options.Semantic {
 		var err error
