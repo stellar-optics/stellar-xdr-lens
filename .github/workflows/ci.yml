@@ -102,6 +102,11 @@ jobs:
           path: coverage.out
           if-no-files-found: error
 
+      - name: Fuzz smoke test
+        run: |
+          go test -fuzz=FuzzStreamParser -fuzztime=10s ./pkg/lens
+          go test -fuzz=FuzzHexInput -fuzztime=10s ./pkg/lens
+
   cli:
     name: CLI smoke test
     runs-on: ubuntu-latest
