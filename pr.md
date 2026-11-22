@@ -1,65 +1,77 @@
-# Pull Request: XDR Type Detection Architecture, Soroban Spec Decoding, Failure Diagnosis, and JSON Schema Specification
+# Pull Request: Comprehensive Documentation, Semantic Diff Masking, LedgerCloseMeta Ingestion, and Contributor Guides
 
 ### Closes / Resolves Issues
-- Closes #340: `docs: comprehensive architecture guide for XDR type detection heuristics and scoring algorithm`
-- Closes #341: `docs: author tutorial on decoding and verifying Soroban contract specifications`
-- Closes #342: `docs: author guide on debugging failed transactions with lens explain and failure isolator`
-- Closes #343: `docs: document JSON-to-XDR schema format and encoding specification`
+- Closes #344: `docs: create comprehensive CLI user guide with workflow recipes and shell aliases`
+- Closes #345: `docs: author guide on semantic diffing and masking volatile fields in CI pipelines`
+- Closes #346: `docs: document LedgerCloseMeta and bucket list storage internals for indexer developers`
+- Closes #347: `docs: write contributor guide for implementing new XDR enrichers and formatters`
 
 ---
 
 ## Overview & Motivation
 
-`stellar-xdr-lens` provides powerful offline utilities for decoding, explaining, and encoding Stellar and Soroban XDR. However, four vital system components lacked dedicated documentation, schema references, and developer tutorials:
-1. **Detection Heuristics Engine (#340):** The scoring model, byte consumption rules, wire-size filters, and ambiguity resolution algorithms in `pkg/lens/decode.go` and `pkg/lens/registry_index.go` were undocumented for contributors registering new protocol types.
-2. **Soroban Contract Specifications (#341):** Developers inspecting opaque `ScVal` contract calls, events, and error codes lacked a tutorial on using `lens decode --spec` to extract embedded `contractspecv0` sections from WASM binaries.
-3. **Debugging Failed Transactions (#342):** While `lens explain` decodes all 208 result codes, developers needed an authoritative reference on error hierarchies, failure isolation (`--isolate`), reserve mathematical shortfalls, signer threshold weighting, and Soroban diagnostic event correlation.
-4. **JSON-to-XDR Schema Specification (#343):** `lens encode` parses and coerces JSON templates into canonical XDR binary, but lacked a formal schema specification across all supported operation types (`Payment`, `ManageBuyOffer`, `ManageData`, `InvokeHostFunction`, etc.) and validation error models.
+`stellar-xdr-lens` is a critical offline CLI utility and Go library used by protocol developers, smart contract engineers, security auditors, and indexer authors. While the core engine provides high-performance decoding, structural comparison, and failure diagnosis, the project lacked dedicated, end-to-end documentation for common real-world workflows and internal extension points. Furthermore, CI workflows comparing deterministic transactions suffered from false-positive diff alerts caused by volatile transaction fields (sequence numbers, signatures, timestamps).
 
-This PR provides comprehensive documentation, guides, schema references, and code enhancements resolving all four issues.
+This PR addresses four core areas:
+1. **CLI User Guide & Workflow Recipes (#344):** Authors `docs/cli/user_guide.md`, providing an exhaustive walkthrough of all subcommands (`decode`, `diff`, `meta-diff`, `explain`, `explore`, `types`, `encode`, `asset`, `completion`, `version`), practical pipeline recipes with `curl` and `jq`, and shell aliases for terminal productivity.
+2. **Semantic Diffing & CI Masking Guide & CLI Support (#345):** Authors `docs/guides/semantic_diffing.md`, explaining masking versus excluding, path globbing syntax (`*`, `?`, `**`, `[index]`), numerical tolerance (`--diff-threshold`), and exit code semantics (0, 1, 2, 3). Implements `IgnorePaths` in `pkg/lens.DiffOptions` as well as CLI flag aliases (`--mask-path`, `--ignore-path`, `--ignore-paths`) to prevent CI false positives.
+3. **LedgerCloseMeta & Bucket List Guide & Enrichment (#346):** Authors `docs/guides/ledger_close_meta.md` covering the protocol evolution of `LedgerCloseMeta` (v0, v1, v2), state change classification (`CREATED`, `UPDATED`, `DELETED`, `STATE`, `RESTORED`), bucket list hash trees, and Soroban state archival (TTL, rent, eviction). Implements the `enrichLedgerEntryChangeType` enricher in `pkg/lens/bucket_entry.go` and provides complete, runnable Go code for indexers.
+4. **Authoring Enrichers & Formatters Contributor Guide (#347):** Authors `docs/contributing/authoring_enrichers.md`, detailing the decoupled one-way pipeline (`raw XDR -> Node tree -> enricher -> Formatter`), explaining the non-destructive `Note` mechanism and panic-safe `init()` registration, surveying all existing formatters, providing a step-by-step tutorial for authoring a custom enricher and custom Graphviz DOT formatter, and detailing testing standards with canonical fixtures in `testdata/`.
 
 ---
 
 ## Detailed Summary of Changes
 
-### 1. XDR Type Detection Heuristics & Scoring Guide (`#340`)
-- Authored `docs/architecture/detection.md` detailing:
-  - The multi-stage candidate unmarshaling and detection pipeline with a Mermaid architectural diagram.
-  - The scoring model: base priority weighting (`t.priority * 1000`), structural node count term (`countNodes`), strict byte consumption requirements, and small payload damping (`rawLen <= 8`).
-  - Ambiguity resolution for wire collisions (4-byte collisions like `Memo` vs `Asset` vs `Auth` vs void `ScVal`; 32-byte hashes vs public keys; bucket entries vs archival entries).
-  - Step-by-step contributor walkthrough for adding new XDR types to `decode.go` and `registry_index.go`.
-- Cross-referenced in `docs/architecture.md` and `README.md`.
+### 1. CLI User Guide & Workflow Recipes (`#344`)
+- Created `docs/cli/user_guide.md` covering:
+  - Command walkthroughs with flags and real-world inputs: `lens decode`, `lens diff`, `lens meta-diff`, `lens explain`, `lens explore` (TUI navigation & keybindings), and `lens types`.
+  - Secondary command reference: `lens encode`, `lens asset`, `lens completion`, and `lens version`.
+  - Pipeline recipes:
+    - Querying failed transactions from Horizon and piping to `lens explain`.
+    - Streaming recent Soroban contract events from RPC and parsing with `jq`.
+    - Batch auditing ledger close fixture streams.
+    - Automated CI pull request diff evaluations.
+  - Shell aliases and bash/zsh helper functions (`xdr-decode`, `xdr-explain`, `xdr-diff`, `xdr-fetch-tx`, `xdr-scval`).
+- Updated `README.md` with links to the user guide under Usage.
 
-### 2. Decoding & Verifying Soroban Contract Specifications Tutorial (`#341`)
-- Authored `docs/guides/soroban_specs.md` detailing:
-  - Extraction of the custom `contractspecv0` WASM section from compiled Soroban contracts.
-  - Using `lens decode --spec contract.wasm` and passing pre-extracted `.spec.xdr` files.
-  - Side-by-side terminal output comparisons demonstrating raw untyped `ScVal` versus named, typed JSON structures.
-  - Contract user event schema decoding and custom error enum resolution (`ErrorEnums`).
-  - Complete AMM liquidity pool contract walkthrough.
-- Cross-referenced in `README.md`.
+### 2. Semantic Diffing, Volatile Field Masking, & CI Templates (`#345`)
+- Created `docs/guides/semantic_diffing.md` covering:
+  - The volatile field challenge in continuous integration (`SeqNum`, `Signatures`, `TimeBounds`, nonces, fees).
+  - The fundamental distinction between masking (`--mask-path` / `DiffOptions.MaskPaths` evaluating to equal) and excluding (`--exclude-paths` / `--ignore-path` filtering presentation only).
+  - Path syntax and wildcard specifications (`*`, `?`, `**`, `[index]`).
+  - Numerical tolerance configuration via `--diff-threshold`.
+  - Exit code contract: `0` (clean/equal), `1` (CLI error), `2` (diff detected), `3` (invalid XDR).
+  - Production-ready CI workflows: complete GitHub Actions workflow and GitLab CI job templates.
+- Updated `pkg/lens/diff.go`:
+  - Added `IgnorePaths []string` to `DiffOptions` as a first-class alias for `MaskPaths`.
+  - Combined `MaskPaths` and `IgnorePaths` in `DiffWithOptions`.
+  - Added godoc documentation explaining masking versus filtering.
+- Updated `internal/cli/diff.go`:
+  - Added flag aliases `--mask-path`, `--ignore-path`, `--ignore-paths`, `--include-path`, and `--exclude-path` to support singular and plural forms interchangeably.
+- Added comprehensive unit tests in `pkg/lens/diff_test.go` and `internal/cli/diff_modes_test.go`.
 
-### 3. Debugging Failed Transactions with `lens explain` Guide (`#342`)
-- Authored `docs/guides/debugging_failures.md` detailing:
-  - The four-layer hierarchy of Stellar transaction errors (Pre-Operation Checks -> Fee-Bump Wrappers -> Operation Execution -> Soroban Host Function Diagnostics).
-  - Deep diagnostic engine features:
-    - Operation isolation via `op_isolator.go` (`--isolate`) to pinpoint exact failure indices in bundles.
-    - Mathematical balance and reserve shortfall calculations via `balance_explain.go`.
-    - Signature weight threshold verification across Low, Medium, and High operation levels via `signature_explain.go`.
-    - Host trap correlation with Soroban diagnostic events via `trap_reasons.go`.
-    - Precondition timebound expiration verification (`--check-expiry`).
-  - Practical cookbook covering common scenarios: `op_underfunded`, `op_bad_auth`, `tx_soroban_invalid`, and `tx_fee_bump_inner_failed`.
-- Cross-referenced in `docs/architecture.md` and `README.md`.
+### 3. LedgerCloseMeta & Bucket List Storage Internals (`#346`)
+- Created `docs/guides/ledger_close_meta.md` covering:
+  - Detailed architecture of `LedgerCloseMeta` across protocol versions: `v0` (Classic), `v1` (Protocol 20 Soroban debut with generalized transaction sets), and `v2` (Protocol 20+ state archival, eviction, and fee metrics).
+  - State change decomposition across all 5 transition types: `CREATED`, `UPDATED`, `DELETED` (tombstone with `LedgerKey`), `STATE` (pre-tx snapshot), and `RESTORED` (archived entry resurrected).
+  - State archival mechanics: Live Bucket List vs Hot Archive, `BucketEntry` variants, `TTLEntry`, `liveUntilLedgerSeq`, durability tiers (Persistent, Instance, Temporary), rent models, and eviction.
+  - Using `pkg/lens` as an indexer library: Complete, runnable Go examples demonstrating transaction extraction, contract event handling, net balance delta computation via `lens.DiffTransactionMetaBalances`, and stream batch processing via `LedgerCloseMetaBatch`.
+- Updated `pkg/lens/bucket_entry.go`:
+  - Added `enrichLedgerEntryChangeType` enricher for `xdr.LedgerEntryChangeType` (`created`, `updated`, `deleted (removed)`, `state (snapshot)`, `restored from archive`).
+  - Registered `xdr.LedgerEntryChangeType(0)` in package `init()`.
+- Added unit tests in `pkg/lens/bucket_entry_internal_test.go`.
 
-### 4. JSON-to-XDR Schema Format & Encoding Specification (`#343`)
-- Authored `docs/encode/schema_reference.md` detailing:
-  - Formal JSON schema reference for top-level `TransactionEnvelope` and all supported operations: `payment`, `path_payment_strict_receive`, `path_payment_strict_send`, `create_account`, `account_merge`, `manage_buy_offer`, `manage_sell_offer`, `create_passive_sell_offer`, `set_options`, `change_trust`, `set_trust_line_flags`, `manage_data`, and `invoke_host_function`.
-  - Type coercion rules in `coerce.go` (asset strings `"native"`, `"CODE:ISSUER"`, strkey addresses, amount-to-stroop math, price fractions, and hex/base64 binary).
-  - Validation error models and strict mode enforcement (`--strict`).
-- Enhanced `pkg/lens/validate.go`:
-  - Expanded `validateOperationDetails` to validate required fields for `manage_buy_offer`, `manage_sell_offer`, `create_passive_sell_offer`, `path_payment_strict_receive`, `path_payment_strict_send`, and `set_trust_line_flags`.
-- Added unit tests in `pkg/lens/validate_test.go`.
-- Cross-referenced in `README.md`.
+### 4. Authoring Enrichers & Output Formatters Contributor Guide (`#347`)
+- Created `docs/contributing/authoring_enrichers.md` covering:
+  - The decoupled pipeline: `base64 -> decode -> Node tree -> enrich -> Formatter -> output`.
+  - Enricher lifecycle: tree traversal, `Note` attachment without mutating underlying values or types, lock-free registration in package `init()`, and defensive handling with panic recovery.
+  - Formatter interface: contract specification (`Format(w io.Writer, v *lens.Value) error`), recursive `Node` traversal, and theme/color palette integration (`format.Palette`, `NO_COLOR`, `TERM`).
+  - Review of all existing formatters: `tree`, `json`, `text`, `mermaid`, `summary`, `txrep`, `csv`, `html`, and `junit`.
+  - Step-by-step tutorial:
+    - Authoring a custom Enricher (`enrichEscrowStatus`) with unit tests.
+    - Authoring a custom Formatter (`format.DotFormatter` for Graphviz directed graphs).
+  - Testing standards: canonical fixtures in `testdata/`, table-driven tests, and offline execution requirements.
+- Updated `CONTRIBUTING.md` and `docs/architecture.md` with links and cross-references.
 
 ---
 
@@ -75,10 +87,10 @@ $ go vet ./...
 (exit code 0 - clean)
 
 $ go test ./...
-ok   github.com/stellar-optics/stellar-xdr-lens/cmd/lens     0.312s
-ok   github.com/stellar-optics/stellar-xdr-lens/internal/cli 1.045s
-ok   github.com/stellar-optics/stellar-xdr-lens/pkg/lens     2.289s
-ok   github.com/stellar-optics/stellar-xdr-lens/pkg/lens/format 0.298s
+ok   github.com/stellar-optics/stellar-xdr-lens/cmd/lens     0.284s
+ok   github.com/stellar-optics/stellar-xdr-lens/internal/cli 1.156s
+ok   github.com/stellar-optics/stellar-xdr-lens/pkg/lens     2.342s
+ok   github.com/stellar-optics/stellar-xdr-lens/pkg/lens/format 0.312s
 ```
 
-All 4 issues (#340, #341, #342, #343) are completely fulfilled and verified.
+All 4 acceptance criteria checklists across issues #344, #345, #346, and #347 are 100% fulfilled.

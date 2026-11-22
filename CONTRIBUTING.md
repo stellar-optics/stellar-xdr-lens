@@ -47,7 +47,8 @@ go tool cover -html=coverage.out
 ## Good first contributions
 
 These are designed to be one-file changes. See
-[docs/architecture.md](docs/architecture.md) for the details.
+[docs/architecture.md](docs/architecture.md) and the step-by-step
+[Authoring Enrichers & Formatters Guide](docs/contributing/authoring_enrichers.md) for details.
 
 ### Add an XDR type
 
@@ -58,6 +59,14 @@ One line in `registry` in `pkg/lens/decode.go`. Detection, `--type`,
 
 Add an `Enricher` in `pkg/lens/enrich.go` so a type displays the way developers
 recognise it, the way `AccountId` already renders as a strkey address.
+For a complete tutorial on writing and registering enrichers, see
+[docs/contributing/authoring_enrichers.md](docs/contributing/authoring_enrichers.md).
+
+### Add or extend an output format
+
+Implement the `Formatter` interface in `pkg/lens/format/` to render the neutral
+`Node` tree in a new format. See the tutorial in
+[docs/contributing/authoring_enrichers.md](docs/contributing/authoring_enrichers.md#the-formatter-interface).
 
 ### Explain a result code better
 
