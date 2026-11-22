@@ -235,7 +235,10 @@ func RunRoundTripSuite(route RoundTripRoute, cases []RoundTripCase) *RoundTripSu
 // such as a claim predicate.
 func RoundTripRegistry(route RoundTripRoute) *RoundTripSuiteReport {
 	suite := &RoundTripSuiteReport{Route: route}
-	for _, t := range registry {
+	registryMu.RLock()
+	entries := registryEntries()
+	registryMu.RUnlock()
+	for _, t := range entries {
 		suite.Reports = append(suite.Reports, roundTripRegistryType(t, route))
 	}
 	return suite
