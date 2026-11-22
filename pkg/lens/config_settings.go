@@ -27,6 +27,239 @@ func init() {
 	fieldNotes["MinTemporaryTtl"] = ledgerCountNote
 	fieldNotes["MinPersistentTtl"] = ledgerCountNote
 	fieldNotes["LiveSorobanStateSizeWindowSamplePeriod"] = ledgerCountNote
+
+	fieldNotes["ContractMaxSizeBytes"] = contractMaxSizeBytesNote
+	fieldNotes["ContractDataKeySizeBytes"] = contractMaxSizeBytesNote
+	fieldNotes["ContractDataEntrySizeBytes"] = contractMaxSizeBytesNote
+	fieldNotes["TxMemoryLimit"] = contractMaxSizeBytesNote
+	fieldNotes["LedgerMaxInstructions"] = cpuInstructionsNote
+	fieldNotes["TxMaxInstructions"] = cpuInstructionsNote
+	fieldNotes["LedgerMaxTxCount"] = executionLanesNote
+	fieldNotes["LedgerMaxTxsSizeBytes"] = contractMaxSizeBytesNote
+	fieldNotes["TxMaxSizeBytes"] = contractMaxSizeBytesNote
+	fieldNotes["TxMaxContractEventsSizeBytes"] = contractMaxSizeBytesNote
+
+	nodeHooks[reflect.TypeOf(xdr.ConfigSettingEntry{})] = decorateConfigSettingEntry
+}
+
+func contractMaxSizeBytesNote(rv reflect.Value) (string, bool) {
+	for rv.Kind() == reflect.Pointer {
+		if rv.IsNil() {
+			return "", false
+		}
+		rv = rv.Elem()
+	}
+	if v, ok := rv.Interface().(xdr.Uint32); ok {
+		return formatByteSize(uint64(v)), true
+	}
+	return "", false
+}
+
+func cpuInstructionsNote(rv reflect.Value) (string, bool) {
+	for rv.Kind() == reflect.Pointer {
+		if rv.IsNil() {
+			return "", false
+		}
+		rv = rv.Elem()
+	}
+	if v, ok := rv.Interface().(xdr.Int64); ok {
+		return formatCPUInstructions(uint64(v)), true
+	}
+	return "", false
+}
+
+func executionLanesNote(rv reflect.Value) (string, bool) {
+	for rv.Kind() == reflect.Pointer {
+		if rv.IsNil() {
+			return "", false
+		}
+		rv = rv.Elem()
+	}
+	if v, ok := rv.Interface().(xdr.Uint32); ok {
+		return fmt.Sprintf("%d concurrent execution lanes", v), true
+	}
+	return "", false
+}
+
+// formatByteSize converts byte counts into KB / MB.
+func formatByteSize(bytes uint64) string {
+	switch {
+	case bytes >= 1024*1024 && bytes%(1024*1024) == 0:
+		return fmt.Sprintf("%d MB (%d bytes)", bytes/(1024*1024), bytes)
+	case bytes >= 1024*1024:
+		return fmt.Sprintf("%.2f MB (%d bytes)", float64(bytes)/float64(1024*1024), bytes)
+	case bytes >= 1024 && bytes%1024 == 0:
+		return fmt.Sprintf("%d KB (%d bytes)", bytes/1024, bytes)
+	case bytes >= 1024:
+		return fmt.Sprintf("%.2f KB (%d bytes)", float64(bytes)/1024.0, bytes)
+	default:
+		return fmt.Sprintf("%d bytes", bytes)
+	}
+}
+
+// formatCPUInstructions converts CPU instruction counts into K / M.
+func formatCPUInstructions(insns uint64) string {
+	switch {
+	case insns >= 1_000_000 && insns%1_000_000 == 0:
+		return fmt.Sprintf("%dM CPU instructions (%d)", insns/1_000_000, insns)
+	case insns >= 1_000_000:
+		return fmt.Sprintf("%.2fM CPU instructions (%d)", float64(insns)/1_000_000.0, insns)
+	case insns >= 1_000 && insns%1_000 == 0:
+		return fmt.Sprintf("%dK CPU instructions (%d)", insns/1_000, insns)
+	case insns >= 1_000:
+		return fmt.Sprintf("%.2fK CPU instructions (%d)", float64(insns)/1_000.0, insns)
+	default:
+		return fmt.Sprintf("%d CPU instructions", insns)
+	}
+}
+
+// decorateConfigSettingEntry decorates ConfigSettingEntry nodes and their children
+// with human-readable units for Protocol 20/21 settings.
+func decorateConfigSettingEntry(n *Node, raw any) {
+	entry, ok := raw.(xdr.ConfigSettingEntry)
+	if !ok {
+		return
+	}
+
+	if idNode := n.Child("ConfigSettingId"); idNode != nil {
+		idNode.Note = configSettingShortName(entry.ConfigSettingId)
+	}
+
+	switch entry.ConfigSettingId {
+	case xdr.ConfigSettingIdConfigSettingContractMaxSizeBytes:
+		if entry.ContractMaxSizeBytes != nil {
+			bytes := uint64(*entry.ContractMaxSizeBytes)
+			n.Note = fmt.Sprintf("max contract size: %s", formatByteSize(bytes))
+			if child := n.Child("ContractMaxSizeBytes"); child != nil {
+				child.Note = formatByteSize(bytes)
+			}
+		}
+
+	case xdr.ConfigSettingIdConfigSettingContractComputeV0:
+		if entry.ContractCompute != nil {
+			c := entry.ContractCompute
+			n.Note = fmt.Sprintf("CPU: %s ledger / %s tx, Memory: %s",
+				formatCPUInstructions(uint64(c.LedgerMaxInstructions)),
+				formatCPUInstructions(uint64(c.TxMaxInstructions)),
+				formatByteSize(uint64(c.TxMemoryLimit)),
+			)
+			if child := n.Child("ContractCompute"); child != nil {
+				if m := child.Child("LedgerMaxInstructions"); m != nil {
+					m.Note = formatCPUInstructions(uint64(c.LedgerMaxInstructions))
+				}
+				if m := child.Child("TxMaxInstructions"); m != nil {
+					m.Note = formatCPUInstructions(uint64(c.TxMaxInstructions))
+				}
+				if m := child.Child("TxMemoryLimit"); m != nil {
+					m.Note = formatByteSize(uint64(c.TxMemoryLimit))
+				}
+			}
+		}
+
+	case xdr.ConfigSettingIdConfigSettingContractLedgerCostV0:
+		if entry.ContractLedgerCost != nil {
+			c := entry.ContractLedgerCost
+			readFeePerByte := float64(c.FeeDiskRead1Kb) / 1024.0
+			writeFeePerByteLow := float64(c.RentFee1KbSorobanStateSizeLow) / 1024.0
+			writeFeePerByteHigh := float64(c.RentFee1KbSorobanStateSizeHigh) / 1024.0
+			n.Note = fmt.Sprintf("read fee: %.4f stroops/byte, write fee: %.4f..%.4f stroops/byte",
+				readFeePerByte, writeFeePerByteLow, writeFeePerByteHigh)
+			if child := n.Child("ContractLedgerCost"); child != nil {
+				child.Note = fmt.Sprintf("read: %.4f stroops/byte, write: %.4f..%.4f stroops/byte",
+					readFeePerByte, writeFeePerByteLow, writeFeePerByteHigh)
+				if m := child.Child("FeeDiskRead1Kb"); m != nil {
+					m.Note += fmt.Sprintf(" (%.4f stroops/byte)", readFeePerByte)
+				}
+				if m := child.Child("RentFee1KbSorobanStateSizeLow"); m != nil {
+					m.Note += fmt.Sprintf(" (%.4f stroops/byte)", writeFeePerByteLow)
+				}
+				if m := child.Child("RentFee1KbSorobanStateSizeHigh"); m != nil {
+					m.Note += fmt.Sprintf(" (%.4f stroops/byte)", writeFeePerByteHigh)
+				}
+				if m := child.Child("LedgerMaxDiskReadBytes"); m != nil {
+					m.Note = formatByteSize(uint64(c.LedgerMaxDiskReadBytes))
+				}
+				if m := child.Child("LedgerMaxWriteBytes"); m != nil {
+					m.Note = formatByteSize(uint64(c.LedgerMaxWriteBytes))
+				}
+				if m := child.Child("TxMaxDiskReadBytes"); m != nil {
+					m.Note = formatByteSize(uint64(c.TxMaxDiskReadBytes))
+				}
+				if m := child.Child("TxMaxWriteBytes"); m != nil {
+					m.Note = formatByteSize(uint64(c.TxMaxWriteBytes))
+				}
+			}
+		}
+
+	case xdr.ConfigSettingIdConfigSettingStateArchival:
+		if entry.StateArchivalSettings != nil {
+			s := entry.StateArchivalSettings
+			minDays := float64(s.MinTemporaryTtl*5) / (24 * 3600)
+			maxDays := float64(s.MaxEntryTtl*5) / (24 * 3600)
+			n.Note = fmt.Sprintf("TTL: min %.1f days (%d ledgers), max %.1f days (%d ledgers)",
+				minDays, s.MinTemporaryTtl, maxDays, s.MaxEntryTtl)
+			if child := n.Child("StateArchivalSettings"); child != nil {
+				child.Note = fmt.Sprintf("min TTL: %.1f days (%d ledgers), max TTL: %.1f days (%d ledgers)",
+					minDays, s.MinTemporaryTtl, maxDays, s.MaxEntryTtl)
+			}
+		}
+
+	case xdr.ConfigSettingIdConfigSettingContractExecutionLanes:
+		if entry.ContractExecutionLanes != nil {
+			lanes := entry.ContractExecutionLanes.LedgerMaxTxCount
+			n.Note = fmt.Sprintf("%d concurrent execution lanes", lanes)
+			if child := n.Child("ContractExecutionLanes"); child != nil {
+				if m := child.Child("LedgerMaxTxCount"); m != nil {
+					m.Note = fmt.Sprintf("%d concurrent execution lanes", lanes)
+				}
+			}
+		}
+
+	case xdr.ConfigSettingIdConfigSettingContractDataKeySizeBytes:
+		if entry.ContractDataKeySizeBytes != nil {
+			bytes := uint64(*entry.ContractDataKeySizeBytes)
+			n.Note = fmt.Sprintf("max contract data key size: %s", formatByteSize(bytes))
+			if child := n.Child("ContractDataKeySizeBytes"); child != nil {
+				child.Note = formatByteSize(bytes)
+			}
+		}
+
+	case xdr.ConfigSettingIdConfigSettingContractDataEntrySizeBytes:
+		if entry.ContractDataEntrySizeBytes != nil {
+			bytes := uint64(*entry.ContractDataEntrySizeBytes)
+			n.Note = fmt.Sprintf("max contract data entry size: %s", formatByteSize(bytes))
+			if child := n.Child("ContractDataEntrySizeBytes"); child != nil {
+				child.Note = formatByteSize(bytes)
+			}
+		}
+
+	case xdr.ConfigSettingIdConfigSettingContractBandwidthV0:
+		if entry.ContractBandwidth != nil {
+			b := entry.ContractBandwidth
+			n.Note = fmt.Sprintf("bandwidth: %s ledger / %s tx",
+				formatByteSize(uint64(b.LedgerMaxTxsSizeBytes)),
+				formatByteSize(uint64(b.TxMaxSizeBytes)))
+			if child := n.Child("ContractBandwidth"); child != nil {
+				if m := child.Child("LedgerMaxTxsSizeBytes"); m != nil {
+					m.Note = formatByteSize(uint64(b.LedgerMaxTxsSizeBytes))
+				}
+				if m := child.Child("TxMaxSizeBytes"); m != nil {
+					m.Note = formatByteSize(uint64(b.TxMaxSizeBytes))
+				}
+			}
+		}
+
+	case xdr.ConfigSettingIdConfigSettingContractEventsV0:
+		if entry.ContractEvents != nil {
+			e := entry.ContractEvents
+			n.Note = fmt.Sprintf("max events size: %s", formatByteSize(uint64(e.TxMaxContractEventsSizeBytes)))
+			if child := n.Child("ContractEvents"); child != nil {
+				if m := child.Child("TxMaxContractEventsSizeBytes"); m != nil {
+					m.Note = formatByteSize(uint64(e.TxMaxContractEventsSizeBytes))
+				}
+			}
+		}
+	}
 }
 
 // enrichEncodedLedgerKey decodes the opaque EncodedLedgerKey bytes as a

@@ -44,6 +44,8 @@ type Summary struct {
 	Operations []OpSummary `json:"operations,omitempty"`
 	// Outcome is present whenever a result was supplied.
 	Outcome *Outcome `json:"outcome,omitempty"`
+	// Warnings lists non-fatal diagnostic warnings discovered across operations.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // OpSummary describes one operation.
@@ -63,6 +65,8 @@ type OpSummary struct {
 	PathPayment *PathPaymentSlippageDiagnosis `json:"pathPayment,omitempty"`
 	// TrustLine provides contextual diagnostics for SetTrustLineFlags failures.
 	TrustLine *SetTrustLineFlagsDiagnosis `json:"trustLine,omitempty"`
+	// Warnings lists operation-level diagnostic warnings.
+	Warnings []string `json:"warnings,omitempty"`
 	// Auth provides contextual diagnostics for Soroban contract authorization failures.
 	Auth *AuthFailure `json:"auth,omitempty"`
 }
@@ -144,6 +148,23 @@ func explainEnvelope(env *xdr.TransactionEnvelope, res *xdr.TransactionResult) (
 			Source: operationSource(op),
 			Detail: describeOperation(op),
 		}
+		// Diagnose operation-level warnings
+		switch op.Body.Type {
+		case xdr.OperationTypeCreateClaimableBalance:
+			if cb, ok := op.Body.GetCreateClaimableBalanceOp(); ok {
+				claimantWarnings := ValidateClaimantPredicates(cb.Claimants)
+				if len(claimantWarnings) > 0 {
+					opSum.Warnings = append(opSum.Warnings, claimantWarnings...)
+					s.Warnings = append(s.Warnings, claimantWarnings...)
+				}
+			}
+		case xdr.OperationTypePathPaymentStrictSend, xdr.OperationTypePathPaymentStrictReceive:
+			if pathDiag := DiagnosePathPaymentOperation(op); pathDiag != nil && len(pathDiag.Warnings) > 0 {
+				opSum.Warnings = append(opSum.Warnings, pathDiag.Warnings...)
+				s.Warnings = append(s.Warnings, pathDiag.Warnings...)
+			}
+		}
+
 		if op.Body.Type == xdr.OperationTypeInvokeHostFunction {
 			if hostOp, ok := op.Body.GetInvokeHostFunctionOp(); ok {
 				var currentLedger uint32
@@ -993,6 +1014,10 @@ func malformedClaimableBalanceContext(op xdr.CreateClaimableBalanceOp, asset, am
 		if problem := claimPredicateProblem(v0.Predicate, 1); problem != "" {
 			return fmt.Sprintf("%sclaimant %s has an invalid predicate: %s.",
 				prefix, v0.Destination.Address(), problem)
+		}
+		if bad, reason := ValidateClaimPredicateContradiction(v0.Predicate); bad {
+			return fmt.Sprintf("%sclaimant %s has an unsatisfiable predicate (%s); funds would be permanently unclaimable.",
+				prefix, v0.Destination.Address(), reason)
 		}
 	}
 	return prefix + "check that the amount is positive, there are 1-10 unique claimants, and every predicate is valid."
