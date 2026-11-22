@@ -9,6 +9,10 @@ where to make the three changes contributors most often want to make:
 - [Authoring Enrichers & Formatters Guide](contributing/authoring_enrichers.md)
 - [Semantic Diffing in CI Guide](guides/semantic_diffing.md)
 - [LedgerCloseMeta & Bucket List Guide](guides/ledger_close_meta.md)
+- [XDR Type Detection Heuristics & Scoring Guide](architecture/detection.md)
+- [Debugging Failed Transactions Guide](guides/debugging_failures.md)
+- [Soroban Smart Contract Specifications Guide](guides/soroban_specs.md)
+- [JSON Schema & Encoding Reference](encode/schema_reference.md)
 
 ## The pipeline
 
@@ -489,6 +493,10 @@ untrusted, possibly truncated blobs, both the decoder and every enricher run
 behind a `recover`. A value we cannot prettify degrades to its generic
 rendering; it never takes the process down.
 
+For comprehensive security guidelines, depth limits (`maxDepth = 200`), payload
+size limits, and production hardening recommendations when processing untrusted
+inputs, see [docs/security/untrusted_xdr.md](security/untrusted_xdr.md).
+
 ### Deterministic output
 
 JSON output is fully deterministic. The `Node` tree sorts map keys before
@@ -501,6 +509,8 @@ identical input produce byte-identical output. This property is tested by
 `TestJSONFormatterDeterministicMapKeys` in `format/format_test.go`.
 
 ## Adding a new XDR type
+
+For an in-depth reference on candidate scoring, wire size filters, and resolving ambiguous payloads, see the [XDR Type Detection & Scoring Guide](architecture/detection.md).
 
 Add one line to `registry` in [`decode.go`](../pkg/lens/decode.go):
 

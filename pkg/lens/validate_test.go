@@ -202,6 +202,34 @@ func TestValidateOperations(t *testing.T) {
 	if err := ValidateJSON(badMerge, opSchema); err == nil {
 		t.Fatalf("expected error for account_merge without destination")
 	}
+
+	// Manage buy offer without buying/selling
+	badBuyOffer := []byte(`{
+		"type": "manage_buy_offer",
+		"selling": "native"
+	}`)
+	if err := ValidateJSON(badBuyOffer, opSchema); err == nil {
+		t.Fatalf("expected error for manage_buy_offer missing fields")
+	}
+
+	// Path payment strict receive without destination
+	badPathReceive := []byte(`{
+		"type": "path_payment_strict_receive",
+		"send_max": 100,
+		"dest_amount": 90
+	}`)
+	if err := ValidateJSON(badPathReceive, opSchema); err == nil {
+		t.Fatalf("expected error for path_payment_strict_receive missing destination")
+	}
+
+	// Set trust line flags without trustor
+	badTrustFlags := []byte(`{
+		"type": "set_trust_line_flags",
+		"asset": "USDC:GA2JRQOF6EA3HQWDCEDBPPMLYPJCFLDDGYZLEQGMS5SOBQIB3BAFHVAW"
+	}`)
+	if err := ValidateJSON(badTrustFlags, opSchema); err == nil {
+		t.Fatalf("expected error for set_trust_line_flags missing trustor")
+	}
 }
 
 func TestValidateScValSpec(t *testing.T) {
