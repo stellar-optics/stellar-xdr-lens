@@ -51,6 +51,9 @@ func init() {
 	nodeHooks[reflect.TypeOf(xdr.LedgerFootprint{})] = decorateLedgerFootprint
 	nodeHooks[reflect.TypeOf(xdr.ConfigSettingEntry{})] = decorateConfigSettingEntry
 	registerDerivedNodeFields(reflect.TypeOf(xdr.LedgerFootprint{}), "Persistent", "Temporary", "Instance", "Other")
+	registerDerivedNodeFields(reflect.TypeOf(xdr.CreateContractArgs{}), "ContractID")
+	registerDerivedNodeFields(reflect.TypeOf(xdr.CreateContractArgsV2{}), "ContractID")
+	registerDerivedNodeFields(reflect.TypeOf(xdr.ContractIdPreimage{}), "ContractID")
 }
 
 // enrich looks up and applies the Enricher registered for rv's type.

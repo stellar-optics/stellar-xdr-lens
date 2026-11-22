@@ -67,6 +67,8 @@ type OpSummary struct {
 	TrustLine *SetTrustLineFlagsDiagnosis `json:"trustLine,omitempty"`
 	// Warnings lists operation-level diagnostic warnings.
 	Warnings []string `json:"warnings,omitempty"`
+	// Auth provides contextual diagnostics for Soroban contract authorization failures.
+	Auth *AuthFailure `json:"auth,omitempty"`
 }
 
 // Outcome is the resolved result of a transaction.
@@ -146,7 +148,6 @@ func explainEnvelope(env *xdr.TransactionEnvelope, res *xdr.TransactionResult) (
 			Source: operationSource(op),
 			Detail: describeOperation(op),
 		}
-
 		// Diagnose operation-level warnings
 		switch op.Body.Type {
 		case xdr.OperationTypeCreateClaimableBalance:
@@ -164,6 +165,22 @@ func explainEnvelope(env *xdr.TransactionEnvelope, res *xdr.TransactionResult) (
 			}
 		}
 
+		if op.Body.Type == xdr.OperationTypeInvokeHostFunction {
+			if hostOp, ok := op.Body.GetInvokeHostFunctionOp(); ok {
+				var currentLedger uint32
+				if lb := env.LedgerBounds(); lb != nil {
+					currentLedger = uint32(lb.MinLedger)
+					if currentLedger == 0 {
+						currentLedger = uint32(lb.MaxLedger)
+					}
+				}
+				if currentLedger > 0 {
+					if authDiag := DiagnoseInvokeHostFunctionAuth(hostOp, currentLedger, i); authDiag != nil {
+						opSum.Auth = authDiag
+					}
+				}
+			}
+		}
 		s.Operations = append(s.Operations, opSum)
 	}
 
@@ -177,11 +194,33 @@ func explainEnvelope(env *xdr.TransactionEnvelope, res *xdr.TransactionResult) (
 		return nil, err
 	}
 	for i, op := range env.Operations() {
-		if i >= len(s.Operations) || s.Operations[i].Result == nil {
+		if i >= len(s.Operations) {
 			continue
 		}
-		reason := contextualizeChangeTrustFailure(op, *s.Operations[i].Result)
-		s.Operations[i].Result = &reason
+		if s.Operations[i].Result != nil {
+			reason := contextualizeChangeTrustFailure(op, *s.Operations[i].Result)
+			s.Operations[i].Result = &reason
+		}
+		if op.Body.Type == xdr.OperationTypeInvokeHostFunction {
+			if hostOp, ok := op.Body.GetInvokeHostFunctionOp(); ok {
+				var currentLedger uint32
+				if lb := env.LedgerBounds(); lb != nil {
+					currentLedger = uint32(lb.MinLedger)
+					if currentLedger == 0 {
+						currentLedger = uint32(lb.MaxLedger)
+					}
+				}
+				if currentLedger > 0 {
+					if authDiag := DiagnoseInvokeHostFunctionAuth(hostOp, currentLedger, i); authDiag != nil {
+						s.Operations[i].Auth = authDiag
+						if s.Operations[i].Result != nil && !s.Operations[i].Result.Success {
+							s.Operations[i].Result.Summary = authDiag.Summary
+							s.Operations[i].Result.Hint = authDiag.Hint
+						}
+					}
+				}
+			}
+		}
 	}
 	s.Headline = resultHeadline(s, s.Outcome)
 	return s, nil
