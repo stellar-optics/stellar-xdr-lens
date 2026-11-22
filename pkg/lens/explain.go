@@ -2031,6 +2031,11 @@ func deepenAccountMergeFailure(source string, op xdr.Operation, r Reason) Reason
 	}
 
 	switch r.Code {
+	case "account_merge_no_account":
+		r.Summary = fmt.Sprintf(
+			"The destination account %s does not exist on the ledger and cannot receive the merged balance.",
+			dest)
+		r.Hint = "Create the destination account with a CreateAccount operation before retrying the merge, or choose an existing account as the target."
 	case "account_merge_has_sub_entries":
 		r.Summary = fmt.Sprintf(
 			"The merging account %s still owns non-signer subentries, and the network deletes an account only when its subentry count matches its signer count.",
@@ -2051,6 +2056,11 @@ func deepenAccountMergeFailure(source string, op xdr.Operation, r Reason) Reason
 			"The merging account %s has the AUTH_IMMUTABLE flag set, and the network refuses to merge an immutable account.",
 			merger)
 		r.Hint = "AUTH_IMMUTABLE is permanent: once set it can never be cleared, so this account can never be merged, and its flags, signers and thresholds can never change again. Move its funds out with ordinary payments instead."
+	case "account_merge_is_sponsor":
+		r.Summary = fmt.Sprintf(
+			"The merging account %s is currently sponsoring one or more ledger entries and cannot be deleted while sponsorships remain active.",
+			merger)
+		r.Hint = "Issue RevokeSponsorship operations to transfer or remove every entry this account sponsors, then resubmit the merge."
 	}
 	return r
 }
