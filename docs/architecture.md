@@ -490,6 +490,10 @@ untrusted, possibly truncated blobs, both the decoder and every enricher run
 behind a `recover`. A value we cannot prettify degrades to its generic
 rendering; it never takes the process down.
 
+For comprehensive security guidelines, depth limits (`maxDepth = 200`), payload
+size limits, and production hardening recommendations when processing untrusted
+inputs, see [docs/security/untrusted_xdr.md](security/untrusted_xdr.md).
+
 ### Deterministic output
 
 JSON output is fully deterministic. The `Node` tree sorts map keys before
