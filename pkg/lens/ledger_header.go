@@ -56,6 +56,11 @@ func init() {
 	// LedgerUpgrade (DecodeAs "LedgerUpgrade") still exposes the union
 	// structure (Type plus arm) rather than collapsing it to a scalar note.
 	registerEnricher(reflect.TypeOf(xdr.UpgradeType{}), enrichUpgradeType)
+
+	// A nodeHook sets the summary Note on a decoded LedgerUpgrade while
+	// leaving its children intact, so the tree is both human-readable at a
+	// glance and still navigable field by field.
+	nodeHooks[reflect.TypeOf(xdr.LedgerUpgrade{})] = decorateLedgerUpgrade
 }
 
 // protocolVersionNote renders a protocol version field as "protocol N", which
@@ -136,6 +141,20 @@ func enrichLedgerUpgrade(rv reflect.Value) (string, any, bool) {
 	return describeLedgerUpgrade(&upgrade), upgrade, true
 }
 
+// decorateLedgerUpgrade is the nodeHook for xdr.LedgerUpgrade. It sets a
+// human-readable Note on the root node so the upgrade is immediately
+// legible while still exposing the full union structure to callers that
+// want to navigate the arms.
+func decorateLedgerUpgrade(n *Node, v any) {
+	upgrade, ok := v.(xdr.LedgerUpgrade)
+	if !ok || n.Note != "" {
+		return
+	}
+	if note := describeLedgerUpgrade(&upgrade); note != "" {
+		n.Note = note
+	}
+}
+
 // describeLedgerUpgrade names the parameter a LedgerUpgrade proposes, with
 // stroop amounts rendered as decimals for the two fee-like parameters. An
 // arm whose payload is missing or a type that carries no short rendering
@@ -144,7 +163,11 @@ func describeLedgerUpgrade(u *xdr.LedgerUpgrade) string {
 	switch u.Type {
 	case xdr.LedgerUpgradeTypeLedgerUpgradeVersion:
 		if v, ok := u.GetNewLedgerVersion(); ok {
-			return "protocol version " + strconv.FormatUint(uint64(v), 10)
+			label := "Protocol " + strconv.FormatUint(uint64(v), 10)
+			if name := protocolName(uint32(v)); name != "" {
+				label += " (" + name + ")"
+			}
+			return label
 		}
 	case xdr.LedgerUpgradeTypeLedgerUpgradeBaseFee:
 		if v, ok := u.GetNewBaseFee(); ok {

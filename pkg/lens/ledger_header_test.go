@@ -215,8 +215,8 @@ func TestLedgerHeaderFlagsAndUpgradeVotes(t *testing.T) {
 	if upgrades == nil || len(upgrades.Children) != 2 {
 		t.Fatalf("ScpValue.Upgrades = %v, want 2 votes", upgrades)
 	}
-	if note := upgrades.Children[0].Note; note != "protocol version 23" {
-		t.Errorf("Upgrades[0] Note = %q, want %q", note, "protocol version 23")
+	if note := upgrades.Children[0].Note; note != "Protocol 23" {
+		t.Errorf("Upgrades[0] Note = %q, want %q", note, "Protocol 23")
 	}
 	if note := upgrades.Children[1].Note; note != "base reserve 1.0000000 XLM (10000000 stroops)" {
 		t.Errorf("Upgrades[1] Note = %q, want the base reserve proposal", note)
