@@ -21,6 +21,18 @@ type treeRow struct {
 	expanded    bool
 }
 
+// tuiTab is one independent view of a bundled payload. Each tab keeps its own
+// expansion, cursor and scroll state so switching views never loses place.
+type tuiTab struct {
+	label         string
+	root          *lens.Node
+	expandedState map[*lens.Node]bool
+	rows          []*treeRow
+	cursor        int
+	scrollOffset  int
+	filter        string
+}
+
 // TUITree is an interactive expandable terminal tree explorer for XDR structures.
 type TUITree struct {
 	valueType     string
@@ -37,6 +49,9 @@ type TUITree struct {
 	out           io.Writer
 	quit          bool
 	statusMsg     string
+	tabs          []*tuiTab
+	activeTab     int
+	showHelp      bool
 }
 
 // NewTUITree initializes an interactive tree explorer for value.
@@ -50,20 +65,160 @@ func NewTUITree(v *lens.Value, in io.Reader, out io.Writer, p format.Palette) *T
 		palette:       p,
 		in:            in,
 		out:           out,
+		activeTab:     -1,
 	}
 
 	// Expand root and immediate children by default for initial context
 	if t.root != nil {
 		t.expandedState[t.root] = true
-		for _, c := range t.root.Children {
-			if len(c.Children) > 0 {
-				t.expandedState[c] = true
-			}
-		}
+		expandImmediateChildren(t.expandedState, t.root)
 	}
 
 	t.rebuildRows()
+	t.initTabs()
 	return t
+}
+
+// expandImmediateChildren marks a node and its direct children as expanded.
+func expandImmediateChildren(expanded map[*lens.Node]bool, n *lens.Node) {
+	if n == nil {
+		return
+	}
+	expanded[n] = true
+	for _, c := range n.Children {
+		if len(c.Children) > 0 {
+			expanded[c] = true
+		}
+	}
+}
+
+// tabSectionAliases maps the display label to the field names that identify a
+// bundled section. TransactionResultPair, for example, calls the envelope
+// "Transaction" while a synthetic bundle may call it "Envelope".
+var tabSectionAliases = []struct {
+	label string
+	names map[string]bool
+}{
+	{"Envelope", map[string]bool{"envelope": true, "transaction": true, "tx": true, "transactionenvelope": true}},
+	{"Result", map[string]bool{"result": true, "txresult": true, "transactionresult": true}},
+	{"Meta", map[string]bool{"meta": true, "txmeta": true, "transactionmeta": true}},
+}
+
+// initTabs discovers bundled Envelope/Result/Meta sections. Fewer than two
+// sections is not a bundle, so the explorer keeps its single-tree layout.
+func (t *TUITree) initTabs() {
+	if t.root == nil {
+		return
+	}
+
+	used := make([]bool, len(tabSectionAliases))
+	var tabs []*tuiTab
+	for _, child := range t.root.Children {
+		name := normaliseSectionName(child.Name)
+		for i, alias := range tabSectionAliases {
+			if used[i] || !alias.names[name] {
+				continue
+			}
+			used[i] = true
+			expanded := make(map[*lens.Node]bool)
+			expandImmediateChildren(expanded, child)
+			tab := &tuiTab{label: alias.label, root: child, expandedState: expanded}
+			tab.rows = t.buildRows(child, expanded, "")
+			tabs = append(tabs, tab)
+			break
+		}
+	}
+
+	if len(tabs) < 2 {
+		return
+	}
+	t.tabs = tabs
+	t.SwitchTab(0)
+}
+
+// normaliseSectionName lowercases a field name and drops punctuation so
+// "tx_result" and "TxResult" both match.
+func normaliseSectionName(name string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(name) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// buildRows flattens a node with an explicit expansion map.
+func (t *TUITree) buildRows(root *lens.Node, expanded map[*lens.Node]bool, initialPath string) []*treeRow {
+	var rows []*treeRow
+	t.walk(root, nil, initialPath, 0, true, expanded, &rows)
+	return rows
+}
+
+// SwitchTab saves the current view and loads tab i. Each tab keeps its own
+// cursor, scroll position, filter and expansion state.
+func (t *TUITree) SwitchTab(i int) {
+	if i < 0 || i >= len(t.tabs) {
+		return
+	}
+	t.saveActiveTab()
+	t.activeTab = i
+	tab := t.tabs[i]
+	t.root = tab.root
+	t.expandedState = tab.expandedState
+	t.rows = tab.rows
+	t.cursor = tab.cursor
+	t.scrollOffset = tab.scrollOffset
+	t.filter = tab.filter
+	if len(t.rows) == 0 {
+		t.rebuildRows()
+	}
+	t.statusMsg = "View: " + tab.label
+}
+
+// NextTab cycles forward through the available views.
+func (t *TUITree) NextTab() {
+	if len(t.tabs) < 2 {
+		return
+	}
+	t.SwitchTab((t.activeTab + 1) % len(t.tabs))
+}
+
+// PrevTab cycles backward through the available views.
+func (t *TUITree) PrevTab() {
+	if len(t.tabs) < 2 {
+		return
+	}
+	t.SwitchTab((t.activeTab - 1 + len(t.tabs)) % len(t.tabs))
+}
+
+// saveActiveTab snapshots the mutable view state into the active tab.
+func (t *TUITree) saveActiveTab() {
+	if t.activeTab < 0 || t.activeTab >= len(t.tabs) {
+		return
+	}
+	tab := t.tabs[t.activeTab]
+	tab.expandedState = t.expandedState
+	tab.rows = t.rows
+	tab.cursor = t.cursor
+	tab.scrollOffset = t.scrollOffset
+	tab.filter = t.filter
+}
+
+// hasTabs reports whether the tab bar should be rendered.
+func (t *TUITree) hasTabs() bool { return len(t.tabs) > 1 }
+
+// visibleRowCount is how many tree rows fit below the header, tab bar, status
+// and keybinding lines.
+func (t *TUITree) visibleRowCount() int {
+	rows := t.height - 3
+	if t.hasTabs() {
+		rows--
+	}
+	if rows < 1 {
+		return 1
+	}
+	return rows
 }
 
 // SetDimensions sets the viewport dimensions for scrolling.
@@ -108,7 +263,7 @@ func (t *TUITree) rebuildRows() {
 		markAncestors(t.root)
 	}
 
-	t.walk(t.root, nil, "", 0, true, &rows)
+	t.walk(t.root, nil, "", 0, true, t.expandedState, &rows)
 
 	if t.filter != "" {
 		lowerFilter := strings.ToLower(t.filter)
@@ -131,7 +286,7 @@ func (t *TUITree) rebuildRows() {
 	}
 }
 
-func (t *TUITree) walk(n *lens.Node, parent *lens.Node, path string, depth int, isLast bool, rows *[]*treeRow) {
+func (t *TUITree) walk(n *lens.Node, parent *lens.Node, path string, depth int, isLast bool, expanded map[*lens.Node]bool, rows *[]*treeRow) {
 	if n == nil {
 		return
 	}
@@ -146,7 +301,7 @@ func (t *TUITree) walk(n *lens.Node, parent *lens.Node, path string, depth int, 
 	}
 
 	hasKids := len(n.Children) > 0
-	expanded := t.expandedState[n]
+	isExpanded := expanded[n]
 
 	*rows = append(*rows, &treeRow{
 		node:        n,
@@ -155,17 +310,17 @@ func (t *TUITree) walk(n *lens.Node, parent *lens.Node, path string, depth int, 
 		depth:       depth,
 		isLast:      isLast,
 		hasChildren: hasKids,
-		expanded:    expanded,
+		expanded:    isExpanded,
 	})
 
-	if hasKids && expanded {
+	if hasKids && isExpanded {
 		for i, c := range n.Children {
 			last := i == len(n.Children)-1
 			cPath := nodePath
 			if c.Name == "" {
 				cPath = fmt.Sprintf("%s[%d]", nodePath, i)
 			}
-			t.walk(c, n, cPath, depth+1, last, rows)
+			t.walk(c, n, cPath, depth+1, last, expanded, rows)
 		}
 	}
 }
@@ -184,10 +339,7 @@ func (t *TUITree) MoveUp() {
 func (t *TUITree) MoveDown() {
 	if t.cursor < len(t.rows)-1 {
 		t.cursor++
-		visibleRows := t.height - 3 // leave room for header & status bar
-		if visibleRows < 1 {
-			visibleRows = 1
-		}
+		visibleRows := t.visibleRowCount()
 		if t.cursor >= t.scrollOffset+visibleRows {
 			t.scrollOffset = t.cursor - visibleRows + 1
 		}
@@ -204,10 +356,7 @@ func (t *TUITree) MoveTop() {
 func (t *TUITree) MoveBottom() {
 	if len(t.rows) > 0 {
 		t.cursor = len(t.rows) - 1
-		visibleRows := t.height - 3
-		if visibleRows < 1 {
-			visibleRows = 1
-		}
+		visibleRows := t.visibleRowCount()
 		if t.cursor >= visibleRows {
 			t.scrollOffset = t.cursor - visibleRows + 1
 		} else {
@@ -328,8 +477,21 @@ func (t *TUITree) HandleKey(key string) {
 		t.MoveBottom()
 	case "q", "ctrl+c":
 		t.quit = true
+	case "?":
+		t.showHelp = !t.showHelp
+	case "tab":
+		t.NextTab()
+	case "shift+tab":
+		t.PrevTab()
+	case "1", "2", "3", "4", "5", "6", "7", "8", "9":
+		idx := int(key[0] - '1')
+		if idx < len(t.tabs) {
+			t.SwitchTab(idx)
+		}
 	case "esc":
-		if t.filter != "" {
+		if t.showHelp {
+			t.showHelp = false
+		} else if t.filter != "" {
 			t.SetFilter("")
 		}
 	default:
@@ -347,10 +509,16 @@ func (t *TUITree) Render() string {
 	// Header line
 	b.WriteString(p.Type + "=== " + t.valueType + " Explorer ===" + p.Reset + "\n")
 
-	visibleRows := t.height - 3
-	if visibleRows < 1 {
-		visibleRows = 1
+	if t.hasTabs() {
+		b.WriteString(t.renderTabs())
 	}
+
+	if t.showHelp {
+		b.WriteString(t.renderHelp())
+		return b.String()
+	}
+
+	visibleRows := t.visibleRowCount()
 
 	endIdx := t.scrollOffset + visibleRows
 	if endIdx > len(t.rows) {
@@ -431,9 +599,54 @@ func (t *TUITree) Render() string {
 		}
 	}
 	b.WriteString(p.Dim + "--- " + status + " ---" + p.Reset + "\n")
-	b.WriteString(p.Dim + "[↑/↓/j/k: nav | Enter/Space: toggle | e: expand all | c: collapse all | q: quit]" + p.Reset + "\n")
+	b.WriteString(p.Dim + t.keyHints() + p.Reset + "\n")
 
 	return b.String()
+}
+
+// renderTabs draws the numbered view bar, highlighting the active tab.
+func (t *TUITree) renderTabs() string {
+	p := t.palette
+	parts := make([]string, 0, len(t.tabs))
+	for i, tab := range t.tabs {
+		label := fmt.Sprintf("%d: %s", i+1, tab.label)
+		if i == t.activeTab {
+			parts = append(parts, p.Change+"["+label+"]"+p.Reset)
+		} else {
+			parts = append(parts, p.Dim+"[ "+label+" ]"+p.Reset)
+		}
+	}
+	return strings.Join(parts, "  ") + "\n"
+}
+
+// renderHelp lists every binding, including the tab controls.
+func (t *TUITree) renderHelp() string {
+	p := t.palette
+	var b strings.Builder
+	b.WriteString(p.Type + "Keybindings" + p.Reset + "\n")
+	b.WriteString("  ↑/↓ or j/k      move the cursor\n")
+	b.WriteString("  ←/→ or h/l      collapse / expand the selected node\n")
+	b.WriteString("  Enter/Space     toggle the selected node\n")
+	b.WriteString("  e / c           expand all / collapse all\n")
+	b.WriteString("  g / G           jump to top / bottom\n")
+	b.WriteString("  /text           filter visible nodes\n")
+	if t.hasTabs() {
+		b.WriteString("  1-9            switch to a numbered view\n")
+		b.WriteString("  Tab/Shift-Tab  cycle forward / backward through views\n")
+	}
+	b.WriteString("  ?               close this help\n")
+	b.WriteString("  q               quit\n")
+	b.WriteString(p.Dim + "[? or Esc: close help]" + p.Reset + "\n")
+	return b.String()
+}
+
+// keyHints is the footer, extended with tab controls when they are present.
+func (t *TUITree) keyHints() string {
+	hints := "[↑/↓/j/k: nav | Enter/Space: toggle | e: expand all | c: collapse all"
+	if t.hasTabs() {
+		hints += " | 1-9/Tab: switch view"
+	}
+	return hints + " | ?: help | q: quit]"
 }
 
 // Run executes the interactive loop reading key commands from in until quit.
@@ -502,6 +715,8 @@ func readKey(r *bufio.Reader) (string, error) {
 				return "home", nil
 			case 'F':
 				return "end", nil
+			case 'Z':
+				return "shift+tab", nil
 			}
 		}
 		return "esc", nil

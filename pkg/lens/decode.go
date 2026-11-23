@@ -1,13 +1,17 @@
 package lens
 
 import (
+	"bytes"
 	"encoding/base64"
+	"errors"
 	"fmt"
+	"io"
 	"reflect"
 	"sort"
 	"strings"
 
 	"github.com/stellar/go-stellar-sdk/xdr"
+	xdr3 "github.com/stellar/go-xdr/xdr3"
 )
 
 // Value is a successfully decoded XDR payload.
@@ -168,15 +172,211 @@ func normalizeInput(s string) string {
 	return s
 }
 
-// decodeInto attempts to decode payload as the given registry entry. It
-// returns a Value on success.
+// DiagnosticStage identifies the decoding stage that failed.
+type DiagnosticStage string
+
+const (
+	// StageBase64 means the payload failed while being base64-decoded.
+	StageBase64 DiagnosticStage = "base64"
+	// StageXDR means the payload was valid base64 but failed XDR decoding.
+	StageXDR DiagnosticStage = "xdr"
+)
+
+// DiagnosticReason classifies a decode failure so callers can branch on it
+// without parsing the message.
+type DiagnosticReason string
+
+const (
+	// ReasonIllegalCharacter is a byte outside the base64 alphabet.
+	ReasonIllegalCharacter DiagnosticReason = "illegal character"
+	// ReasonPadding is malformed or missing base64 padding.
+	ReasonPadding DiagnosticReason = "invalid padding"
+	// ReasonTruncated means the input ended before the structure did.
+	ReasonTruncated DiagnosticReason = "truncated payload"
+	// ReasonTrailingBytes means decoding succeeded but bytes were left over.
+	ReasonTrailingBytes DiagnosticReason = "trailing bytes"
+	// ReasonMalformed covers structural XDR errors such as bad union tags.
+	ReasonMalformed DiagnosticReason = "malformed structure"
+)
+
+// DecodeDiagnostic reports exactly where and why a payload failed to decode.
 //
-// The SDK's SafeUnmarshalBase64 requires the input to be fully consumed, so a
-// payload with trailing bytes is rejected rather than silently truncated.
-// That strictness is what makes type detection viable at all.
-func decodeInto(t xdrType, payload string) (*Value, error) {
+// Offset is a zero-based byte offset. For StageBase64 it indexes the
+// normalised base64 text; for StageXDR it indexes the decoded binary payload.
+// Total is the length of that stage's input, so Offset == Total means the
+// input ran out at the end, which is the signature of a truncated payload.
+//
+// The type implements error and unwraps to both the stage sentinel
+// (ErrInvalidBase64 or ErrInvalidXDR) and the underlying decoder error, so
+// errors.Is and errors.As work as usual.
+type DecodeDiagnostic struct {
+	Stage    DiagnosticStage
+	Reason   DiagnosticReason
+	Offset   int
+	Total    int
+	TypeName string
+	Err      error
+}
+
+// Error renders a compact, byte-accurate description of the failure.
+func (d *DecodeDiagnostic) Error() string {
+	var b strings.Builder
+	if d.Stage == StageBase64 {
+		b.WriteString("invalid base64")
+	} else {
+		b.WriteString("invalid XDR")
+	}
+	if d.TypeName != "" {
+		b.WriteString(" (")
+		b.WriteString(d.TypeName)
+		b.WriteString(")")
+	}
+	fmt.Fprintf(&b, " at byte offset %d of %d: %s", d.Offset, d.Total, d.Reason)
+	if d.Err != nil {
+		b.WriteString(": ")
+		b.WriteString(d.Err.Error())
+	}
+	return b.String()
+}
+
+// Unwrap exposes both the stage sentinel and the decoder error to errors.Is
+// and errors.As.
+func (d *DecodeDiagnostic) Unwrap() []error {
+	sentinel := ErrInvalidXDR
+	if d.Stage == StageBase64 {
+		sentinel = ErrInvalidBase64
+	}
+	if d.Err == nil {
+		return []error{sentinel}
+	}
+	return []error{sentinel, d.Err}
+}
+
+// decodeBase64 decodes payload, attaching a byte-accurate diagnostic to any
+// failure. It distinguishes illegal characters from padding problems by
+// inspecting the byte that broke the decoder.
+func decodeBase64(payload string) ([]byte, error) {
+	raw, err := base64.StdEncoding.DecodeString(payload)
+	if err == nil {
+		return raw, nil
+	}
+
+	diag := &DecodeDiagnostic{
+		Stage:  StageBase64,
+		Reason: ReasonPadding,
+		Offset: 0,
+		Total:  len(payload),
+		Err:    err,
+	}
+
+	var corrupt base64.CorruptInputError
+	if errors.As(err, &corrupt) {
+		diag.Offset = int(corrupt)
+		if diag.Offset < 0 {
+			diag.Offset = 0
+		}
+		badByte := diag.Offset < len(payload) && !isBase64Byte(payload[diag.Offset])
+		if badByte {
+			diag.Reason = ReasonIllegalCharacter
+		}
+		// Otherwise the characters are legal but the group is incomplete or
+		// mis-padded, which is what a truncated paste looks like.
+	} else {
+		diag.Reason = ReasonMalformed
+	}
+	return nil, diag
+}
+
+// isBase64Byte reports whether c belongs to the standard base64 alphabet or
+// is padding. It distinguishes an illegal character from malformed padding.
+func isBase64Byte(c byte) bool {
+	switch {
+	case c >= 'A' && c <= 'Z':
+		return true
+	case c >= 'a' && c <= 'z':
+		return true
+	case c >= '0' && c <= '9':
+		return true
+	case c == '+', c == '/', c == '=':
+		return true
+	default:
+		return false
+	}
+}
+
+// countingReader remembers where each Read started, which turns a decoder
+// error into the byte offset of the primitive that failed. The XDR decoder
+// reads one primitive at a time with io.ReadFull, so the start of the last
+// read is the failure site; for a truncated payload it is the end of input.
+type countingReader struct {
+	r             io.Reader
+	offset        int
+	lastReadStart int
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	c.lastReadStart = c.offset
+	n, err := c.r.Read(p)
+	c.offset += n
+	return n, err
+}
+
+// unmarshalXDR decodes raw into dest, rejecting trailing bytes to preserve the
+// strictness type detection depends on. Decoding hostile input is this tool's
+// job, so a panic from a malformed nested length also becomes a diagnostic.
+func unmarshalXDR(raw []byte, dest any, typeName string) (err error) {
+	cr := &countingReader{r: bytes.NewReader(raw)}
+	// The SDK hands MaxDepth straight to generated DecodeFrom methods, so it
+	// must be explicit; zero is not defaulted on that path.
+	opts := xdr.DecodeOptions{MaxInputLen: len(raw), MaxDepth: xdr3.DecodeDefaultMaxDepth}
+	defer func() {
+		if r := recover(); r != nil {
+			err = &DecodeDiagnostic{
+				Stage:    StageXDR,
+				Reason:   ReasonMalformed,
+				Offset:   cr.lastReadStart,
+				Total:    len(raw),
+				TypeName: typeName,
+				Err:      fmt.Errorf("decoder panicked on malformed input: %v", r),
+			}
+		}
+	}()
+
+	_, decErr := xdr.UnmarshalWithOptions(cr, dest, opts)
+	if decErr != nil {
+		reason := ReasonMalformed
+		offset := cr.lastReadStart
+		if errors.Is(decErr, io.EOF) || errors.Is(decErr, io.ErrUnexpectedEOF) {
+			reason = ReasonTruncated
+			offset = len(raw)
+		}
+		return &DecodeDiagnostic{
+			Stage:    StageXDR,
+			Reason:   reason,
+			Offset:   offset,
+			Total:    len(raw),
+			TypeName: typeName,
+			Err:      decErr,
+		}
+	}
+	if cr.offset != len(raw) {
+		return &DecodeDiagnostic{
+			Stage:    StageXDR,
+			Reason:   ReasonTrailingBytes,
+			Offset:   cr.offset,
+			Total:    len(raw),
+			TypeName: typeName,
+			Err:      fmt.Errorf("input not fully consumed: expected %d bytes, decoded %d", len(raw), cr.offset),
+		}
+	}
+	return nil
+}
+
+// decodeInto attempts to decode raw as the given registry entry. It returns a
+// Value on success.
+func decodeInto(t xdrType, raw []byte) (*Value, error) {
 	dest := t.new()
-	if err := safeUnmarshal(payload, dest); err != nil {
+	if err := unmarshalXDR(raw, dest, t.name); err != nil {
 		return nil, err
 	}
 	rv := reflect.ValueOf(dest).Elem()
@@ -188,19 +388,24 @@ func decodeInto(t xdrType, payload string) (*Value, error) {
 	return &Value{Type: t.name, Node: node, Raw: dest}, nil
 }
 
-// safeUnmarshal wraps the SDK decoder with a recover. Decoding hostile input
-// is this tool's entire job, and a malformed length prefix deep inside a
-// nested union should surface as an error, not a crash.
-func safeUnmarshal(payload string, dest any) (err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			err = fmt.Errorf("%w: decoder panicked on malformed input: %v", ErrInvalidXDR, r)
-		}
-	}()
-	if err := xdr.SafeUnmarshalBase64(payload, dest); err != nil {
-		return fmt.Errorf("%w: xdr decode: %w", ErrInvalidXDR, err)
+// noMatchError preserves ErrNoMatch while carrying the closest diagnostic so
+// callers still learn where the payload went wrong.
+type noMatchError struct {
+	diagnostic *DecodeDiagnostic
+}
+
+func (e *noMatchError) Error() string {
+	if e.diagnostic == nil {
+		return ErrNoMatch.Error()
 	}
-	return nil
+	return fmt.Sprintf("%s: closest match %s", ErrNoMatch, e.diagnostic)
+}
+
+func (e *noMatchError) Unwrap() []error {
+	if e.diagnostic == nil {
+		return []error{ErrNoMatch}
+	}
+	return []error{ErrNoMatch, e.diagnostic}
 }
 
 // Detect decodes payload against every registered XDR type and returns the
@@ -215,15 +420,20 @@ func Detect(payload string) ([]Candidate, error) {
 	if payload == "" {
 		return nil, ErrEmptyInput
 	}
-	raw, err := base64.StdEncoding.DecodeString(payload)
+	raw, err := decodeBase64(payload)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrInvalidBase64, err)
+		return nil, err
 	}
 
 	var out []Candidate
+	var closest *DecodeDiagnostic
 	for _, t := range registry {
-		v, decErr := decodeInto(t, payload)
+		v, decErr := decodeInto(t, raw)
 		if decErr != nil {
+			var diag *DecodeDiagnostic
+			if errors.As(decErr, &diag) && (closest == nil || diag.Offset > closest.Offset) {
+				closest = diag
+			}
 			continue
 		}
 		out = append(out, Candidate{
@@ -233,7 +443,7 @@ func Detect(payload string) ([]Candidate, error) {
 		})
 	}
 	if len(out) == 0 {
-		return nil, ErrNoMatch
+		return nil, &noMatchError{diagnostic: closest}
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Score > out[j].Score })
 	return out, nil
@@ -286,17 +496,70 @@ func DecodeAs(payload, typeName string) (*Value, error) {
 	if payload == "" {
 		return nil, ErrEmptyInput
 	}
+	raw, err := decodeBase64(payload)
+	if err != nil {
+		return nil, err
+	}
 	for _, t := range registry {
 		if strings.EqualFold(t.name, typeName) {
-			if _, err := base64.StdEncoding.DecodeString(payload); err != nil {
-				return nil, fmt.Errorf("%w: %w", ErrInvalidBase64, err)
-			}
-			v, err := decodeInto(t, payload)
-			if err != nil {
-				return nil, fmt.Errorf("input is not a valid %s: %w", t.name, err)
+			v, decErr := decodeInto(t, raw)
+			if decErr != nil {
+				return nil, decErr
 			}
 			return v, nil
 		}
 	}
 	return nil, fmt.Errorf("%w: %q (see `lens types` for the supported list)", ErrUnknownType, typeName)
+}
+
+// ValidationResult describes a successful Validate call.
+type ValidationResult struct {
+	// Type is the XDR type the payload validated as.
+	Type string
+	// Bytes is the size of the decoded binary payload.
+	Bytes int
+}
+
+// Validate checks that payload is syntactically valid XDR without building a
+// Node tree, applying enrichers or formatting anything. It is the fast path
+// behind `lens decode --validate-only`.
+//
+// When typeName is empty the payload is matched against the registry without
+// materialising trees. The returned error is a *DecodeDiagnostic whenever the
+// failure has a byte offset, so callers can report exactly where decoding
+// stopped.
+func Validate(payload, typeName string) (*ValidationResult, error) {
+	payload = normalizeInput(payload)
+	if payload == "" {
+		return nil, ErrEmptyInput
+	}
+	raw, err := decodeBase64(payload)
+	if err != nil {
+		return nil, err
+	}
+
+	if typeName != "" {
+		for _, t := range registry {
+			if strings.EqualFold(t.name, typeName) {
+				if err := unmarshalXDR(raw, t.new(), t.name); err != nil {
+					return nil, err
+				}
+				return &ValidationResult{Type: t.name, Bytes: len(raw)}, nil
+			}
+		}
+		return nil, fmt.Errorf("%w: %q (see `lens types` for the supported list)", ErrUnknownType, typeName)
+	}
+
+	var closest *DecodeDiagnostic
+	for _, t := range registry {
+		if err := unmarshalXDR(raw, t.new(), t.name); err != nil {
+			var diag *DecodeDiagnostic
+			if errors.As(err, &diag) && (closest == nil || diag.Offset > closest.Offset) {
+				closest = diag
+			}
+			continue
+		}
+		return &ValidationResult{Type: t.name, Bytes: len(raw)}, nil
+	}
+	return nil, &noMatchError{diagnostic: closest}
 }

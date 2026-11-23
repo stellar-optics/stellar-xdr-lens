@@ -85,6 +85,9 @@ func ExitCode(err error) (code int, printable bool) {
 func isInvalidXDRError(err error) bool {
 	return errors.Is(err, lens.ErrInvalidXDR) ||
 		errors.Is(err, lens.ErrInvalidBase64) ||
+		errors.Is(err, lens.ErrInvalidHex) ||
+		errors.Is(err, lens.ErrOddLengthHex) ||
+		errors.Is(err, lens.ErrEmptyHex) ||
 		errors.Is(err, lens.ErrNoMatch) ||
 		errors.Is(err, lens.ErrNonCanonical) ||
 		errors.Is(err, lens.ErrPrematureEOF) ||

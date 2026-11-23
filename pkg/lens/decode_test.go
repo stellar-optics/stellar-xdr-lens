@@ -1,6 +1,7 @@
 package lens_test
 
 import (
+	"encoding/base64"
 	"errors"
 	"strings"
 	"testing"
@@ -308,4 +309,256 @@ func wrapAt(s string, n int) string {
 		b.WriteString("\n")
 	}
 	return b.String()
+}
+
+// TestBase64Diagnostics pins the byte offset and reason for each way base64
+// decoding can fail, so a truncated paste points at the offending byte rather
+// than producing an opaque "illegal base64 data" message.
+func TestBase64Diagnostics(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		payload      string
+		wantReason   lens.DiagnosticReason
+		wantOffset   int
+		wantSentinel error
+	}{
+		{"illegal first byte", "!AAA", lens.ReasonIllegalCharacter, 0, lens.ErrInvalidBase64},
+		{"illegal middle byte", "AAAA!AAA", lens.ReasonIllegalCharacter, 4, lens.ErrInvalidBase64},
+		{"missing padding", "AAAAAA", lens.ReasonPadding, 4, lens.ErrInvalidBase64},
+		{"extra padding", "AAAAAA===", lens.ReasonPadding, 8, lens.ErrInvalidBase64},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := lens.DecodeAs(tc.payload, "Memo")
+			if err == nil {
+				t.Fatalf("DecodeAs(%q) error = nil, want a diagnostic", tc.payload)
+			}
+			if !errors.Is(err, tc.wantSentinel) {
+				t.Errorf("error = %v, want it to wrap %v", err, tc.wantSentinel)
+			}
+
+			var diag *lens.DecodeDiagnostic
+			if !errors.As(err, &diag) {
+				t.Fatalf("error = %T (%v), want *lens.DecodeDiagnostic", err, err)
+			}
+			if diag.Stage != lens.StageBase64 {
+				t.Errorf("Stage = %q, want %q", diag.Stage, lens.StageBase64)
+			}
+			if diag.Reason != tc.wantReason {
+				t.Errorf("Reason = %q, want %q", diag.Reason, tc.wantReason)
+			}
+			if diag.Offset != tc.wantOffset {
+				t.Errorf("Offset = %d, want %d", diag.Offset, tc.wantOffset)
+			}
+			if diag.Total != len(tc.payload) {
+				t.Errorf("Total = %d, want %d", diag.Total, len(tc.payload))
+			}
+			if !strings.Contains(err.Error(), "byte offset") {
+				t.Errorf("message %q does not mention a byte offset", err)
+			}
+		})
+	}
+}
+
+// truncatedEnvelope returns the transaction envelope fixture with its decoded
+// bytes cut to n, re-encoded so the failure happens in XDR, not base64.
+func truncatedEnvelope(t *testing.T, n int) string {
+	t.Helper()
+	raw, err := base64.StdEncoding.DecodeString(loadFixture(t, "tx_success.env"))
+	if err != nil {
+		t.Fatalf("decoding fixture base64: %v", err)
+	}
+	if n >= len(raw) {
+		t.Fatalf("n=%d must be smaller than the fixture (%d bytes)", n, len(raw))
+	}
+	return base64.StdEncoding.EncodeToString(raw[:n])
+}
+
+// TestTruncatedXDRDiagnostic checks that the offset is the end of the decoded
+// payload, which is where a truncated structure runs out of bytes.
+func TestTruncatedXDRDiagnostic(t *testing.T) {
+	t.Parallel()
+
+	const cut = 40
+	payload := truncatedEnvelope(t, cut)
+
+	_, err := lens.DecodeAs(payload, "TransactionEnvelope")
+	if err == nil {
+		t.Fatal("DecodeAs() error = nil, want a truncated-XDR diagnostic")
+	}
+	if !errors.Is(err, lens.ErrInvalidXDR) {
+		t.Errorf("error = %v, want it to wrap ErrInvalidXDR", err)
+	}
+
+	var diag *lens.DecodeDiagnostic
+	if !errors.As(err, &diag) {
+		t.Fatalf("error = %T (%v), want *lens.DecodeDiagnostic", err, err)
+	}
+	if diag.Stage != lens.StageXDR {
+		t.Errorf("Stage = %q, want %q", diag.Stage, lens.StageXDR)
+	}
+	if diag.Reason != lens.ReasonTruncated {
+		t.Errorf("Reason = %q, want %q", diag.Reason, lens.ReasonTruncated)
+	}
+	if diag.Offset != cut {
+		t.Errorf("Offset = %d, want %d (the end of the payload)", diag.Offset, cut)
+	}
+	if diag.Total != cut {
+		t.Errorf("Total = %d, want %d", diag.Total, cut)
+	}
+	if diag.TypeName != "TransactionEnvelope" {
+		t.Errorf("TypeName = %q, want TransactionEnvelope", diag.TypeName)
+	}
+}
+
+// TestTrailingBytesDiagnostic covers the strict-consumption rule that makes
+// auto-detection reliable: extra bytes are an error, not a silent prefix.
+func TestTrailingBytesDiagnostic(t *testing.T) {
+	t.Parallel()
+
+	raw, err := base64.StdEncoding.DecodeString(loadFixture(t, "tx_success.env"))
+	if err != nil {
+		t.Fatalf("decoding fixture base64: %v", err)
+	}
+	payload := base64.StdEncoding.EncodeToString(append(raw, 0x00))
+
+	_, err = lens.DecodeAs(payload, "TransactionEnvelope")
+	if err == nil {
+		t.Fatal("DecodeAs() error = nil, want a trailing-bytes diagnostic")
+	}
+
+	var diag *lens.DecodeDiagnostic
+	if !errors.As(err, &diag) {
+		t.Fatalf("error = %T (%v), want *lens.DecodeDiagnostic", err, err)
+	}
+	if diag.Reason != lens.ReasonTrailingBytes {
+		t.Errorf("Reason = %q, want %q", diag.Reason, lens.ReasonTrailingBytes)
+	}
+	if diag.Offset != len(raw) {
+		t.Errorf("Offset = %d, want %d", diag.Offset, len(raw))
+	}
+}
+
+// TestDetectCarriesClosestDiagnostic keeps ErrNoMatch intact while still
+// explaining where the most plausible type stopped decoding.
+func TestDetectCarriesClosestDiagnostic(t *testing.T) {
+	t.Parallel()
+
+	_, err := lens.Decode(truncatedEnvelope(t, 40))
+	if err == nil {
+		t.Fatal("Decode() error = nil, want an error")
+	}
+	if !errors.Is(err, lens.ErrNoMatch) {
+		t.Errorf("error = %v, want it to wrap ErrNoMatch", err)
+	}
+
+	var diag *lens.DecodeDiagnostic
+	if !errors.As(err, &diag) {
+		t.Fatalf("error = %T (%v), want it to carry a *lens.DecodeDiagnostic", err, err)
+	}
+	if diag.Offset <= 0 {
+		t.Errorf("Offset = %d, want a positive failure offset", diag.Offset)
+	}
+
+	if _, err := lens.Detect("!!!not base64!!!"); !errors.Is(err, lens.ErrInvalidBase64) {
+		t.Errorf("Detect(invalid base64) error = %v, want ErrInvalidBase64", err)
+	}
+}
+
+func TestValidate(t *testing.T) {
+	t.Parallel()
+
+	t.Run("valid payload detects its type", func(t *testing.T) {
+		t.Parallel()
+
+		got, err := lens.Validate(loadFixture(t, "tx_success.env"), "")
+		if err != nil {
+			t.Fatalf("Validate() error = %v", err)
+		}
+		if got.Type != "TransactionEnvelope" {
+			t.Errorf("Type = %q, want TransactionEnvelope", got.Type)
+		}
+		if got.Bytes == 0 {
+			t.Error("Bytes = 0, want the decoded payload size")
+		}
+	})
+
+	t.Run("explicit type", func(t *testing.T) {
+		t.Parallel()
+
+		got, err := lens.Validate(loadFixture(t, "tx_success.res"), "TransactionResult")
+		if err != nil {
+			t.Fatalf("Validate() error = %v", err)
+		}
+		if got.Type != "TransactionResult" {
+			t.Errorf("Type = %q, want TransactionResult", got.Type)
+		}
+	})
+
+	t.Run("truncated payload reports an offset", func(t *testing.T) {
+		t.Parallel()
+
+		_, err := lens.Validate(truncatedEnvelope(t, 40), "TransactionEnvelope")
+		var diag *lens.DecodeDiagnostic
+		if !errors.As(err, &diag) {
+			t.Fatalf("error = %T (%v), want *lens.DecodeDiagnostic", err, err)
+		}
+		if diag.Reason != lens.ReasonTruncated || diag.Offset != 40 {
+			t.Errorf("diagnostic = %+v, want truncated at offset 40", diag)
+		}
+	})
+
+	t.Run("invalid base64", func(t *testing.T) {
+		t.Parallel()
+
+		_, err := lens.Validate("!!!not base64!!!", "")
+		if !errors.Is(err, lens.ErrInvalidBase64) {
+			t.Errorf("error = %v, want ErrInvalidBase64", err)
+		}
+	})
+
+	t.Run("unknown type", func(t *testing.T) {
+		t.Parallel()
+
+		_, err := lens.Validate("AAAAAA==", "NoSuchType")
+		if !errors.Is(err, lens.ErrUnknownType) {
+			t.Errorf("error = %v, want ErrUnknownType", err)
+		}
+	})
+
+	t.Run("empty input", func(t *testing.T) {
+		t.Parallel()
+
+		_, err := lens.Validate("   ", "")
+		if !errors.Is(err, lens.ErrEmptyInput) {
+			t.Errorf("error = %v, want ErrEmptyInput", err)
+		}
+	})
+}
+
+// BenchmarkDecode and BenchmarkValidate quantify the fast path used by
+// `lens decode --validate-only`, which deliberately skips the Node tree.
+func BenchmarkDecode(b *testing.B) {
+	payload := loadFixtureRaw("tx_success.env")
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := lens.Decode(payload); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkValidate(b *testing.B) {
+	payload := loadFixtureRaw("tx_success.env")
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := lens.Validate(payload, "TransactionEnvelope"); err != nil {
+			b.Fatal(err)
+		}
+	}
 }
