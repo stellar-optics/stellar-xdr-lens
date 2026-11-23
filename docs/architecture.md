@@ -47,6 +47,21 @@ explicitly offline-first: it runs with the standard proxy variables cleared to
 ensure no network pathway is introduced by the command wrapper or default
 runtime environment.
 
+## Decode diagnostics
+
+Both decoding stages report a byte offset instead of a generic failure. Base64
+failures distinguish an illegal character from malformed padding and index the
+normalised base64 text; XDR failures index the decoded binary payload and
+distinguish `truncated payload`, `trailing bytes`, and `malformed structure`.
+`DecodeDiagnostic` (in `pkg/lens/decode.go`) carries the stage, reason, offset,
+total length and type name, and unwraps to both the stage sentinel and the
+underlying decoder error, so `errors.Is`/`errors.As` keep working. The decoder
+reads through a counting reader, which makes the start of the failing primitive
+the reported offset; for a truncated payload that is the end of the input.
+
+`lens.Validate` runs the same stages without building a `Node` tree, which is
+what `lens decode --validate-only` uses for ingestion pipelines.
+
 ## Package layout
 
 ```
@@ -55,6 +70,7 @@ internal/cli/          cobra commands — deliberately thin
   root.go              command tree, global flags, explore (TUI) command
   decode.go            decode + types commands, formatting and spec decoding flags
   encode.go            encode command for JSON -> base64 XDR
+  convert.go           base64 <-> hex <-> raw conversion with line/column errors
   explain.go           explain command, exit-code plumbing
   diff.go              diff command
   meta_diff.go         transaction metadata balance-diff command
@@ -63,10 +79,12 @@ internal/cli/          cobra commands — deliberately thin
   output.go            --quiet and atomic --output destination selection
   exitcodes.go         installed exit-code policy (0 / 1 / 2 / 3)
   completion.go        shell completion for bash/zsh/fish/powershell
-  tui_tree.go          interactive terminal tree explorer (TUI)
+  tui_tree.go          interactive terminal tree explorer (TUI), with per-tab
+                       Envelope/Result/Meta views for bundled payloads
 pkg/lens/              the library; this is the reusable surface
   errors.go            stable error kinds and errors.Is-compatible sentinels
-  decode.go            type registry, Detect, Decode, DecodeAs
+  decode.go            type registry, Detect, Decode, DecodeAs, Validate and
+                       byte-offset DecodeDiagnostic failures
   registry_index.go    introspection: RegistryIndex, categories, min sizes
   node.go              the neutral Node tree — the only file using reflection
   enrich.go            per-type human rendering (strkey, amounts, timestamps)

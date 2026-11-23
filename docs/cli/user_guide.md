@@ -70,6 +70,7 @@ $ lens decode [base64-payload] [flags]
 | `--account` | | Filter tree nodes involving an account strkey (`G...`). |
 | `--op-type` | | Filter operations by type (e.g. `payment`, `invoke_host_function`). |
 | `--canonical` | | Enforce strict canonical XDR encoding standards. |
+| `--validate-only` | | Check syntax only: skip tree building, enrichment, and formatting. |
 
 #### Walkthrough Examples
 
@@ -102,6 +103,18 @@ $ lens decode --txrep --file tx.xdr
 ```console
 $ lens decode --spec ./target/contract.wasm "$INVOKE_HOST_FUNCTION_XDR"
 ```
+
+**6. Validating Ingestion Payloads Without Building a Tree:**
+```console
+$ lens decode --validate-only "$XDR"
+valid XDR: TransactionEnvelope (1548 bytes)
+
+# Silent gate for shell pipelines and CI: no stdout, exit code only.
+$ lens decode --validate-only -q "$XDR" || exit 1
+```
+`--validate-only` skips the `Node` tree, enrichers, and formatters. Malformed
+input reports the failing stage and byte offset, for example
+`invalid XDR (TransactionEnvelope) at byte offset 40 of 40: truncated payload`.
 
 ---
 
@@ -248,7 +261,16 @@ $ lens tui <base64-or-path>
 | `Enter` / `Space` | Toggle expansion of selected node. |
 | `e` | Expand all nodes. |
 | `c` | Collapse all nodes. |
+| `1`–`9` | Switch to a numbered bundle view. |
+| `Tab` / `Shift-Tab` | Cycle forward / backward through bundle views. |
+| `?` | Toggle the keybinding help modal. |
 | `q` / `Ctrl+C` | Quit viewer. |
+
+When a payload bundles an envelope, result, and metadata (for example a
+`TransactionResultPair`), the viewer opens numbered tabs
+(`[ 1: Envelope ] [ 2: Result ] [ 3: Meta ]`). Each tab keeps its own scroll
+position, cursor, and expansion state, so switching views does not lose place.
+Payloads that are a single structure keep the plain tree layout with no tab bar.
 
 ---
 
@@ -285,6 +307,20 @@ $ echo '{"type":"i32","value":42}' | lens encode --scval
 # Encode TransactionEnvelope with schema validation
 $ lens encode --tx --strict -f tx.json
 ```
+
+#### `lens convert`
+Converts payloads between base64, hex, and raw binary without unmarshalling the
+XDR, so it accepts arbitrary bytes as well as valid XDR.
+```console
+$ lens convert "$XDR"                     # base64 -> hex (default)
+$ lens convert --from hex --to base64 "$HEX"
+$ lens convert --hex "$XDR"                # shortcut for --to hex
+$ lens convert --base64 "$HEX"             # shortcut for --to base64
+$ cat payload.bin | lens convert --from raw --hex
+```
+Input comes from the arguments, `--file`, or stdin. Whitespace and a `0x`
+prefix in hex input are tolerated. Malformed base64 or hex is reported with its
+line, column, and byte offset, and exits with the invalid-XDR status code (3).
 
 #### `lens asset`
 Derives Soroban SAC (Stellar Asset Contract) contract IDs from classic asset identifiers across networks.
