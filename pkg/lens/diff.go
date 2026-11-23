@@ -146,8 +146,9 @@ type DiffOptions struct {
 	// MaskPaths excludes changes matching glob-like patterns (e.g. *.Signatures, Tx.SeqNum)
 	// from diff evaluation (#126).
 	MaskPaths []string
-	// IgnorePaths is an alias for MaskPaths to suppress volatile fields in CI diffs (#345).
+	// IgnorePaths is an alias for MaskPaths to suppress volatile fields in CI diffs.
 	// Matching paths are omitted from diff evaluation entirely, so differences do not affect Equal().
+	// This is useful for suppressing volatile fields in CI diffs, such as sequence numbers.
 	IgnorePaths []string
 	// Mask excludes matching paths from diff evaluation entirely. Unlike
 	// Filter which only narrows output, masked paths are never compared,
