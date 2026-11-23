@@ -2,8 +2,6 @@ package lens
 
 import (
 	"fmt"
-
-	"github.com/stellar/go-stellar-sdk/xdr"
 )
 
 // AccountMergeFailure explains why an AccountMerge operation was rejected.
@@ -103,17 +101,4 @@ func DiagnoseAccountMergeFailure(source, dest, code string) *AccountMergeFailure
 	}
 
 	return f
-}
-
-// diagnoseAccountMergeFromOp extracts source and destination from an operation
-// and delegates to DiagnoseAccountMergeFailure. Used internally by
-// deepenAccountMergeFailure.
-func diagnoseAccountMergeFromOp(source string, op xdr.Operation, code string) *AccountMergeFailure {
-	dest := ""
-	if op.Body.Destination != nil {
-		if addr := addressOf(*op.Body.Destination); addr != "" {
-			dest = addr
-		}
-	}
-	return DiagnoseAccountMergeFailure(source, dest, code)
 }

@@ -5,8 +5,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/stellar-optics/stellar-xdr-lens/pkg/lens"
 	"github.com/stellar/go-stellar-sdk/xdr"
+
+	"github.com/stellar-optics/stellar-xdr-lens/pkg/lens"
 )
 
 func encodeUpgrade(t *testing.T, upgrade xdr.LedgerUpgrade) string {

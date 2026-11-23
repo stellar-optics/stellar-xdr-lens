@@ -4,8 +4,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/stellar-optics/stellar-xdr-lens/pkg/lens"
 	"github.com/stellar/go-stellar-sdk/xdr"
+
+	"github.com/stellar-optics/stellar-xdr-lens/pkg/lens"
 )
 
 func TestFormatTimeBoundsDuration(t *testing.T) {
@@ -17,8 +18,8 @@ func TestFormatTimeBoundsDuration(t *testing.T) {
 		contains []string
 	}{
 		{
-			name: "bounded window",
-			tb:   xdr.TimeBounds{MinTime: 1_700_000_000, MaxTime: 1_700_000_300},
+			name:     "bounded window",
+			tb:       xdr.TimeBounds{MinTime: 1_700_000_000, MaxTime: 1_700_000_300},
 			contains: []string{"300s", "5m", "Expires:"},
 		},
 		{
@@ -39,7 +40,6 @@ func TestFormatTimeBoundsDuration(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -79,7 +79,6 @@ func TestFormatLedgerBoundsDuration(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
