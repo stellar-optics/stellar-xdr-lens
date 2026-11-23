@@ -98,7 +98,7 @@ Use --interactive (or 'lens explore') for an interactive terminal tree viewer.`,
 			}
 
 			if stream {
-				return runStream(stdout, g, firstArg(args), stdin, typeName, asJSON, compactOut, annotate, maxDepth, showTypes, canonical)
+				return runStream(stdout, g, firstArg(args), stdin, typeName, asJSON, compactOut, annotate, maxDepth, showTypes, canonical, explorerBaseURL(network))
 			}
 
 			if isMulti {
@@ -116,7 +116,7 @@ Use --interactive (or 'lens explore') for an interactive terminal tree viewer.`,
 					r = stdin
 				}
 
-				return runMultiStream(r, stdout, g, typeName, isHex, asJSON, asYAML, compactOut, annotate, maxDepth, showTypes)
+				return runMultiStream(r, stdout, g, typeName, isHex, asJSON, asYAML, compactOut, annotate, maxDepth, showTypes, explorerBaseURL(network))
 			}
 
 			// Helper to check if output format is tree (default)
@@ -295,6 +295,7 @@ Use --interactive (or 'lens explore') for an interactive terminal tree viewer.`,
 					format.WithPalette(palette),
 					format.WithMaxDepth(maxDepth),
 					format.WithTypeNames(showTypes),
+					format.WithHyperlinks(explorerBaseURL(network)),
 				)
 				return f.Format(w, value)
 			}
@@ -323,7 +324,8 @@ Use --interactive (or 'lens explore') for an interactive terminal tree viewer.`,
 	cmd.Flags().BoolVarP(&interactive, "interactive", "i", false, "explore the decoded tree interactively")
 	cmd.Flags().StringVar(&specPath, "spec", "", "path to contract WASM or ScSpecEntry file for spec-aware decoding")
 	cmd.Flags().StringVar(&formatName, "format", "", `output format: "tree", "json", "summary", "txrep", "csv", "html", "mermaid", or "junit"`)
-	cmd.Flags().StringVar(&network, "network", "", "network passphrase for txrep formatting")
+	cmd.Flags().StringVar(&network, "network", "",
+		`network passphrase for txrep formatting, or "public"/"testnet" to link addresses to Stellar Expert`)
 	cmd.Flags().StringVarP(&typeName, "type", "t", "",
 		"decode as this XDR type instead of detecting it (see `lens types`)")
 	cmd.Flags().IntVar(&maxDepth, "depth", 0, "limit tree depth (0 means unlimited)")
@@ -470,7 +472,7 @@ func runBatchDecode(stdout io.Writer, pattern string, render func(io.Writer, str
 	return nil
 }
 
-func runStream(stdout io.Writer, g *globalFlags, arg string, stdin io.Reader, typeName string, asJSON, compactOut, annotate bool, maxDepth int, showTypes, canonical bool) error {
+func runStream(stdout io.Writer, g *globalFlags, arg string, stdin io.Reader, typeName string, asJSON, compactOut, annotate bool, maxDepth int, showTypes, canonical bool, hyperlinks string) error {
 	var r io.Reader
 	if g.file != "" {
 		f, err := os.Open(g.file)
@@ -532,6 +534,7 @@ func runStream(stdout io.Writer, g *globalFlags, arg string, stdin io.Reader, ty
 			format.WithPalette(format.PaletteFor(stdout, g.color)),
 			format.WithMaxDepth(maxDepth),
 			format.WithTypeNames(showTypes),
+			format.WithHyperlinks(hyperlinks),
 		)
 		if err := f.Format(stdout, val); err != nil {
 			return err
@@ -556,7 +559,7 @@ func decodeValue(payload, typeName string) (*lens.Value, error) {
 }
 
 // runMultiStream decodes and formats multiple concatenated records.
-func runMultiStream(r io.Reader, stdout io.Writer, g *globalFlags, typeName string, isHex, asJSON, asYAML, compactOut, annotate bool, maxDepth int, showTypes bool) error {
+func runMultiStream(r io.Reader, stdout io.Writer, g *globalFlags, typeName string, isHex, asJSON, asYAML, compactOut, annotate bool, maxDepth int, showTypes bool, hyperlinks string) error {
 	opts := []lens.MultiStreamOption{
 		lens.WithMultiStreamHex(isHex),
 		lens.WithMultiStreamStopOnError(true),
@@ -629,6 +632,7 @@ func runMultiStream(r io.Reader, stdout io.Writer, g *globalFlags, typeName stri
 		format.WithPalette(format.PaletteFor(stdout, g.color)),
 		format.WithMaxDepth(maxDepth),
 		format.WithTypeNames(showTypes),
+		format.WithHyperlinks(hyperlinks),
 	)
 
 	for _, rec := range records {

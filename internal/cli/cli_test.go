@@ -15,6 +15,7 @@ import (
 
 	"github.com/stellar-optics/stellar-xdr-lens/internal/cli"
 	"github.com/stellar-optics/stellar-xdr-lens/pkg/lens"
+	"github.com/stellar-optics/stellar-xdr-lens/pkg/lens/format"
 )
 
 const fixtureDir = "../../testdata"
@@ -667,6 +668,95 @@ func TestColorFlagIsHonoured(t *testing.T) {
 	if strings.Contains(never, "\x1b[") {
 		t.Error("--color never produced escape sequences")
 	}
+}
+
+// TestExplorerHyperlinks covers the CLI side of the OSC 8 contract: --network
+// selects the Stellar Expert base, and the palette policy behind --color
+// decides whether the escapes are emitted at all.
+func TestExplorerHyperlinks(t *testing.T) {
+	t.Parallel()
+
+	env := fixture(t, "tx_failed.env")
+	source := "GAPB7YMUQ6MPQ23PTFDNBZP7HGGTZPI2DT5JJURUOIXNPLGHW2O3WYXZ"
+
+	t.Run("coloured explain links the source", func(t *testing.T) {
+		t.Parallel()
+
+		stdout, _, err := run(t, "", "explain", env, "--color", "always", "--network", "testnet")
+		if err != nil {
+			t.Fatalf("Execute() error = %v", err)
+		}
+		want := format.FormatHyperlink(source, "https://stellar.expert/explorer/testnet/account/"+source)
+		if !strings.Contains(stdout, want) {
+			t.Errorf("explain output does not contain the OSC 8 link %q:\n%s", want, stdout)
+		}
+	})
+
+	t.Run("explain defaults to mainnet", func(t *testing.T) {
+		t.Parallel()
+
+		stdout, _, err := run(t, "", "explain", env, "--color", "always")
+		if err != nil {
+			t.Fatalf("Execute() error = %v", err)
+		}
+		want := format.FormatHyperlink(source, "https://stellar.expert/explorer/public/account/"+source)
+		if !strings.Contains(stdout, want) {
+			t.Errorf("explain output does not contain the mainnet link %q:\n%s", want, stdout)
+		}
+	})
+
+	t.Run("--color never suppresses links", func(t *testing.T) {
+		t.Parallel()
+
+		stdout, _, err := run(t, "", "explain", env, "--color", "never", "--network", "testnet")
+		if err != nil {
+			t.Fatalf("Execute() error = %v", err)
+		}
+		if strings.Contains(stdout, "\x1b") {
+			t.Errorf("--color never output contains escape sequences:\n%s", stdout)
+		}
+		if !strings.Contains(stdout, source) {
+			t.Errorf("--color never output lost the plain address:\n%s", stdout)
+		}
+	})
+
+	t.Run("piped output stays clean", func(t *testing.T) {
+		t.Parallel()
+
+		stdout, _, err := run(t, "", "explain", env)
+		if err != nil {
+			t.Fatalf("Execute() error = %v", err)
+		}
+		if strings.Contains(stdout, "\x1b]8;;") {
+			t.Errorf("piped explain output contains a hyperlink escape:\n%s", stdout)
+		}
+	})
+
+	t.Run("decode links contracts", func(t *testing.T) {
+		t.Parallel()
+
+		stdout, _, err := run(t, "", "decode", "--color", "always", "--network", "testnet", fixture(t, "tx_soroban.env"))
+		if err != nil {
+			t.Fatalf("Execute() error = %v", err)
+		}
+		contract := "CBGSBKYMYO6OMGHQXXNOBRGVUDFUDVC2XLC3SXON5R2SNXILR7XCKKY3"
+		want := format.FormatHyperlink(contract, "https://stellar.expert/explorer/testnet/contract/"+contract)
+		if !strings.Contains(stdout, want) {
+			t.Errorf("decode output does not contain the contract link %q:\n%s", want, stdout)
+		}
+	})
+
+	t.Run("decode without --network leaves addresses plain", func(t *testing.T) {
+		t.Parallel()
+
+		stdout, _, err := run(t, "", "decode", "--color", "always", fixture(t, "tx_soroban.env"))
+		if err != nil {
+			t.Fatalf("Execute() error = %v", err)
+		}
+		if strings.Contains(stdout, "\x1b]8;;") {
+			t.Errorf("decode output without --network contains a hyperlink escape:\n%s", stdout)
+		}
+	})
 }
 
 // TestExplainJSONShapeIsCamelCase pins the documented JSON contract for
