@@ -19,8 +19,8 @@ func TestEnrichUpgradeTypeRendersVotes(t *testing.T) {
 	if !ok {
 		t.Fatal("enrichUpgradeType() declined a well-formed vote")
 	}
-	if display != "protocol version 21" {
-		t.Errorf("display = %q, want %q", display, "protocol version 21")
+	if display != "Protocol 21" {
+		t.Errorf("display = %q, want %q", display, "Protocol 21")
 	}
 	if got, ok := raw.(string); !ok || got != hex.EncodeToString(versionVote) {
 		t.Errorf("raw = %v, want hex string of original vote bytes", raw)

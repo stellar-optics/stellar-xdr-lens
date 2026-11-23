@@ -543,4 +543,22 @@ func TestDiffMaskPathsFlag(t *testing.T) {
 	if !strings.Contains(stdout, "no differences") {
 		t.Errorf("expected 'no differences' with mask-paths, got:\n%s", stdout)
 	}
+
+	// With --mask-path singular alias (#345)
+	stdout, _, err = run(t, "", "diff", "--mask-path", "V1.Tx.SeqNum,V1.Signatures", p1, p2)
+	if err != nil {
+		t.Fatalf("diff --mask-path error = %v", err)
+	}
+	if !strings.Contains(stdout, "no differences") {
+		t.Errorf("expected 'no differences' with mask-path alias, got:\n%s", stdout)
+	}
+
+	// With --ignore-path alias (excludes from output)
+	stdout, _, err = run(t, "", "diff", "--ignore-path", "V1.Tx.SeqNum,V1.Signatures", p1, p2)
+	if err != nil {
+		t.Fatalf("diff --ignore-path error = %v", err)
+	}
+	if strings.Contains(stdout, "SeqNum") || strings.Contains(stdout, "Signatures") {
+		t.Errorf("expected SeqNum and Signatures excluded with ignore-path, got:\n%s", stdout)
+	}
 }

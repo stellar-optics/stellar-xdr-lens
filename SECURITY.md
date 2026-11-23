@@ -38,7 +38,8 @@ You will be credited in the advisory unless you prefer otherwise.
 ## Threat model
 
 Understanding what this tool does makes it clearer what counts as a
-vulnerability.
+vulnerability. For production deployment best practices, depth limits, and
+safe ingestion guidance, see the [Safe Untrusted XDR Parsing Guide](docs/security/untrusted_xdr.md).
 
 `lens` is an **offline parser of untrusted input**. It:
 

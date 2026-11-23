@@ -337,3 +337,159 @@ func TestClawbackExplainPairAttachesClaimableBalanceContext(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateClaimPredicateContradiction(t *testing.T) {
+	t.Parallel()
+
+	t.Run("absBefore <= absAfter contradiction in AND", func(t *testing.T) {
+		abs100 := xdr.Int64(100)
+		abs200 := xdr.Int64(200)
+
+		before100 := xdr.ClaimPredicate{
+			Type:      xdr.ClaimPredicateTypeClaimPredicateBeforeAbsoluteTime,
+			AbsBefore: &abs100,
+		}
+		before200 := xdr.ClaimPredicate{
+			Type:      xdr.ClaimPredicateTypeClaimPredicateBeforeAbsoluteTime,
+			AbsBefore: &abs200,
+		}
+		before200Ptr := &before200
+		after200 := xdr.ClaimPredicate{
+			Type:         xdr.ClaimPredicateTypeClaimPredicateNot,
+			NotPredicate: &before200Ptr,
+		}
+
+		// absBefore <= 100 AND absAfter >= 200 (impossible because 100 <= 200)
+		children := []xdr.ClaimPredicate{before100, after200}
+		contradictoryAnd := xdr.ClaimPredicate{
+			Type:          xdr.ClaimPredicateTypeClaimPredicateAnd,
+			AndPredicates: &children,
+		}
+
+		bad, reason := lens.ValidateClaimPredicateContradiction(contradictoryAnd)
+		if !bad {
+			t.Errorf("expected contradiction for absBefore <= absAfter, got valid")
+		}
+		if !strings.Contains(reason, "conflicting time boundaries") {
+			t.Errorf("expected conflicting time boundaries reason, got %q", reason)
+		}
+
+		// Equal boundaries: absBefore <= 100 AND absAfter >= 100
+		before100Ptr := &before100
+		after100 := xdr.ClaimPredicate{
+			Type:         xdr.ClaimPredicateTypeClaimPredicateNot,
+			NotPredicate: &before100Ptr,
+		}
+		eqChildren := []xdr.ClaimPredicate{before100, after100}
+		eqAnd := xdr.ClaimPredicate{
+			Type:          xdr.ClaimPredicateTypeClaimPredicateAnd,
+			AndPredicates: &eqChildren,
+		}
+		bad, _ = lens.ValidateClaimPredicateContradiction(eqAnd)
+		if !bad {
+			t.Errorf("expected contradiction for equal absBefore and absAfter, got valid")
+		}
+
+		// Valid window: absAfter >= 100 AND absBefore <= 200
+		validChildren := []xdr.ClaimPredicate{before200, after100}
+		validAnd := xdr.ClaimPredicate{
+			Type:          xdr.ClaimPredicateTypeClaimPredicateAnd,
+			AndPredicates: &validChildren,
+		}
+		bad, reason = lens.ValidateClaimPredicateContradiction(validAnd)
+		if bad {
+			t.Errorf("expected valid window [100, 200), got contradiction: %s", reason)
+		}
+	})
+
+	t.Run("relBefore <= 0 contradiction", func(t *testing.T) {
+		zeroRel := xdr.Int64(0)
+		pZero := xdr.ClaimPredicate{
+			Type:      xdr.ClaimPredicateTypeClaimPredicateBeforeRelativeTime,
+			RelBefore: &zeroRel,
+		}
+		bad, reason := lens.ValidateClaimPredicateContradiction(pZero)
+		if !bad {
+			t.Errorf("expected contradiction for relBefore <= 0, got valid")
+		}
+		if !strings.Contains(reason, "relBefore") {
+			t.Errorf("expected relBefore reason, got %q", reason)
+		}
+
+		negRel := xdr.Int64(-10)
+		pNeg := xdr.ClaimPredicate{
+			Type:      xdr.ClaimPredicateTypeClaimPredicateBeforeRelativeTime,
+			RelBefore: &negRel,
+		}
+		bad, _ = lens.ValidateClaimPredicateContradiction(pNeg)
+		if !bad {
+			t.Errorf("expected contradiction for negative relBefore, got valid")
+		}
+
+		posRel := xdr.Int64(3600)
+		pPos := xdr.ClaimPredicate{
+			Type:      xdr.ClaimPredicateTypeClaimPredicateBeforeRelativeTime,
+			RelBefore: &posRel,
+		}
+		bad, _ = lens.ValidateClaimPredicateContradiction(pPos)
+		if bad {
+			t.Errorf("expected positive relBefore to be valid, got contradiction")
+		}
+	})
+
+	t.Run("direct double negation and impossible predicates", func(t *testing.T) {
+		uncond := xdr.ClaimPredicate{Type: xdr.ClaimPredicateTypeClaimPredicateUnconditional}
+		uncondPtr := &uncond
+		notUncond := xdr.ClaimPredicate{
+			Type:         xdr.ClaimPredicateTypeClaimPredicateNot,
+			NotPredicate: &uncondPtr,
+		}
+		bad, reason := lens.ValidateClaimPredicateContradiction(notUncond)
+		if !bad {
+			t.Errorf("expected contradiction for not(unconditional), got valid")
+		}
+		if !strings.Contains(reason, "not(unconditional)") {
+			t.Errorf("expected not(unconditional) reason, got %q", reason)
+		}
+
+		notUncondPtr := &notUncond
+		doubleNot := xdr.ClaimPredicate{
+			Type:         xdr.ClaimPredicateTypeClaimPredicateNot,
+			NotPredicate: &notUncondPtr,
+		}
+		bad, reason = lens.ValidateClaimPredicateContradiction(doubleNot)
+		if !bad {
+			t.Errorf("expected contradiction for double negation, got valid")
+		}
+		if !strings.Contains(reason, "double negation") {
+			t.Errorf("expected double negation reason, got %q", reason)
+		}
+	})
+
+	t.Run("ValidateClaimantPredicates warning format", func(t *testing.T) {
+		dest := xdr.MustAddress("GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN")
+		zeroRel := xdr.Int64(0)
+		badPred := xdr.ClaimPredicate{
+			Type:      xdr.ClaimPredicateTypeClaimPredicateBeforeRelativeTime,
+			RelBefore: &zeroRel,
+		}
+		claimants := []xdr.Claimant{
+			{
+				Type: xdr.ClaimantTypeClaimantTypeV0,
+				V0: &xdr.ClaimantV0{
+					Destination: dest,
+					Predicate:   badPred,
+				},
+			},
+		}
+
+		warnings := lens.ValidateClaimantPredicates(claimants)
+		if len(warnings) != 1 {
+			t.Fatalf("expected 1 warning, got %d", len(warnings))
+		}
+		expectedMsg := "Warning: Claim predicate for claimant GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN is unsatisfiable; funds will be permanently unclaimable."
+		if warnings[0] != expectedMsg {
+			t.Errorf("warning = %q, want %q", warnings[0], expectedMsg)
+		}
+	})
+}

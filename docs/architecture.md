@@ -6,6 +6,13 @@ where to make the three changes contributors most often want to make:
 - [Adding a new XDR type](#adding-a-new-xdr-type)
 - [Improving how a type is rendered](#adding-an-enricher)
 - [Adding a new output format](#adding-a-formatter)
+- [Authoring Enrichers & Formatters Guide](contributing/authoring_enrichers.md)
+- [Semantic Diffing in CI Guide](guides/semantic_diffing.md)
+- [LedgerCloseMeta & Bucket List Guide](guides/ledger_close_meta.md)
+- [XDR Type Detection Heuristics & Scoring Guide](architecture/detection.md)
+- [Debugging Failed Transactions Guide](guides/debugging_failures.md)
+- [Soroban Smart Contract Specifications Guide](guides/soroban_specs.md)
+- [JSON Schema & Encoding Reference](encode/schema_reference.md)
 
 ## The pipeline
 
@@ -504,6 +511,10 @@ untrusted, possibly truncated blobs, both the decoder and every enricher run
 behind a `recover`. A value we cannot prettify degrades to its generic
 rendering; it never takes the process down.
 
+For comprehensive security guidelines, depth limits (`maxDepth = 200`), payload
+size limits, and production hardening recommendations when processing untrusted
+inputs, see [docs/security/untrusted_xdr.md](security/untrusted_xdr.md).
+
 ### Deterministic output
 
 JSON output is fully deterministic. The `Node` tree sorts map keys before
@@ -516,6 +527,8 @@ identical input produce byte-identical output. This property is tested by
 `TestJSONFormatterDeterministicMapKeys` in `format/format_test.go`.
 
 ## Adding a new XDR type
+
+For an in-depth reference on candidate scoring, wire size filters, and resolving ambiguous payloads, see the [XDR Type Detection & Scoring Guide](architecture/detection.md).
 
 Add one line to `registry` in [`decode.go`](../pkg/lens/decode.go):
 
@@ -563,8 +576,9 @@ decoded with `--type` in practice.
 
 ## Adding an enricher
 
-Enrichers turn an XDR value into something a human recognises. `enricherFor` in
-[`enrich.go`](../pkg/lens/enrich.go) maps a concrete XDR type to its enricher.
+Enrichers turn an XDR value into something a human recognises. For a detailed step-by-step tutorial, see [Authoring Enrichers & Formatters](contributing/authoring_enrichers.md).
+
+`enricherFor` in [`enrich.go`](../pkg/lens/enrich.go) maps a concrete XDR type to its enricher.
 The core entries are a declaration-time literal; a type added by a feature file
 registers itself without touching `enrich.go` at all:
 
@@ -795,6 +809,8 @@ rendering depends on content buried inside a field; use the enricher registries
 when the type or field name is enough.
 
 ## Adding a formatter
+
+Formatters render decoded node trees into concrete outputs. For a step-by-step tutorial on writing formatters, see [Authoring Enrichers & Formatters](contributing/authoring_enrichers.md#the-formatter-interface).
 
 Implement `Formatter` in [`format/format.go`](../pkg/lens/format/format.go):
 

@@ -312,10 +312,20 @@ These are mutually exclusive with each other and with --json/--stats/--summary.`
 	cmd.Flags().BoolVar(&sideBySide, "side-by-side", false, "emit a colourised two-column diff")
 	cmd.Flags().StringArrayVar(&includePaths, "include-paths", nil,
 		"only report changes matching these path patterns (comma-separated, repeatable)")
+	cmd.Flags().StringArrayVar(&includePaths, "include-path", nil,
+		"alias for --include-paths")
 	cmd.Flags().StringArrayVar(&excludePaths, "exclude-paths", nil,
 		"ignore changes matching these path patterns (comma-separated, repeatable)")
+	cmd.Flags().StringArrayVar(&excludePaths, "exclude-path", nil,
+		"alias for --exclude-paths")
+	cmd.Flags().StringArrayVar(&excludePaths, "ignore-paths", nil,
+		"alias for --exclude-paths")
+	cmd.Flags().StringArrayVar(&excludePaths, "ignore-path", nil,
+		"alias for --exclude-paths")
 	cmd.Flags().StringArrayVar(&maskPaths, "mask-paths", nil,
 		"exclude matching paths from diff evaluation entirely (comma-separated, repeatable)")
+	cmd.Flags().StringArrayVar(&maskPaths, "mask-path", nil,
+		"alias for --mask-paths")
 	cmd.Flags().StringArrayVar(&redact, "redact", nil,
 		"normalize dynamic cryptographic values before diffing: hashes, signatures, identifiers or all")
 	cmd.Flags().StringArrayVar(&redactFields, "redact-fields", nil,

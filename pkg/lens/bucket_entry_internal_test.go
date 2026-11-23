@@ -81,6 +81,36 @@ func TestEnrichHotArchiveBucketEntryType(t *testing.T) {
 	}
 }
 
+func TestEnrichLedgerEntryChangeType(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		value  xdr.LedgerEntryChangeType
+		want   string
+		wantOK bool
+	}{
+		{"created", xdr.LedgerEntryChangeTypeLedgerEntryCreated, "created", true},
+		{"updated", xdr.LedgerEntryChangeTypeLedgerEntryUpdated, "updated", true},
+		{"removed", xdr.LedgerEntryChangeTypeLedgerEntryRemoved, "deleted (removed)", true},
+		{"state", xdr.LedgerEntryChangeTypeLedgerEntryState, "state (snapshot)", true},
+		{"restored", xdr.LedgerEntryChangeTypeLedgerEntryRestored, "restored from archive", true},
+		{"unknown declines", xdr.LedgerEntryChangeType(99), "", false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			display, raw, ok := enrichLedgerEntryChangeType(reflect.ValueOf(tc.value))
+			if ok != tc.wantOK || (tc.wantOK && raw != tc.want) {
+				t.Errorf("enrichLedgerEntryChangeType(%d) = (%q, %v, %v), want (_, %q, %v)",
+					tc.value, display, raw, ok, tc.want, tc.wantOK)
+			}
+		})
+	}
+}
+
 // TestBucketEntryEnrichersDeclineUnexpectedTypes pins that each enricher is
 // safe with a value it does not own — the registry is keyed by type, but the
 // interface assertions are the last line of defence.
@@ -92,6 +122,7 @@ func TestBucketEntryEnrichersDeclineUnexpectedTypes(t *testing.T) {
 		"enrichBucketEntryType":           enrichBucketEntryType,
 		"enrichBucketListType":            enrichBucketListType,
 		"enrichHotArchiveBucketEntryType": enrichHotArchiveBucketEntryType,
+		"enrichLedgerEntryChangeType":     enrichLedgerEntryChangeType,
 	} {
 		if display, raw, ok := fn(wrong); ok {
 			t.Errorf("%s(AccountId) = (%q, %v, true), want ok=false", name, display, raw)

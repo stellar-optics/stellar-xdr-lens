@@ -44,6 +44,8 @@ type Summary struct {
 	Operations []OpSummary `json:"operations,omitempty"`
 	// Outcome is present whenever a result was supplied.
 	Outcome *Outcome `json:"outcome,omitempty"`
+	// Warnings lists non-fatal diagnostic warnings discovered across operations.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // OpSummary describes one operation.
@@ -63,6 +65,10 @@ type OpSummary struct {
 	PathPayment *PathPaymentSlippageDiagnosis `json:"pathPayment,omitempty"`
 	// TrustLine provides contextual diagnostics for SetTrustLineFlags failures.
 	TrustLine *SetTrustLineFlagsDiagnosis `json:"trustLine,omitempty"`
+	// Warnings lists operation-level diagnostic warnings.
+	Warnings []string `json:"warnings,omitempty"`
+	// Auth provides contextual diagnostics for Soroban contract authorization failures.
+	Auth *AuthFailure `json:"auth,omitempty"`
 }
 
 // Outcome is the resolved result of a transaction.
@@ -136,12 +142,46 @@ func explainEnvelope(env *xdr.TransactionEnvelope, res *xdr.TransactionResult) (
 
 	ops := env.Operations()
 	for i, op := range ops {
-		s.Operations = append(s.Operations, OpSummary{
+		opSum := OpSummary{
 			Index:  i,
 			Type:   operationTypeLabel(op.Body.Type),
 			Source: operationSource(op),
 			Detail: describeOperation(op),
-		})
+		}
+		// Diagnose operation-level warnings
+		switch op.Body.Type {
+		case xdr.OperationTypeCreateClaimableBalance:
+			if cb, ok := op.Body.GetCreateClaimableBalanceOp(); ok {
+				claimantWarnings := ValidateClaimantPredicates(cb.Claimants)
+				if len(claimantWarnings) > 0 {
+					opSum.Warnings = append(opSum.Warnings, claimantWarnings...)
+					s.Warnings = append(s.Warnings, claimantWarnings...)
+				}
+			}
+		case xdr.OperationTypePathPaymentStrictSend, xdr.OperationTypePathPaymentStrictReceive:
+			if pathDiag := DiagnosePathPaymentOperation(op); pathDiag != nil && len(pathDiag.Warnings) > 0 {
+				opSum.Warnings = append(opSum.Warnings, pathDiag.Warnings...)
+				s.Warnings = append(s.Warnings, pathDiag.Warnings...)
+			}
+		}
+
+		if op.Body.Type == xdr.OperationTypeInvokeHostFunction {
+			if hostOp, ok := op.Body.GetInvokeHostFunctionOp(); ok {
+				var currentLedger uint32
+				if lb := env.LedgerBounds(); lb != nil {
+					currentLedger = uint32(lb.MinLedger)
+					if currentLedger == 0 {
+						currentLedger = uint32(lb.MaxLedger)
+					}
+				}
+				if currentLedger > 0 {
+					if authDiag := DiagnoseInvokeHostFunctionAuth(hostOp, currentLedger, i); authDiag != nil {
+						opSum.Auth = authDiag
+					}
+				}
+			}
+		}
+		s.Operations = append(s.Operations, opSum)
 	}
 
 	if res == nil {
@@ -154,11 +194,33 @@ func explainEnvelope(env *xdr.TransactionEnvelope, res *xdr.TransactionResult) (
 		return nil, err
 	}
 	for i, op := range env.Operations() {
-		if i >= len(s.Operations) || s.Operations[i].Result == nil {
+		if i >= len(s.Operations) {
 			continue
 		}
-		reason := contextualizeChangeTrustFailure(op, *s.Operations[i].Result)
-		s.Operations[i].Result = &reason
+		if s.Operations[i].Result != nil {
+			reason := contextualizeChangeTrustFailure(op, *s.Operations[i].Result)
+			s.Operations[i].Result = &reason
+		}
+		if op.Body.Type == xdr.OperationTypeInvokeHostFunction {
+			if hostOp, ok := op.Body.GetInvokeHostFunctionOp(); ok {
+				var currentLedger uint32
+				if lb := env.LedgerBounds(); lb != nil {
+					currentLedger = uint32(lb.MinLedger)
+					if currentLedger == 0 {
+						currentLedger = uint32(lb.MaxLedger)
+					}
+				}
+				if currentLedger > 0 {
+					if authDiag := DiagnoseInvokeHostFunctionAuth(hostOp, currentLedger, i); authDiag != nil {
+						s.Operations[i].Auth = authDiag
+						if s.Operations[i].Result != nil && !s.Operations[i].Result.Success {
+							s.Operations[i].Result.Summary = authDiag.Summary
+							s.Operations[i].Result.Hint = authDiag.Hint
+						}
+					}
+				}
+			}
+		}
 	}
 	s.Headline = resultHeadline(s, s.Outcome)
 	return s, nil
@@ -956,6 +1018,10 @@ func malformedClaimableBalanceContext(op xdr.CreateClaimableBalanceOp, asset, am
 		if problem := claimPredicateProblem(v0.Predicate, 1); problem != "" {
 			return fmt.Sprintf("%sclaimant %s has an invalid predicate: %s.",
 				prefix, v0.Destination.Address(), problem)
+		}
+		if bad, reason := ValidateClaimPredicateContradiction(v0.Predicate); bad {
+			return fmt.Sprintf("%sclaimant %s has an unsatisfiable predicate (%s); funds would be permanently unclaimable.",
+				prefix, v0.Destination.Address(), reason)
 		}
 	}
 	return prefix + "check that the amount is positive, there are 1-10 unique claimants, and every predicate is valid."
@@ -1972,6 +2038,11 @@ func deepenAccountMergeFailure(source string, op xdr.Operation, r Reason) Reason
 	}
 
 	switch r.Code {
+	case "account_merge_no_account":
+		r.Summary = fmt.Sprintf(
+			"The destination account %s does not exist on the ledger and cannot receive the merged balance.",
+			dest)
+		r.Hint = "Create the destination account with a CreateAccount operation before retrying the merge, or choose an existing account as the target."
 	case "account_merge_has_sub_entries":
 		r.Summary = fmt.Sprintf(
 			"The merging account %s still owns non-signer subentries, and the network deletes an account only when its subentry count matches its signer count.",
@@ -1992,6 +2063,11 @@ func deepenAccountMergeFailure(source string, op xdr.Operation, r Reason) Reason
 			"The merging account %s has the AUTH_IMMUTABLE flag set, and the network refuses to merge an immutable account.",
 			merger)
 		r.Hint = "AUTH_IMMUTABLE is permanent: once set it can never be cleared, so this account can never be merged, and its flags, signers and thresholds can never change again. Move its funds out with ordinary payments instead."
+	case "account_merge_is_sponsor":
+		r.Summary = fmt.Sprintf(
+			"The merging account %s is currently sponsoring one or more ledger entries and cannot be deleted while sponsorships remain active.",
+			merger)
+		r.Hint = "Issue RevokeSponsorship operations to transfer or remove every entry this account sponsors, then resubmit the merge."
 	}
 	return r
 }

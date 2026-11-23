@@ -5,6 +5,8 @@ import (
 	"io"
 	"strings"
 
+	"github.com/stellar/go-stellar-sdk/xdr"
+
 	"github.com/stellar-optics/stellar-xdr-lens/pkg/lens"
 )
 
@@ -143,4 +145,28 @@ func (t *TreeFormatter) scalar(n *lens.Node) string {
 		b.WriteString(p.Note + "  " + n.Note + p.Reset)
 	}
 	return b.String()
+}
+
+// FormatAuthInvocation formats an authorized invocation hierarchy to w.
+func (t *TreeFormatter) FormatAuthInvocation(w io.Writer, inv xdr.SorobanAuthorizedInvocation) error {
+	rendered := lens.FormatAuthTree(inv)
+	_, err := fmt.Fprintln(w, rendered)
+	return err
+}
+
+// FormatAuthEntries formats a slice of SorobanAuthorizationEntry trees to w.
+func (t *TreeFormatter) FormatAuthEntries(w io.Writer, entries []xdr.SorobanAuthorizationEntry) error {
+	rendered := lens.FormatAuthorizationEntries(entries)
+	_, err := fmt.Fprintln(w, rendered)
+	return err
+}
+
+// RenderAuthHierarchy renders an authorized invocation hierarchy as an indented ASCII tree.
+func RenderAuthHierarchy(inv xdr.SorobanAuthorizedInvocation) string {
+	return lens.FormatAuthTree(inv)
+}
+
+// RenderAuthTree renders an authorized invocation hierarchy as an indented ASCII tree.
+func RenderAuthTree(inv xdr.SorobanAuthorizedInvocation) string {
+	return lens.FormatAuthTree(inv)
 }
