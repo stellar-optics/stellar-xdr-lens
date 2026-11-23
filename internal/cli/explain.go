@@ -29,6 +29,7 @@ func newExplainCmd(g *globalFlags, stdout io.Writer, stdin io.Reader) *cobra.Com
 		resources   bool
 		checkExpiry bool
 		refTimeStr  string
+		formatName  string
 	)
 
 	cmd := &cobra.Command{
@@ -72,6 +73,9 @@ lumen buying liabilities behind dest_full.`,
 
   # In CI: exit non-zero when the transaction failed
   lens explain "$ENVELOPE" --result "$RESULT" --fail-on-error
+
+  # SARIF for GitHub Code Scanning / GitLab Security
+  lens explain "$ENVELOPE" --result "$RESULT" --format sarif > lens.sarif
 
   # Soroban resource and fee breakdown against protocol limits
   lens explain "$ENVELOPE" --resources
@@ -141,6 +145,20 @@ lumen buying liabilities behind dest_full.`,
 						summary.Expiry = expiry
 					}
 				}
+			}
+
+			if formatName != "" && formatName != "sarif" {
+				return fmt.Errorf("%w: unsupported --format %q; explain supports \"sarif\"", lens.ErrInvalidArgument, formatName)
+			}
+
+			if formatName == "sarif" {
+				if err := format.NewSARIFFormatter().FormatSummary(stdout, summary); err != nil {
+					return err
+				}
+				if failOnErr && summary.Outcome != nil && !summary.Outcome.Success {
+					return errTransactionFailed
+				}
+				return nil
 			}
 
 			if asMarkdown {
@@ -286,6 +304,8 @@ lumen buying liabilities behind dest_full.`,
 		"verify transaction precondition expiration (TimeBounds and LedgerBounds)")
 	cmd.Flags().StringVar(&refTimeStr, "reference-time", "",
 		"optional reference timestamp (RFC 3339 or Unix seconds) for --check-expiry")
+	cmd.Flags().StringVar(&formatName, "format", "",
+		`output format: "sarif" emits SARIF 2.1.0 for GitHub Code Scanning and GitLab Security`)
 
 	return cmd
 }

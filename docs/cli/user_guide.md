@@ -55,7 +55,7 @@ $ lens decode [base64-payload] [flags]
 | `--json` | | Emit stable, machine-readable JSON representation. |
 | `--compact` | | Emit single-line compact JSON (with `--json`). |
 | `--yaml` | | Emit formatted YAML. |
-| `--format` | | Format name: `tree`, `json`, `summary`, `txrep`, `csv`, `html`, `mermaid`, `junit`. |
+| `--format` | | Format name: `tree`, `json`, `summary`, `txrep`, `csv`, `html`, `mermaid`, `junit`, `latex`, `dot`. |
 | `--type` | `-t` | Explicit XDR type (skips type guessing). See `lens types`. |
 | `--depth` | | Limit tree recursion depth (0 = unlimited). |
 | `--show-types` | | Annotate each node with its concrete XDR type. |
@@ -205,6 +205,7 @@ $ lens explain <envelope> [flags]
 | `--reference-time` | Reference timestamp (RFC 3339 or Unix seconds) for expiration verification. |
 | `--fail-on-error` | Exit with code 2 if the transaction failed. |
 | `--markdown` | Emit GitHub-flavored Markdown tables. |
+| `--format sarif` | Emit SARIF 2.1.0 for GitHub Code Scanning or GitLab Security. |
 | `--json` | Emit diagnostic report as structured JSON. |
 | `--verbose`, `-v` | Include protocol constants alongside explanations. |
 

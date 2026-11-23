@@ -74,8 +74,11 @@ func choiceCompletions(values ...string) func(*cobra.Command, []string, string) 
 func staticChoices() map[string]map[string][]string {
 	return map[string]map[string][]string{
 		"decode": {
-			"format":  {"tree", "json", "summary", "txrep", "csv", "html", "mermaid", "junit"},
+			"format":  {"tree", "json", "summary", "txrep", "csv", "html", "mermaid", "junit", "latex", "dot"},
 			"network": networkFlagValues,
+		},
+		"explain": {
+			"format": {"sarif"},
 		},
 		"asset": {
 			"network": networkFlagValues,

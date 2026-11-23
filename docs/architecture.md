@@ -133,8 +133,12 @@ pkg/lens/              the library; this is the reusable surface
     csv.go             flat CSV export for batch ledger envelopes
     markdown.go        GitHub-flavored Markdown transaction reports
     html.go            self-contained offline HTML reports
-    mermaid.go         Mermaid flowchart (graph TD) transaction visualization
+    mermaid.go         Mermaid flowcharts and Soroban sequence diagrams
     junit.go           JUnit XML test reports for CI gatekeeping
+    sarif.go           SARIF 2.1.0 findings for Code Scanning
+    latex.go           LaTeX booktabs tables for reports and papers
+    dot.go             Graphviz DOT graphs of accounts, ops and contracts
+    soroban_flow.go    shared Soroban invocation extraction
     linediff.go        shared line alignment for unified and side-by-side diffs
     unified.go         standard unified diff for CI review comments
     json_patch.go      RFC 6902 JSON Patch output
@@ -1326,12 +1330,35 @@ the [README](../README.md#lens-explain--why-did-this-fail) for usage.
 - Formats both transaction summaries (headline, outcome badge, operations table, preconditions) and complete hierarchical node trees.
 - Reachable from the CLI as `lens decode --format html`.
 
-## Mermaid flowchart formatter (`pkg/lens/format/mermaid.go`)
+## Mermaid formatter (`pkg/lens/format/mermaid.go`)
 
-`MermaidFormatter` converts transaction operations and participant accounts into Mermaid graph definitions (`graph TD`).
-- Renders source accounts, fee-bump wrappers, and directed arrows indicating operation details, asset transfers, or Soroban contract calls.
-- Provides fallback rendering of node hierarchies for general XDR types.
+`MermaidFormatter` renders Soroban invocation flows as sequence diagrams and everything else as a flowchart (`graph TD`).
+- A `TransactionEnvelope` with invoke-host-function operations, an `InvokeHostFunctionOp`, or a `SorobanAuthorizationEntry` becomes a `sequenceDiagram`: participants are the transaction, accounts and contracts, solid arrows are root calls and dashed arrows are authorised calls.
+- Other transactions render as a flowchart of source accounts, fee-bump wrappers, and directed operation arrows; general XDR types fall back to their node hierarchy.
 - Reachable from the CLI as `lens decode --format mermaid`.
+
+## SARIF formatter (`pkg/lens/format/sarif.go`)
+
+`SARIFFormatter` emits SARIF 2.1.0, the format GitHub Code Scanning and GitLab Security ingest.
+- Failed transactions, fee-bump inner failures and failed operations become `error` results; non-fatal lens warnings become `warning` results.
+- Each distinct result code is a rule keyed by its canonical id, so a scanner tracks the same rule across runs.
+- Output is deterministic, with rules sorted by id and results in transaction order.
+- Reachable from the CLI as `lens explain --format sarif`.
+
+## LaTeX formatter (`pkg/lens/format/latex.go`)
+
+`LaTeXFormatter` renders decoded values as a booktabs `table`/`tabular` environment for papers and reports.
+- Transactions export the high-level explain fields and one row per operation; other types flatten to dotted-path/value rows.
+- Every cell is escaped, so `_`, `$`, `&`, `%`, `#`, braces, `~` and `^` typeset literally.
+- Reachable from the CLI as `lens decode --format latex`.
+
+## Graphviz DOT formatter (`pkg/lens/format/dot.go`)
+
+`DOTFormatter` emits a `digraph` for `dot -Tsvg`.
+- Transactions show source and fee-bump accounts, operation nodes, payment destinations, and the contracts invoked by Soroban operations; edges are directed and labelled.
+- Other XDR types fall back to their decoded node tree.
+- Labels and ids are escaped and every edge endpoint is declared, so the output parses.
+- Reachable from the CLI as `lens decode --format dot`.
 
 ## JUnit XML test reports (`pkg/lens/format/junit.go`)
 
