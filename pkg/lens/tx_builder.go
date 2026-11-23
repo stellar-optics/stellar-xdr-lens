@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/stellar/go-stellar-sdk/xdr"
@@ -247,7 +248,11 @@ func BuildTransaction(spec *TxSpec) (xdr.Transaction, error) {
 		return tx, err
 	}
 
-	ops, err := buildOperations(spec.Operations)
+	resolvedOps, err := resolveRelativeBumpTo(spec.Operations, seqNum)
+	if err != nil {
+		return tx, err
+	}
+	ops, err := buildOperations(resolvedOps)
 	if err != nil {
 		return tx, err
 	}
@@ -307,7 +312,11 @@ func BuildTransactionV0(spec *TxSpec) (xdr.TransactionV0, error) {
 		return tx, err
 	}
 
-	ops, err := buildOperations(spec.Operations)
+	resolvedOps, err := resolveRelativeBumpTo(spec.Operations, seqNum)
+	if err != nil {
+		return tx, err
+	}
+	ops, err := buildOperations(resolvedOps)
 	if err != nil {
 		return tx, err
 	}
@@ -544,6 +553,39 @@ func buildMemo(memoInput any) (xdr.Memo, error) {
 	}
 }
 
+// resolveRelativeBumpTo rewrites any bump_sequence operation whose bump_to is a
+// relative "+N" string into an absolute sequence number by adding N to baseSeq.
+func resolveRelativeBumpTo(ops []OperationSpec, baseSeq int64) ([]OperationSpec, error) {
+	out := make([]OperationSpec, len(ops))
+	copy(out, ops)
+	for i, op := range out {
+		if strings.ToLower(strings.TrimSpace(op.Type)) != "bump_sequence" {
+			continue
+		}
+		s, ok := op.BumpTo.(string)
+		if !ok {
+			continue
+		}
+		s = strings.TrimSpace(s)
+		if !strings.HasPrefix(s, "+") {
+			continue
+		}
+		delta, err := strconv.ParseInt(s[1:], 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("%w: bump_sequence relative bump_to %q: %v", ErrInvalidTxSpec, op.BumpTo, err)
+		}
+		if delta < 0 {
+			return nil, fmt.Errorf("%w: bump_sequence relative bump_to %q: delta must not be negative", ErrInvalidTxSpec, op.BumpTo)
+		}
+		newSeq := baseSeq + delta
+		if newSeq < baseSeq {
+			return nil, fmt.Errorf("%w: bump_sequence relative offset overflows sequence number", ErrInvalidTxSpec)
+		}
+		out[i].BumpTo = newSeq
+	}
+	return out, nil
+}
+
 func buildOperations(ops []OperationSpec) ([]xdr.Operation, error) {
 	res := make([]xdr.Operation, len(ops))
 	for i, op := range ops {
@@ -753,6 +795,27 @@ func buildOperation(op OperationSpec) (xdr.Operation, error) {
 				Price:   price,
 				OfferId: xdr.Int64(offerID),
 			},
+		}
+		return operation, nil
+
+	case "extend_footprint_ttl":
+		extendTo, err := CoerceUint32(op.ExtendTo)
+		if err != nil {
+			return operation, fmt.Errorf("extend_footprint_ttl extend_to: %w", err)
+		}
+		if extendTo == 0 {
+			return operation, fmt.Errorf("%w: extend_footprint_ttl extend_to must be a positive uint32", ErrInvalidTxSpec)
+		}
+		operation.Body = xdr.OperationBody{
+			Type:                 xdr.OperationTypeExtendFootprintTtl,
+			ExtendFootprintTtlOp: &xdr.ExtendFootprintTtlOp{ExtendTo: xdr.Uint32(extendTo)},
+		}
+		return operation, nil
+
+	case "restore_footprint":
+		operation.Body = xdr.OperationBody{
+			Type:               xdr.OperationTypeRestoreFootprint,
+			RestoreFootprintOp: &xdr.RestoreFootprintOp{},
 		}
 		return operation, nil
 

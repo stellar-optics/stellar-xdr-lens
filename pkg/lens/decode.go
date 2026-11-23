@@ -128,6 +128,7 @@ var registry = []xdrType{
 	{"ClaimableBalanceEntry", func() any { return new(xdr.ClaimableBalanceEntry) }, 5},
 	{"Claimant", func() any { return new(xdr.Claimant) }, 5},
 	{"ClaimPredicate", func() any { return new(xdr.ClaimPredicate) }, 5},
+	{"ContractIdPreimage", func() any { return new(xdr.ContractIdPreimage) }, 15},
 	{"AccountEntry", func() any { return new(xdr.AccountEntry) }, 5},
 	{"TrustLineEntry", func() any { return new(xdr.TrustLineEntry) }, 5},
 	{"TrustLineEntryExtensionV2", func() any { return new(xdr.TrustLineEntryExtensionV2) }, 5},

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/stellar-optics/stellar-xdr-lens/pkg/lens"
+	"github.com/stellar/go-stellar-sdk/xdr"
 )
 
 func TestRegistryIndexCoversTypeNames(t *testing.T) {
@@ -128,5 +129,51 @@ func TestRegistryIndexJSONShape(t *testing.T) {
 				t.Errorf("entry %v is missing key %q", entry["name"], key)
 			}
 		}
+	}
+}
+
+// TestContractIdPreimageRegistered verifies that ContractIdPreimage can be detected
+// and decoded automatically and that it appears in the registry with the correct category.
+func TestContractIdPreimageRegistered(t *testing.T) {
+	t.Parallel()
+
+	// Verify it appears in the index with the right category.
+	found := false
+	for _, info := range lens.RegistryIndex() {
+		if info.Name == "ContractIdPreimage" {
+			found = true
+			if info.Category != lens.CategorySoroban {
+				t.Errorf("ContractIdPreimage category = %q, want %q", info.Category, lens.CategorySoroban)
+			}
+			if info.Priority <= 0 {
+				t.Errorf("ContractIdPreimage priority = %d, want positive", info.Priority)
+			}
+			if info.MinWireSize <= 0 {
+				t.Errorf("ContractIdPreimage MinWireSize = %d, want positive", info.MinWireSize)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("ContractIdPreimage not found in RegistryIndex")
+	}
+
+	// Build a FROM_ASSET (native) preimage — it marshals cleanly without
+	// needing a real account keypair.
+	nativeAsset := xdr.Asset{Type: xdr.AssetTypeAssetTypeNative}
+	preimage := xdr.ContractIdPreimage{
+		Type:      xdr.ContractIdPreimageTypeContractIdPreimageFromAsset,
+		FromAsset: &nativeAsset,
+	}
+	raw, err := preimage.MarshalBinary()
+	if err != nil {
+		t.Fatalf("MarshalBinary: %v", err)
+	}
+	encoded := base64.StdEncoding.EncodeToString(raw)
+	v, err := lens.DecodeAs(encoded, "ContractIdPreimage")
+	if err != nil {
+		t.Fatalf("DecodeAs(ContractIdPreimage): %v", err)
+	}
+	if v.Type != "ContractIdPreimage" {
+		t.Errorf("Type = %q, want ContractIdPreimage", v.Type)
 	}
 }

@@ -587,6 +587,14 @@ func validateOperationDetails(val any, path string) error {
 		if _, ok := m["asset"]; !ok {
 			return fmt.Errorf("set_trust_line_flags operation requires 'asset'")
 		}
+	case "extend_footprint_ttl":
+		if _, ok := m["extend_to"]; !ok {
+			if _, ok := m["extendTo"]; !ok {
+				return fmt.Errorf("extend_footprint_ttl operation requires 'extend_to'")
+			}
+		}
+	case "restore_footprint":
+		// no required fields
 	case "invoke_host_function":
 		// Can have invoke_contract, create_contract, or upload_wasm
 	}
