@@ -39,6 +39,7 @@ func newDecodeCmd(g *globalFlags, stdout io.Writer, stdin io.Reader) *cobra.Comm
 		compactOut    bool
 		stream        bool
 		canonical     bool
+		validateOnly  bool
 		batchPattern  string
 		selectPath    string
 		rawOutput     bool
@@ -63,6 +64,8 @@ Use --txrep for SEP-0011 human-readable representation of transaction envelopes.
 Use --csv for a flat, RFC 4180 row of the high-level transaction fields, which
 is what batch exports concatenate (see pkg/lens/format for the batch API).
 Use --spec to supply a contract WASM or spec file for decoded Soroban contract fields.
+Use --validate-only to check syntax without building or rendering the tree,
+which is the fast path for ingestion pipelines.
 Use --interactive (or 'lens explore') for an interactive terminal tree viewer.`,
 		Example: `  lens decode "$XDR"
   lens decode --hex "$HEX"
@@ -79,9 +82,14 @@ Use --interactive (or 'lens explore') for an interactive terminal tree viewer.`,
   lens decode --candidates "AAAAAA=="
   lens decode --stream --file records.xdr
   lens decode --canonical "$XDR"
+  lens decode --validate-only "$XDR"
+  echo "$XDR" | lens decode --validate-only -q || exit 1
   echo "$XDR" | lens decode --depth 3`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if validateOnly && interactive {
+				return fmt.Errorf("%w: --validate-only cannot be combined with --interactive", lens.ErrInvalidArgument)
+			}
 			if batchPattern != "" {
 				if stream || isMulti {
 					return fmt.Errorf("%w: --batch cannot be combined with --stream or --multi", lens.ErrInvalidArgument)
@@ -130,6 +138,30 @@ Use --interactive (or 'lens explore') for an interactive terminal tree viewer.`,
 					} else if isHex {
 						return fmt.Errorf("decoding hex input: %w", convErr)
 					}
+				}
+
+				if validateOnly {
+					result, valErr := lens.Validate(payload, typeName)
+					if valErr != nil {
+						return valErr
+					}
+					if canonical {
+						raw, decErr := base64.StdEncoding.DecodeString(payload)
+						if decErr != nil {
+							return fmt.Errorf("decoding base64: %w", decErr)
+						}
+						if typeName != "" {
+							if err := lens.ValidateTypeCanonicalXDR(raw, typeName); err != nil {
+								return fmt.Errorf("canonical validation failed: %w", err)
+							}
+						} else if err := lens.ValidateCanonicalXDR(raw); err != nil {
+							return fmt.Errorf("canonical validation failed: %w", err)
+						}
+					}
+					if _, err := fmt.Fprintf(w, "valid XDR: %s (%d bytes)\n", result.Type, result.Bytes); err != nil {
+						return err
+					}
+					return nil
 				}
 
 				if canonical {
@@ -332,6 +364,8 @@ Use --interactive (or 'lens explore') for an interactive terminal tree viewer.`,
 		"list every XDR type the input decodes as, best first")
 	cmd.Flags().BoolVar(&stream, "stream", false, "stream and decode framed XDR chunks (RFC 5531 or length-prefixed)")
 	cmd.Flags().BoolVar(&canonical, "canonical", false, "verify that input adheres strictly to canonical XDR serialization")
+	cmd.Flags().BoolVar(&validateOnly, "validate-only", false,
+		"check that the payload is valid XDR without building or rendering the tree")
 	cmd.Flags().StringVar(&batchPattern, "batch", "",
 		"decode every file in a directory or matching a glob pattern, with per-file headers and a failure summary")
 	cmd.Flags().StringVar(&selectPath, "select", "", "select a subtree by dotted path (e.g., Tx.Fee, Signatures[0].Hint)")
