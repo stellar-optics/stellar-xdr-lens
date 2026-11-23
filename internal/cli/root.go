@@ -130,6 +130,18 @@ func paletteForOutput(w io.Writer, mode string) (format.Palette, error) {
 	return format.PaletteForTheme(colorTarget, mode, palette), nil
 }
 
+// explorerBaseURL turns a --network value into the Stellar Expert base used for
+// OSC 8 hyperlinks. A value that is not an explorer network name is a network
+// passphrase (as --network is for txrep) or a typo, and disables links rather
+// than guessing a network the addresses do not belong to.
+func explorerBaseURL(network string) string {
+	base, ok := format.ExplorerBaseURL(network)
+	if !ok {
+		return ""
+	}
+	return base
+}
+
 func newVersionCmd(stdout io.Writer) *cobra.Command {
 	return &cobra.Command{
 		Use:   "version",

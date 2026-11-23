@@ -13,8 +13,9 @@ import (
 
 // SummaryFormatter renders a lens.Summary as readable prose.
 type SummaryFormatter struct {
-	palette Palette
-	verbose bool
+	palette  Palette
+	verbose  bool
+	explorer string
 }
 
 // SummaryOption configures a SummaryFormatter.
@@ -29,6 +30,14 @@ func WithSummaryPalette(p Palette) SummaryOption {
 // which is useful when cross-referencing the protocol definition.
 func WithVerbose(on bool) SummaryOption {
 	return func(s *SummaryFormatter) { s.verbose = on }
+}
+
+// WithSummaryHyperlinks makes account addresses clickable in OSC 8 terminals,
+// linking them to the Stellar Expert network identified by base (see
+// ExplorerBaseURL). Links are emitted only when the palette is coloured, so
+// `--color never` and non-TTY output stay plain text.
+func WithSummaryHyperlinks(base string) SummaryOption {
+	return func(s *SummaryFormatter) { s.explorer = base }
 }
 
 // NewSummaryFormatter returns a SummaryFormatter.
@@ -62,10 +71,10 @@ func (f *SummaryFormatter) Format(w io.Writer, s *lens.Summary) error {
 	// Transaction-level facts.
 	b.WriteString("\n")
 	if s.Source != "" {
-		f.field(&b, "Source", s.Source)
+		f.field(&b, "Source", f.link(s.Source))
 	}
 	if s.FeeBumpSource != "" {
-		f.field(&b, "Fee-bump source", s.FeeBumpSource)
+		f.field(&b, "Fee-bump source", f.link(s.FeeBumpSource))
 	}
 	if s.SeqNum != 0 {
 		f.field(&b, "Sequence", fmt.Sprintf("%d", s.SeqNum))
@@ -110,6 +119,12 @@ func (f *SummaryFormatter) field(b *strings.Builder, label, value string) {
 	fmt.Fprintf(b, "  %s%-16s%s %s\n", p.Key, label, p.Reset, value)
 }
 
+// link wraps an address in an OSC 8 hyperlink to the configured explorer. It
+// is a no-op for non-addresses and whenever hyperlinks are suppressed.
+func (f *SummaryFormatter) link(value string) string {
+	return hyperlinkAddress(f.palette, f.explorer, value)
+}
+
 func (f *SummaryFormatter) operation(b *strings.Builder, op lens.OpSummary) {
 	p := f.palette
 
@@ -130,7 +145,7 @@ func (f *SummaryFormatter) operation(b *strings.Builder, op lens.OpSummary) {
 	b.WriteString("\n")
 
 	if op.Source != "" {
-		fmt.Fprintf(b, "      %ssource: %s%s\n", p.Dim, op.Source, p.Reset)
+		fmt.Fprintf(b, "      %ssource: %s%s\n", p.Dim, f.link(op.Source), p.Reset)
 	}
 	for _, warn := range op.Warnings {
 		fmt.Fprintf(b, "      %s%s%s\n", p.Note, warn, p.Reset)

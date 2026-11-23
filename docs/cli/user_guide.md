@@ -207,6 +207,7 @@ $ lens explain <envelope> [flags]
 | `--markdown` | Emit GitHub-flavored Markdown tables. |
 | `--json` | Emit diagnostic report as structured JSON. |
 | `--verbose`, `-v` | Include protocol constants alongside explanations. |
+| `--network` | Stellar Expert network for clickable address links: `public` (default) or `testnet`; empty disables links. |
 
 #### Walkthrough Examples
 

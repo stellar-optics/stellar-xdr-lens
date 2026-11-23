@@ -78,6 +78,26 @@ continues to color only terminal output, while `--color always` and
 style parameters produce an error. `NO_COLOR` remains honored in automatic
 mode.
 
+#### Clickable addresses
+
+In terminals that support [OSC 8](https://github.com/Alhadis/OSC8-Adoption)
+hyperlinks (iTerm2, Windows Terminal, Ghostty, Alacritty, kitty, WezTerm) the
+account and contract addresses in text output are clickable and open the
+matching Stellar Expert page:
+
+```console
+$ lens explain --file envelope.xdr            # links on the public network
+$ lens explain --file envelope.xdr --network testnet
+$ lens decode --network testnet "$XDR"        # link addresses in the tree
+```
+
+`--network` accepts `public` (the default for `explain`, also spelled
+`mainnet`) and `testnet`. Passing anything else to `decode` still means a
+network passphrase for `--txrep`, and leaves addresses unlinked. Hyperlinks
+follow the same policy as colour: `--color never`, piped output and `NO_COLOR`
+stay clean text, while `--color always` emits the escapes explicitly. JSON,
+CSV, YAML, TxRep, Markdown and HTML output never carry hyperlink sequences.
+
 ## Contributor validation
 
 The CLI is exercised by subprocess tests in `cmd/lens/e2e_test.go` against the
