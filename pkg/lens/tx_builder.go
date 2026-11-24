@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 
 	"github.com/stellar/go-stellar-sdk/xdr"
@@ -110,6 +111,7 @@ type OperationSpec struct {
 	Auth            []any  `json:"auth,omitempty"`
 	LedgerKey       any    `json:"ledger_key,omitempty"`
 	ExtendTo        any    `json:"extend_to,omitempty"`
+	Claimants       any    `json:"claimants,omitempty"`
 }
 
 // BuildTransactionEnvelopeFromJSON parses JSON bytes and constructs a TransactionEnvelope.
@@ -791,6 +793,22 @@ func buildOperation(op OperationSpec) (xdr.Operation, error) {
 		}
 		return operation, nil
 
+	case "create_claimable_balance":
+		m := map[string]any{
+			"asset":     op.Asset,
+			"amount":    op.Amount,
+			"claimants": op.Claimants,
+		}
+		cbOp, err := buildClaimableBalanceOp(m)
+		if err != nil {
+			return operation, fmt.Errorf("create_claimable_balance: %w", err)
+		}
+		operation.Body = xdr.OperationBody{
+			Type:                     xdr.OperationTypeCreateClaimableBalance,
+			CreateClaimableBalanceOp: cbOp,
+		}
+		return operation, nil
+
 	default:
 		return operation, fmt.Errorf("%w: unsupported operation type %q", ErrInvalidTxSpec, op.Type)
 	}
@@ -887,4 +905,383 @@ func unmarshalTxSpecFromMap(m map[string]any) (*TxSpec, error) {
 		}
 	}
 	return &spec, nil
+}
+
+// BuildClaimableBalanceOp constructs an xdr.CreateClaimableBalanceOp from a JSON specification map.
+func BuildClaimableBalanceOp(spec map[string]any) (*xdr.CreateClaimableBalanceOp, error) {
+	return buildClaimableBalanceOp(spec)
+}
+
+func buildClaimableBalanceOp(spec map[string]any) (*xdr.CreateClaimableBalanceOp, error) {
+	if spec == nil {
+		return nil, fmt.Errorf("%w: missing create_claimable_balance spec", ErrInvalidTxSpec)
+	}
+
+	astVal := spec["asset"]
+	var ast xdr.Asset
+	if astVal == nil || astVal == "" || astVal == "native" {
+		ast = xdr.Asset{Type: xdr.AssetTypeAssetTypeNative}
+	} else {
+		a, err := CoerceAsset(astVal)
+		if err != nil {
+			return nil, fmt.Errorf("claimable balance asset: %w", err)
+		}
+		ast = a
+	}
+
+	amtVal, ok := spec["amount"]
+	if !ok || amtVal == nil {
+		return nil, fmt.Errorf("%w: missing amount for create_claimable_balance", ErrInvalidTxSpec)
+	}
+	amt, err := CoerceAmount(amtVal)
+	if err != nil {
+		return nil, fmt.Errorf("claimable balance amount: %w", err)
+	}
+
+	claimantsRaw, ok := spec["claimants"]
+	if !ok || claimantsRaw == nil {
+		return nil, fmt.Errorf("%w: missing claimants for create_claimable_balance", ErrInvalidTxSpec)
+	}
+
+	claimantsSlice, err := coerceToSlice(claimantsRaw)
+	if err != nil {
+		return nil, fmt.Errorf("claimable balance claimants: %w", err)
+	}
+	if len(claimantsSlice) == 0 {
+		return nil, fmt.Errorf("%w: at least one claimant required", ErrInvalidTxSpec)
+	}
+	if len(claimantsSlice) > 10 {
+		return nil, fmt.Errorf("%w: claimants count %d exceeds maximum of 10", ErrInvalidTxSpec, len(claimantsSlice))
+	}
+
+	claimants := make([]xdr.Claimant, len(claimantsSlice))
+	for i, c := range claimantsSlice {
+		switch cv := c.(type) {
+		case string:
+			acc, err := CoerceAccountID(cv)
+			if err != nil {
+				return nil, fmt.Errorf("claimant [%d] destination: %w", i, err)
+			}
+			claimants[i] = xdr.Claimant{
+				Type: xdr.ClaimantTypeClaimantTypeV0,
+				V0: &xdr.ClaimantV0{
+					Destination: acc,
+					Predicate:   xdr.ClaimPredicate{Type: xdr.ClaimPredicateTypeClaimPredicateUnconditional},
+				},
+			}
+		case map[string]any:
+			destRaw, ok := cv["destination"]
+			if !ok || destRaw == nil {
+				return nil, fmt.Errorf("%w: claimant [%d] missing destination", ErrInvalidTxSpec, i)
+			}
+			destStr, err := CoerceString(destRaw)
+			if err != nil {
+				return nil, fmt.Errorf("claimant [%d] destination: %w", i, err)
+			}
+			acc, err := CoerceAccountID(destStr)
+			if err != nil {
+				return nil, fmt.Errorf("claimant [%d] destination: %w", i, err)
+			}
+
+			predSpec := cv["predicate"]
+			pred, err := buildClaimPredicate(predSpec)
+			if err != nil {
+				return nil, fmt.Errorf("claimant [%d] predicate: %w", i, err)
+			}
+
+			claimants[i] = xdr.Claimant{
+				Type: xdr.ClaimantTypeClaimantTypeV0,
+				V0: &xdr.ClaimantV0{
+					Destination: acc,
+					Predicate:   pred,
+				},
+			}
+		default:
+			return nil, fmt.Errorf("%w: unsupported claimant representation %T at index %d", ErrInvalidTxSpec, c, i)
+		}
+	}
+
+	return &xdr.CreateClaimableBalanceOp{
+		Asset:     ast,
+		Amount:    xdr.Int64(amt),
+		Claimants: claimants,
+	}, nil
+}
+
+// BuildClaimPredicate parses a JSON specification into a validated xdr.ClaimPredicate.
+func BuildClaimPredicate(spec any) (xdr.ClaimPredicate, error) {
+	return buildClaimPredicate(spec)
+}
+
+func buildClaimPredicate(spec any) (xdr.ClaimPredicate, error) {
+	pred, err := parseClaimPredicate(spec)
+	if err != nil {
+		return xdr.ClaimPredicate{}, err
+	}
+	if err := ValidateClaimPredicate(pred); err != nil {
+		return xdr.ClaimPredicate{}, err
+	}
+	return pred, nil
+}
+
+func parseClaimPredicate(spec any) (xdr.ClaimPredicate, error) {
+	if spec == nil {
+		return xdr.ClaimPredicate{Type: xdr.ClaimPredicateTypeClaimPredicateUnconditional}, nil
+	}
+
+	switch s := spec.(type) {
+	case string:
+		str := strings.ToLower(strings.TrimSpace(s))
+		if str == "unconditional" || str == "" {
+			return xdr.ClaimPredicate{Type: xdr.ClaimPredicateTypeClaimPredicateUnconditional}, nil
+		}
+		return xdr.ClaimPredicate{}, fmt.Errorf("%w: unknown claim predicate string %q", ErrInvalidTxSpec, s)
+
+	case xdr.ClaimPredicate:
+		return s, nil
+
+	case map[string]any:
+		if _, ok := s["unconditional"]; ok {
+			return xdr.ClaimPredicate{Type: xdr.ClaimPredicateTypeClaimPredicateUnconditional}, nil
+		}
+
+		if val, ok := s["before_time"]; ok {
+			abs, err := CoerceInt64(val)
+			if err != nil {
+				return xdr.ClaimPredicate{}, fmt.Errorf("before_time: %w", err)
+			}
+			v := xdr.Int64(abs)
+			return xdr.ClaimPredicate{Type: xdr.ClaimPredicateTypeClaimPredicateBeforeAbsoluteTime, AbsBefore: &v}, nil
+		}
+		if val, ok := s["before_absolute_time"]; ok {
+			abs, err := CoerceInt64(val)
+			if err != nil {
+				return xdr.ClaimPredicate{}, fmt.Errorf("before_absolute_time: %w", err)
+			}
+			v := xdr.Int64(abs)
+			return xdr.ClaimPredicate{Type: xdr.ClaimPredicateTypeClaimPredicateBeforeAbsoluteTime, AbsBefore: &v}, nil
+		}
+		if val, ok := s["abs_before"]; ok {
+			abs, err := CoerceInt64(val)
+			if err != nil {
+				return xdr.ClaimPredicate{}, fmt.Errorf("abs_before: %w", err)
+			}
+			v := xdr.Int64(abs)
+			return xdr.ClaimPredicate{Type: xdr.ClaimPredicateTypeClaimPredicateBeforeAbsoluteTime, AbsBefore: &v}, nil
+		}
+
+		if val, ok := s["before_relative_time"]; ok {
+			rel, err := CoerceInt64(val)
+			if err != nil {
+				return xdr.ClaimPredicate{}, fmt.Errorf("before_relative_time: %w", err)
+			}
+			v := xdr.Int64(rel)
+			return xdr.ClaimPredicate{Type: xdr.ClaimPredicateTypeClaimPredicateBeforeRelativeTime, RelBefore: &v}, nil
+		}
+		if val, ok := s["rel_before"]; ok {
+			rel, err := CoerceInt64(val)
+			if err != nil {
+				return xdr.ClaimPredicate{}, fmt.Errorf("rel_before: %w", err)
+			}
+			v := xdr.Int64(rel)
+			return xdr.ClaimPredicate{Type: xdr.ClaimPredicateTypeClaimPredicateBeforeRelativeTime, RelBefore: &v}, nil
+		}
+
+		if val, ok := s["after_time"]; ok {
+			abs, err := CoerceInt64(val)
+			if err != nil {
+				return xdr.ClaimPredicate{}, fmt.Errorf("after_time: %w", err)
+			}
+			v := xdr.Int64(abs)
+			inner := xdr.ClaimPredicate{Type: xdr.ClaimPredicateTypeClaimPredicateBeforeAbsoluteTime, AbsBefore: &v}
+			innerPtr := &inner
+			return xdr.ClaimPredicate{Type: xdr.ClaimPredicateTypeClaimPredicateNot, NotPredicate: &innerPtr}, nil
+		}
+		if val, ok := s["after_absolute_time"]; ok {
+			abs, err := CoerceInt64(val)
+			if err != nil {
+				return xdr.ClaimPredicate{}, fmt.Errorf("after_absolute_time: %w", err)
+			}
+			v := xdr.Int64(abs)
+			inner := xdr.ClaimPredicate{Type: xdr.ClaimPredicateTypeClaimPredicateBeforeAbsoluteTime, AbsBefore: &v}
+			innerPtr := &inner
+			return xdr.ClaimPredicate{Type: xdr.ClaimPredicateTypeClaimPredicateNot, NotPredicate: &innerPtr}, nil
+		}
+		if val, ok := s["after_relative_time"]; ok {
+			rel, err := CoerceInt64(val)
+			if err != nil {
+				return xdr.ClaimPredicate{}, fmt.Errorf("after_relative_time: %w", err)
+			}
+			v := xdr.Int64(rel)
+			inner := xdr.ClaimPredicate{Type: xdr.ClaimPredicateTypeClaimPredicateBeforeRelativeTime, RelBefore: &v}
+			innerPtr := &inner
+			return xdr.ClaimPredicate{Type: xdr.ClaimPredicateTypeClaimPredicateNot, NotPredicate: &innerPtr}, nil
+		}
+
+		if val, ok := s["not"]; ok {
+			inner, err := parseClaimPredicate(val)
+			if err != nil {
+				return xdr.ClaimPredicate{}, fmt.Errorf("not predicate: %w", err)
+			}
+			innerPtr := &inner
+			return xdr.ClaimPredicate{Type: xdr.ClaimPredicateTypeClaimPredicateNot, NotPredicate: &innerPtr}, nil
+		}
+
+		if val, ok := s["and"]; ok {
+			return parseCompoundPredicate(xdr.ClaimPredicateTypeClaimPredicateAnd, val)
+		}
+		if val, ok := s["or"]; ok {
+			return parseCompoundPredicate(xdr.ClaimPredicateTypeClaimPredicateOr, val)
+		}
+
+		if typRaw, ok := s["type"]; ok {
+			if typ, ok := typRaw.(string); ok {
+				switch strings.ToLower(typ) {
+				case "unconditional":
+					return xdr.ClaimPredicate{Type: xdr.ClaimPredicateTypeClaimPredicateUnconditional}, nil
+				case "before_absolute_time", "before_time":
+					val := s["value"]
+					if val == nil {
+						val = s["abs_before"]
+					}
+					abs, err := CoerceInt64(val)
+					if err != nil {
+						return xdr.ClaimPredicate{}, fmt.Errorf("before_time: %w", err)
+					}
+					v := xdr.Int64(abs)
+					return xdr.ClaimPredicate{Type: xdr.ClaimPredicateTypeClaimPredicateBeforeAbsoluteTime, AbsBefore: &v}, nil
+				case "before_relative_time":
+					val := s["value"]
+					if val == nil {
+						val = s["rel_before"]
+					}
+					rel, err := CoerceInt64(val)
+					if err != nil {
+						return xdr.ClaimPredicate{}, fmt.Errorf("before_relative_time: %w", err)
+					}
+					v := xdr.Int64(rel)
+					return xdr.ClaimPredicate{Type: xdr.ClaimPredicateTypeClaimPredicateBeforeRelativeTime, RelBefore: &v}, nil
+				case "after_absolute_time", "after_time":
+					val := s["value"]
+					if val == nil {
+						val = s["abs_before"]
+					}
+					abs, err := CoerceInt64(val)
+					if err != nil {
+						return xdr.ClaimPredicate{}, fmt.Errorf("after_time: %w", err)
+					}
+					v := xdr.Int64(abs)
+					inner := xdr.ClaimPredicate{Type: xdr.ClaimPredicateTypeClaimPredicateBeforeAbsoluteTime, AbsBefore: &v}
+					innerPtr := &inner
+					return xdr.ClaimPredicate{Type: xdr.ClaimPredicateTypeClaimPredicateNot, NotPredicate: &innerPtr}, nil
+				case "not":
+					val := s["predicate"]
+					if val == nil {
+						val = s["value"]
+					}
+					inner, err := parseClaimPredicate(val)
+					if err != nil {
+						return xdr.ClaimPredicate{}, fmt.Errorf("not: %w", err)
+					}
+					innerPtr := &inner
+					return xdr.ClaimPredicate{Type: xdr.ClaimPredicateTypeClaimPredicateNot, NotPredicate: &innerPtr}, nil
+				case "and":
+					val := s["predicates"]
+					if val == nil {
+						val = s["value"]
+					}
+					return parseCompoundPredicate(xdr.ClaimPredicateTypeClaimPredicateAnd, val)
+				case "or":
+					val := s["predicates"]
+					if val == nil {
+						val = s["value"]
+					}
+					return parseCompoundPredicate(xdr.ClaimPredicateTypeClaimPredicateOr, val)
+				}
+			}
+		}
+
+		return xdr.ClaimPredicate{}, fmt.Errorf("%w: unrecognized claim predicate map: %v", ErrInvalidTxSpec, s)
+
+	case []any:
+		return parseCompoundPredicate(xdr.ClaimPredicateTypeClaimPredicateAnd, s)
+
+	default:
+		return xdr.ClaimPredicate{}, fmt.Errorf("%w: unsupported predicate specification %T", ErrInvalidTxSpec, spec)
+	}
+}
+
+func parseCompoundPredicate(opType xdr.ClaimPredicateType, val any) (xdr.ClaimPredicate, error) {
+	slice, err := coerceToSlice(val)
+	if err != nil {
+		return xdr.ClaimPredicate{}, fmt.Errorf("%w: compound predicate requires array of predicates", ErrInvalidTxSpec)
+	}
+	if len(slice) == 0 {
+		return xdr.ClaimPredicate{}, fmt.Errorf("%w: compound predicate array cannot be empty", ErrInvalidTxSpec)
+	}
+	if len(slice) == 1 {
+		return parseClaimPredicate(slice[0])
+	}
+	if len(slice) == 2 {
+		left, err := parseClaimPredicate(slice[0])
+		if err != nil {
+			return xdr.ClaimPredicate{}, fmt.Errorf("child [0]: %w", err)
+		}
+		right, err := parseClaimPredicate(slice[1])
+		if err != nil {
+			return xdr.ClaimPredicate{}, fmt.Errorf("child [1]: %w", err)
+		}
+		children := []xdr.ClaimPredicate{left, right}
+		if opType == xdr.ClaimPredicateTypeClaimPredicateAnd {
+			return xdr.ClaimPredicate{Type: opType, AndPredicates: &children}, nil
+		}
+		return xdr.ClaimPredicate{Type: opType, OrPredicates: &children}, nil
+	}
+
+	// For > 2 predicates, fold from right to left into binary tree
+	sub, err := parseCompoundPredicate(opType, slice[1:])
+	if err != nil {
+		return xdr.ClaimPredicate{}, err
+	}
+	first, err := parseClaimPredicate(slice[0])
+	if err != nil {
+		return xdr.ClaimPredicate{}, fmt.Errorf("child [0]: %w", err)
+	}
+	children := []xdr.ClaimPredicate{first, sub}
+	if opType == xdr.ClaimPredicateTypeClaimPredicateAnd {
+		return xdr.ClaimPredicate{Type: opType, AndPredicates: &children}, nil
+	}
+	return xdr.ClaimPredicate{Type: opType, OrPredicates: &children}, nil
+}
+
+func coerceToSlice(val any) ([]any, error) {
+	if val == nil {
+		return nil, nil
+	}
+	switch v := val.(type) {
+	case []any:
+		return v, nil
+	case []string:
+		res := make([]any, len(v))
+		for i, s := range v {
+			res[i] = s
+		}
+		return res, nil
+	case []map[string]any:
+		res := make([]any, len(v))
+		for i, m := range v {
+			res[i] = m
+		}
+		return res, nil
+	}
+	rv := reflect.ValueOf(val)
+	if rv.Kind() == reflect.Slice {
+		n := rv.Len()
+		res := make([]any, n)
+		for i := 0; i < n; i++ {
+			res[i] = rv.Index(i).Interface()
+		}
+		return res, nil
+	}
+	return nil, fmt.Errorf("expected slice, got %T", val)
 }

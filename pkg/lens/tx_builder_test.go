@@ -601,3 +601,230 @@ func TestBuildTransactionV0AndFeeBumpErrors(t *testing.T) {
 		t.Errorf("expected error on invalid signature hex")
 	}
 }
+
+func TestBuildClaimPredicate(t *testing.T) {
+	t.Parallel()
+
+	// 1. Unconditional string
+	p, err := BuildClaimPredicate("unconditional")
+	if err != nil {
+		t.Fatalf("BuildClaimPredicate(unconditional) failed: %v", err)
+	}
+	if p.Type != xdr.ClaimPredicateTypeClaimPredicateUnconditional {
+		t.Errorf("got %v, want unconditional", p.Type)
+	}
+
+	// 2. Unconditional map
+	p, err = BuildClaimPredicate(map[string]any{"unconditional": true})
+	if err != nil {
+		t.Fatalf("BuildClaimPredicate(map unconditional) failed: %v", err)
+	}
+	if p.Type != xdr.ClaimPredicateTypeClaimPredicateUnconditional {
+		t.Errorf("got %v, want unconditional", p.Type)
+	}
+
+	// 3. Before absolute time
+	p, err = BuildClaimPredicate(map[string]any{"before_time": 1700000000})
+	if err != nil {
+		t.Fatalf("BuildClaimPredicate(before_time) failed: %v", err)
+	}
+	if p.Type != xdr.ClaimPredicateTypeClaimPredicateBeforeAbsoluteTime || p.AbsBefore == nil || *p.AbsBefore != 1700000000 {
+		t.Errorf("got %v with abs %v, want 1700000000", p.Type, p.AbsBefore)
+	}
+
+	// 4. Before relative time
+	p, err = BuildClaimPredicate(map[string]any{"before_relative_time": 86400})
+	if err != nil {
+		t.Fatalf("BuildClaimPredicate(before_relative_time) failed: %v", err)
+	}
+	if p.Type != xdr.ClaimPredicateTypeClaimPredicateBeforeRelativeTime || p.RelBefore == nil || *p.RelBefore != 86400 {
+		t.Errorf("got %v with rel %v, want 86400", p.Type, p.RelBefore)
+	}
+
+	// 5. After time (encoded as NOT before_absolute_time)
+	p, err = BuildClaimPredicate(map[string]any{"after_time": 1700000000})
+	if err != nil {
+		t.Fatalf("BuildClaimPredicate(after_time) failed: %v", err)
+	}
+	if p.Type != xdr.ClaimPredicateTypeClaimPredicateNot || p.NotPredicate == nil || *p.NotPredicate == nil {
+		t.Fatalf("expected NOT predicate for after_time, got %v", p.Type)
+	}
+	inner := **p.NotPredicate
+	if inner.Type != xdr.ClaimPredicateTypeClaimPredicateBeforeAbsoluteTime || inner.AbsBefore == nil || *inner.AbsBefore != 1700000000 {
+		t.Errorf("inner of after_time: got %v with abs %v", inner.Type, inner.AbsBefore)
+	}
+
+	// 6. After relative time (encoded as NOT before_relative_time)
+	p, err = BuildClaimPredicate(map[string]any{"after_relative_time": 3600})
+	if err != nil {
+		t.Fatalf("BuildClaimPredicate(after_relative_time) failed: %v", err)
+	}
+	if p.Type != xdr.ClaimPredicateTypeClaimPredicateNot || p.NotPredicate == nil || *p.NotPredicate == nil {
+		t.Fatalf("expected NOT predicate for after_relative_time, got %v", p.Type)
+	}
+	inner = **p.NotPredicate
+	if inner.Type != xdr.ClaimPredicateTypeClaimPredicateBeforeRelativeTime || inner.RelBefore == nil || *inner.RelBefore != 3600 {
+		t.Errorf("inner of after_relative_time: got %v with rel %v", inner.Type, inner.RelBefore)
+	}
+
+	// 7. Nested AND predicate: {"and": [{"before_time": 1700000000}, {"after_time": 1600000000}]}
+	nestedAndSpec := map[string]any{
+		"and": []any{
+			map[string]any{"before_time": 1700000000},
+			map[string]any{"after_time": 1600000000},
+		},
+	}
+	p, err = BuildClaimPredicate(nestedAndSpec)
+	if err != nil {
+		t.Fatalf("BuildClaimPredicate(nested AND) failed: %v", err)
+	}
+	if p.Type != xdr.ClaimPredicateTypeClaimPredicateAnd || p.AndPredicates == nil || len(*p.AndPredicates) != 2 {
+		t.Fatalf("expected AND predicate with 2 children, got %v", p)
+	}
+
+	// 8. Nested OR predicate: {"or": [{"before_time": 1700000000}, "unconditional"]}
+	nestedOrSpec := map[string]any{
+		"or": []any{
+			map[string]any{"before_time": 1700000000},
+			"unconditional",
+		},
+	}
+	p, err = BuildClaimPredicate(nestedOrSpec)
+	if err != nil {
+		t.Fatalf("BuildClaimPredicate(nested OR) failed: %v", err)
+	}
+	if p.Type != xdr.ClaimPredicateTypeClaimPredicateOr || p.OrPredicates == nil || len(*p.OrPredicates) != 2 {
+		t.Fatalf("expected OR predicate with 2 children, got %v", p)
+	}
+
+	// 9. Error cases
+	// Negative relative time
+	if _, err := BuildClaimPredicate(map[string]any{"before_relative_time": -10}); err == nil {
+		t.Errorf("expected error for negative relative time")
+	}
+	// Empty AND
+	if _, err := BuildClaimPredicate(map[string]any{"and": []any{}}); err == nil {
+		t.Errorf("expected error for empty AND array")
+	}
+	// Unknown string
+	if _, err := BuildClaimPredicate("invalid_predicate_str"); err == nil {
+		t.Errorf("expected error for unknown string")
+	}
+}
+
+func TestBuildClaimableBalanceOp(t *testing.T) {
+	t.Parallel()
+
+	validDest1 := "GCJNHFXJEQEY54NPKU4DBMT5WOBJUHMYSFBDAQF4OMTEGJN4BQU7ZST6"
+	validDest2 := "GA2JRQOF6EA3HQWDCEDBPPMLYPJCFLDDGYZLEQGMS5SOBQIB3BAFHVAW"
+
+	spec := map[string]any{
+		"asset":  "native",
+		"amount": "100.5 XLM",
+		"claimants": []any{
+			map[string]any{
+				"destination": validDest1,
+				"predicate": map[string]any{
+					"and": []any{
+						map[string]any{"before_time": 1700000000},
+						map[string]any{"after_time": 1600000000},
+					},
+				},
+			},
+			map[string]any{
+				"destination": validDest2,
+				"predicate":   "unconditional",
+			},
+		},
+	}
+
+	op, err := BuildClaimableBalanceOp(spec)
+	if err != nil {
+		t.Fatalf("BuildClaimableBalanceOp failed: %v", err)
+	}
+
+	if op.Asset.Type != xdr.AssetTypeAssetTypeNative {
+		t.Errorf("expected native asset, got %v", op.Asset.Type)
+	}
+	if op.Amount != 1005000000 {
+		t.Errorf("expected amount 1005000000, got %d", op.Amount)
+	}
+	if len(op.Claimants) != 2 {
+		t.Fatalf("expected 2 claimants, got %d", len(op.Claimants))
+	}
+
+	// Verify byte structure by marshaling to binary and round-tripping
+	bytes, err := op.MarshalBinary()
+	if err != nil || len(bytes) == 0 {
+		t.Fatalf("MarshalBinary() failed: %v", err)
+	}
+
+	var roundTripped xdr.CreateClaimableBalanceOp
+	if err := roundTripped.UnmarshalBinary(bytes); err != nil {
+		t.Fatalf("UnmarshalBinary() failed: %v", err)
+	}
+	if roundTripped.Amount != op.Amount {
+		t.Errorf("round-trip amount mismatch: %d vs %d", roundTripped.Amount, op.Amount)
+	}
+	if len(roundTripped.Claimants) != len(op.Claimants) {
+		t.Errorf("round-trip claimants mismatch: %d vs %d", len(roundTripped.Claimants), len(op.Claimants))
+	}
+}
+
+func TestBuildTransactionEnvelopeWithClaimableBalanceOp(t *testing.T) {
+	t.Parallel()
+
+	validSource := "GA2JRQOF6EA3HQWDCEDBPPMLYPJCFLDDGYZLEQGMS5SOBQIB3BAFHVAW"
+	validDest := "GCJNHFXJEQEY54NPKU4DBMT5WOBJUHMYSFBDAQF4OMTEGJN4BQU7ZST6"
+
+	spec := &TxSpec{
+		SourceAccount: validSource,
+		Fee:           100,
+		Sequence:      1,
+		Operations: []OperationSpec{
+			{
+				Type:   "create_claimable_balance",
+				Asset:  "native",
+				Amount: 50000000,
+				Claimants: []any{
+					map[string]any{
+						"destination": validDest,
+						"predicate": map[string]any{
+							"or": []any{
+								map[string]any{"before_time": 1700000000},
+								"unconditional",
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	env, err := BuildTransactionEnvelope(spec)
+	if err != nil {
+		t.Fatalf("BuildTransactionEnvelope with create_claimable_balance failed: %v", err)
+	}
+
+	if len(env.V1.Tx.Operations) != 1 {
+		t.Fatalf("expected 1 op, got %d", len(env.V1.Tx.Operations))
+	}
+	body := env.V1.Tx.Operations[0].Body
+	if body.Type != xdr.OperationTypeCreateClaimableBalance {
+		t.Fatalf("expected CreateClaimableBalance op, got %v", body.Type)
+	}
+
+	// Base64 encode and decode back through the library
+	b64, err := EncodeTransactionEnvelopeBase64(spec)
+	if err != nil {
+		t.Fatalf("EncodeTransactionEnvelopeBase64 failed: %v", err)
+	}
+
+	decoded, err := Decode(b64)
+	if err != nil {
+		t.Fatalf("Decode failed: %v", err)
+	}
+	if decoded.Type != "TransactionEnvelope" {
+		t.Errorf("expected TransactionEnvelope, got %s", decoded.Type)
+	}
+}
