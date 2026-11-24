@@ -13,6 +13,10 @@ import (
 // On the wire a validator is a raw 32-byte ed25519 key, and a statement type
 // is a bare integer, so the two renderings that make SCP output readable are
 // the strkey address and the pledge name.
+//
+// See docs/reference/consensus_scp.md for an authoritative reference on SCP
+// message types (PREPARE, CONFIRM, EXTERNALIZE, NOMINATE), quorum sets, and
+// diagnostic workflows.
 func init() {
 	enricherFor[reflect.TypeOf(xdr.PublicKey{})] = enrichPublicKey
 	enricherFor[reflect.TypeOf(xdr.NodeId{})] = enrichNodeID

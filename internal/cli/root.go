@@ -30,6 +30,9 @@ type globalFlags struct {
 	// output writes standard output to a file instead (an empty value means
 	// stdout, and "-" is accepted as an explicit synonym for stdout).
 	output string
+	// redactAddresses masks Stellar public keys in command output. It is
+	// applied to the whole stream at the sink so every formatter is covered.
+	redactAddresses bool
 }
 
 // Execute builds and runs the root command. It returns an error rather than
@@ -93,6 +96,8 @@ unsigned transactions and works in CI.`,
 		"suppress standard output; the exit code still reports the result")
 	root.PersistentFlags().StringVarP(&g.output, "output", "o", "",
 		"write command output to a file instead of standard output")
+	root.PersistentFlags().BoolVar(&g.redactAddresses, "redact-addresses", false,
+		"mask Stellar public keys in output, keeping only their first and last four characters")
 
 	// Replace cobra's generic completion command with ours, so `lens
 	// completion bash` and friends are documented behaviour of this tool.
@@ -103,6 +108,7 @@ unsigned transactions and works in CI.`,
 		newEncodeCmd(g, stdout, stdin),
 		newExploreCmd(g, stdout, stdin),
 		newExplainCmd(g, stdout, stdin),
+		newLintCmd(g, stdout, stdin),
 		newDiffCmd(g, stdout, stdin),
 		newResultDiffCmd(g, stdout, stdin),
 		newMetaDiffCmd(g, stdout, stdin),
@@ -128,6 +134,18 @@ func paletteForOutput(w io.Writer, mode string) (format.Palette, error) {
 		colorTarget = sink.colorTarget()
 	}
 	return format.PaletteForTheme(colorTarget, mode, palette), nil
+}
+
+// explorerBaseURL turns a --network value into the Stellar Expert base used for
+// OSC 8 hyperlinks. A value that is not an explorer network name is a network
+// passphrase (as --network is for txrep) or a typo, and disables links rather
+// than guessing a network the addresses do not belong to.
+func explorerBaseURL(network string) string {
+	base, ok := format.ExplorerBaseURL(network)
+	if !ok {
+		return ""
+	}
+	return base
 }
 
 func newVersionCmd(stdout io.Writer) *cobra.Command {

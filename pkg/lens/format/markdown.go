@@ -97,6 +97,13 @@ func (f *MarkdownFormatter) FormatSummary(w io.Writer, s *lens.Summary) error {
 				}
 			}
 			description := op.Detail
+			if len(op.Warnings) > 0 {
+				if description != "" {
+					description += " <br> " + strings.Join(op.Warnings, "<br>")
+				} else {
+					description = strings.Join(op.Warnings, "<br>")
+				}
+			}
 			if description == "" {
 				description = "-"
 			}

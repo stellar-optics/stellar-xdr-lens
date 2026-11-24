@@ -202,7 +202,7 @@ func TestDescribeLedgerUpgrade(t *testing.T) {
 		upgrade xdr.LedgerUpgrade
 		want    string
 	}{
-		{"version", version, "protocol version 23"},
+		{"version", version, "Protocol 23"},
 		{"max tx set size", maxTxSet, "max tx set size 1200"},
 		{"base fee", baseFee, "base fee 0.0000200 XLM (200 stroops)"},
 		{"max tx set size", maxTxSet, "max tx set size 1200"},
@@ -237,8 +237,8 @@ func TestEnrichUpgradeType(t *testing.T) {
 	}
 
 	note, raw, ok := enrichUpgradeType(reflect.ValueOf(xdr.UpgradeType(blob)))
-	if !ok || note != "protocol version 23" {
-		t.Errorf("enrichUpgradeType(version) = (%q, %v), want protocol version 23", note, ok)
+	if !ok || note != "Protocol 23" {
+		t.Errorf("enrichUpgradeType(version) = (%q, %v), want Protocol 23", note, ok)
 	}
 	if s, okRaw := raw.(string); !okRaw || s != hex.EncodeToString(blob) {
 		t.Errorf("raw = %v, want hex string of original upgrade bytes", raw)

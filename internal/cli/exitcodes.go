@@ -57,6 +57,11 @@ var errTransactionFailed = &exitError{code: ExitDiffFound, msg: "transaction fai
 // convention of a distinct non-zero status when the inputs differ.
 var errValuesDiffer = &exitError{code: ExitDiffFound, msg: "values differ"}
 
+// errLintIssues signals that `lens lint` found at least one warning or error.
+// Like a detected diff it is a completed check whose answer is "false", so it
+// shares the diff-found exit code rather than looking like a tool failure.
+var errLintIssues = &exitError{code: ExitDiffFound, msg: "lint issues found"}
+
 // ExitCode returns the process exit code for err, and whether err should be
 // printed as an error message.
 //

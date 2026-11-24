@@ -80,6 +80,9 @@ func staticChoices() map[string]map[string][]string {
 		"asset": {
 			"network": networkFlagValues,
 		},
+		"explain": {
+			"network": explorerNetworkFlagValues,
+		},
 		"diff": {
 			"format": {"text", "json", "json-patch", "unified", "side-by-side", "stats"},
 			"redact": redactFlagValues,
@@ -91,9 +94,10 @@ func staticChoices() map[string]map[string][]string {
 // completion list and the validator must agree, or the shell will offer
 // something the CLI rejects.
 var (
-	colorFlagValues   = []string{"auto", "always", "never"}
-	networkFlagValues = []string{"mainnet", "testnet", "futurenet"}
-	redactFlagValues  = []string{"hashes", "signatures", "identifiers", "all"}
+	colorFlagValues           = []string{"auto", "always", "never"}
+	networkFlagValues         = []string{"mainnet", "testnet", "futurenet"}
+	explorerNetworkFlagValues = []string{"public", "testnet"}
+	redactFlagValues          = []string{"hashes", "signatures", "identifiers", "all"}
 )
 
 // typeFlaggedCommands lists the commands carrying an XDR-type flag, mapped to

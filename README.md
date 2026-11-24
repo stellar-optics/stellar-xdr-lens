@@ -78,6 +78,26 @@ continues to color only terminal output, while `--color always` and
 style parameters produce an error. `NO_COLOR` remains honored in automatic
 mode.
 
+#### Clickable addresses
+
+In terminals that support [OSC 8](https://github.com/Alhadis/OSC8-Adoption)
+hyperlinks (iTerm2, Windows Terminal, Ghostty, Alacritty, kitty, WezTerm) the
+account and contract addresses in text output are clickable and open the
+matching Stellar Expert page:
+
+```console
+$ lens explain --file envelope.xdr            # links on the public network
+$ lens explain --file envelope.xdr --network testnet
+$ lens decode --network testnet "$XDR"        # link addresses in the tree
+```
+
+`--network` accepts `public` (the default for `explain`, also spelled
+`mainnet`) and `testnet`. Passing anything else to `decode` still means a
+network passphrase for `--txrep`, and leaves addresses unlinked. Hyperlinks
+follow the same policy as colour: `--color never`, piped output and `NO_COLOR`
+stay clean text, while `--color always` emits the escapes explicitly. JSON,
+CSV, YAML, TxRep, Markdown and HTML output never carry hyperlink sequences.
+
 ## Contributor validation
 
 The CLI is exercised by subprocess tests in `cmd/lens/e2e_test.go` against the
@@ -91,7 +111,11 @@ go test ./cmd/lens
 
 ## Usage
 
+For an exhaustive reference of all subcommands, terminal flags, practical pipeline recipes with `curl`/`jq`, and productivity shell aliases, see the [CLI User Guide & Workflow Recipes](docs/cli/user_guide.md).
+
 ### `lens explain` — why did this fail?
+
+For a comprehensive guide on transaction error hierarchies, operation isolation, reserve math, and Soroban host traps, see the [Debugging Failed Transactions Guide](docs/guides/debugging_failures.md).
 
 Pair an envelope with its result and `lens` names the failing operation, what it
 was attempting, and what to do next:
@@ -363,7 +387,7 @@ $ lens decode -i --file envelope.xdr
 # or use the dedicated command:
 $ lens explore --file envelope.xdr
 
-# Contract spec-aware ScVal decoding from contract WASM or spec XDR
+# Contract spec-aware ScVal decoding from contract WASM or spec XDR (see docs/guides/soroban_specs.md)
 $ lens decode --spec contract.wasm --file invocation.xdr
 ```
 
@@ -441,6 +465,8 @@ $ lens decode --canonical "$XDR"
 ```
 
 ### `lens diff` — what changed?
+
+For an in-depth reference on masking volatile fields, numeric thresholds, and runnable CI workflow templates (GitHub Actions and GitLab CI), see the [Semantic Diffing in CI Guide](docs/guides/semantic_diffing.md).
 
 ```console
 $ lens diff before.xdr after.xdr
@@ -634,7 +660,7 @@ StellarMessage
 
 ### `lens encode` — build XDR from JSON
 
-Encode simplified JSON specifications into base64-encoded XDR completely offline:
+Encode simplified JSON specifications into base64-encoded XDR completely offline. For the complete schema specification, operation examples, and coercion rules, see the [JSON-to-XDR Schema Reference](docs/encode/schema_reference.md).
 
 ```console
 # Round-trip a decode document straight back to XDR
@@ -886,8 +912,9 @@ diff, and `format.NewSideBySideFormatter` produces the two-column view. A
 about, either through `DiffOptions.Filter` before the diff or the formatter's
 filter option afterwards.
 
-See the [API reference](https://pkg.go.dev/github.com/stellar-optics/stellar-xdr-lens/pkg/lens)
-and [docs/architecture.md](docs/architecture.md).
+See the [API reference](https://pkg.go.dev/github.com/stellar-optics/stellar-xdr-lens/pkg/lens),
+[docs/architecture.md](docs/architecture.md), and the indexer guide
+[docs/guides/ledger_close_meta.md](docs/guides/ledger_close_meta.md).
 
 ### Failure diagnostics library
 
@@ -1010,6 +1037,8 @@ go test ./pkg/lens -run 'RoundTrip' -v
 
 ## A note on type detection
 
+For an architectural guide to the candidate scoring engine and ambiguity resolution, see the [Type Detection Heuristics Guide](docs/architecture/detection.md).
+
 `lens decode` detects the XDR type by trying each known type and keeping the ones
 that decode cleanly, relying on the SDK rejecting input it does not fully consume.
 On transaction-sized payloads this is reliable — the test suite asserts that every
@@ -1050,11 +1079,19 @@ mainnet XDR. The library API may still shift before v1.0 — it is not yet froze
 See [docs/roadmap.md](docs/roadmap.md) for what is planned and what is deliberately
 out of scope.
 
+## Documentation
+
+- [Architecture & Internals](docs/architecture.md) — design principles, pipeline layout, and extension guides.
+- [Consensus & SCP Diagnostics](docs/reference/consensus_scp.md) — reference guide for SCP envelopes, quorum sets, ballots, and Mermaid visualization.
+- [Safe Untrusted XDR Parsing](docs/security/untrusted_xdr.md) — security considerations, depth limits, size caps, and hardening guidelines.
+- [Roadmap](docs/roadmap.md) — future plans and non-goals.
+
 ## Contributing
 
 Contributions are welcome — especially new XDR type handlers and better failure
 explanations, both of which are designed to be one-file changes.
-See [CONTRIBUTING.md](CONTRIBUTING.md).
+See [CONTRIBUTING.md](CONTRIBUTING.md) and the
+[Authoring Enrichers & Formatters Guide](docs/contributing/authoring_enrichers.md).
 
 ## License
 
