@@ -168,7 +168,7 @@ Use --interactive (or 'lens explore') for an interactive terminal tree viewer.`,
 				// Apply --select / --query path selection
 				var selectedNode *lens.Node
 				if selectPath != "" {
-					selectedNode = value.Node.Find(selectPath)
+					selectedNode = value.Node.QueryPath(selectPath)
 					if selectedNode == nil {
 						return fmt.Errorf("path %q not found in decoded tree", selectPath)
 					}
