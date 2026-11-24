@@ -273,6 +273,42 @@ func WriteMultiStreamHex(w io.Writer, values []*Value) error {
 	return nil
 }
 
+// IterateLedgerBatch calls fn for each LedgerCloseMeta record in a batch, in
+// the order they appear. It returns ErrEmptyMultiStream when the batch is nil
+// or contains no records, and propagates any error that fn returns.
+func IterateLedgerBatch(batch *xdr.LedgerCloseMetaBatch, fn func(seq uint32, meta xdr.LedgerCloseMeta) error) error {
+	if batch == nil || len(batch.LedgerCloseMetas) == 0 {
+		return ErrEmptyMultiStream
+	}
+	for _, meta := range batch.LedgerCloseMetas {
+		seq := ledgerCloseSeq(meta)
+		if err := fn(seq, meta); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ledgerCloseSeq extracts the ledger sequence number from a LedgerCloseMeta
+// union. It returns 0 when the arm is nil or unrecognised.
+func ledgerCloseSeq(meta xdr.LedgerCloseMeta) uint32 {
+	switch meta.V {
+	case 0:
+		if meta.V0 != nil {
+			return uint32(meta.V0.LedgerHeader.Header.LedgerSeq)
+		}
+	case 1:
+		if meta.V1 != nil {
+			return uint32(meta.V1.LedgerHeader.Header.LedgerSeq)
+		}
+	case 2:
+		if meta.V2 != nil {
+			return uint32(meta.V2.LedgerHeader.Header.LedgerSeq)
+		}
+	}
+	return 0
+}
+
 // SafeMarshalBase64 wraps xdr.MarshalBase64 with panic recovery.
 func SafeMarshalBase64(v any) (s string, err error) {
 	defer func() {

@@ -319,13 +319,28 @@ func diffNodesWithOptions(a, b *Node, path string, out *[]Change, options DiffOp
 	switch a.Kind {
 	case KindScalar:
 		if !sameScalarWithOptions(a, b, options) {
+			beforeNote, afterNote := a.Note, b.Note
+			if isTTLSequencePath(path, a) {
+				if delta := TTLDeltaNote(a.Value, b.Value); delta != "" {
+					if beforeNote != "" {
+						beforeNote += "; " + delta
+					} else {
+						beforeNote = delta
+					}
+					if afterNote != "" {
+						afterNote += "; " + delta
+					} else {
+						afterNote = delta
+					}
+				}
+			}
 			*out = append(*out, Change{
 				Path:       path,
 				Op:         ChangeModified,
 				Before:     a.Value,
 				After:      b.Value,
-				BeforeNote: a.Note,
-				AfterNote:  b.Note,
+				BeforeNote: beforeNote,
+				AfterNote:  afterNote,
 			})
 		}
 
@@ -1245,6 +1260,16 @@ func leafValue(n *Node) any {
 		}
 		return "{...}"
 	}
+}
+
+// isTTLSequencePath reports whether path or node name refers to the
+// LiveUntilLedgerSeq field of a TtlEntry, which warrants a delta annotation.
+func isTTLSequencePath(path string, n *Node) bool {
+	const ttlField = "LiveUntilLedgerSeq"
+	if n != nil && n.Name == ttlField {
+		return true
+	}
+	return strings.HasSuffix(path, "."+ttlField) || path == ttlField
 }
 
 func join(path, name string) string {

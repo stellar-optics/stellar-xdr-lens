@@ -2,6 +2,7 @@ package lens
 
 import (
 	"fmt"
+	"math"
 	"reflect"
 	"time"
 
@@ -96,6 +97,78 @@ func enrichTtlEntry(n *Node, v any) {
 		ttlKeyHashNote(n, entry.KeyHash)
 	case xdr.LedgerKeyTtl:
 		ttlKeyHashNote(n, entry.KeyHash)
+	}
+}
+
+// LedgerToDuration converts a count of ledgers to its estimated wall-clock
+// duration based on the target LedgerCloseInterval.
+func LedgerToDuration(ledgers uint32) time.Duration {
+	return time.Duration(ledgers) * LedgerCloseInterval
+}
+
+// TTLDeltaNote computes the signed ledger delta between two LiveUntilLedgerSeq
+// values and returns a short human-readable annotation such as
+// "+17280 ledgers (~24h)" or "-100 ledgers (~8m20s)".
+// It returns the empty string when the values cannot be interpreted as ledger
+// sequence numbers or when the delta is zero.
+func TTLDeltaNote(before, after any) string {
+	bv, okB := toLedgerSeq(before)
+	av, okA := toLedgerSeq(after)
+	if !okB || !okA {
+		return ""
+	}
+	delta := int64(av) - int64(bv)
+	if delta == 0 {
+		return ""
+	}
+	absDelta := delta
+	if absDelta < 0 {
+		absDelta = -absDelta
+	}
+	dur := LedgerToDuration(uint32(absDelta))
+	sign := "+"
+	if delta < 0 {
+		sign = ""
+	}
+	return fmt.Sprintf("%s%d ledgers (~%s)", sign, delta, formatLedgerDuration(dur))
+}
+
+// toLedgerSeq extracts a uint32 ledger sequence from common value types
+// produced by the XDR walker.
+func toLedgerSeq(v any) (uint32, bool) {
+	switch val := v.(type) {
+	case xdr.Uint32:
+		return uint32(val), true
+	case uint32:
+		return val, true
+	default:
+		f, ok := asNumber(v)
+		if !ok || f < 0 || f > math.MaxUint32 || math.Floor(f) != f {
+			return 0, false
+		}
+		return uint32(f), true
+	}
+}
+
+// formatLedgerDuration renders a duration in a compact human-readable form.
+func formatLedgerDuration(d time.Duration) string {
+	if d < time.Minute {
+		return fmt.Sprintf("%.0fs", d.Seconds())
+	}
+	h := int(d.Hours())
+	m := int(d.Minutes()) % 60
+	s := int(d.Seconds()) % 60
+	switch {
+	case h == 0 && s == 0:
+		return fmt.Sprintf("%dm", m)
+	case h == 0:
+		return fmt.Sprintf("%dm%ds", m, s)
+	case m == 0 && s == 0:
+		return fmt.Sprintf("%dh", h)
+	case s == 0:
+		return fmt.Sprintf("%dh%dm", h, m)
+	default:
+		return fmt.Sprintf("%dh%dm%ds", h, m, s)
 	}
 }
 
