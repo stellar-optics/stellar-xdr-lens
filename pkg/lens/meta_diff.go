@@ -9,6 +9,122 @@ import (
 	"github.com/stellar/go-stellar-sdk/xdr"
 )
 
+// CalculateNetBalanceDeltas is a convenience wrapper around
+// DiffTransactionMetaBalances that returns the slice of BalanceDelta values
+// directly, omitting entries where the balance did not change.
+func CalculateNetBalanceDeltas(meta *xdr.TransactionMeta) ([]BalanceDelta, error) {
+	result, err := DiffTransactionMetaBalances(meta)
+	if err != nil {
+		return nil, err
+	}
+	return result.Changes, nil
+}
+
+// BatchDiffSummary summarises the aggregate differences between two
+// LedgerCloseMetaBatch values.
+type BatchDiffSummary struct {
+	LeftStartSequence  uint32 `json:"leftStartSequence"`
+	LeftEndSequence    uint32 `json:"leftEndSequence"`
+	RightStartSequence uint32 `json:"rightStartSequence"`
+	RightEndSequence   uint32 `json:"rightEndSequence"`
+	// LeftLedgerCount is the number of LedgerCloseMeta records in the left batch.
+	LeftLedgerCount int `json:"leftLedgerCount"`
+	// RightLedgerCount is the number of LedgerCloseMeta records in the right batch.
+	RightLedgerCount int `json:"rightLedgerCount"`
+	// LedgerCountDelta is RightLedgerCount - LeftLedgerCount.
+	LedgerCountDelta int `json:"ledgerCountDelta"`
+	// LeftTxCount is the total transaction count across all ledgers in the left batch.
+	LeftTxCount int `json:"leftTxCount"`
+	// RightTxCount is the total transaction count across all ledgers in the right batch.
+	RightTxCount int `json:"rightTxCount"`
+	// TxCountDelta is RightTxCount - LeftTxCount.
+	TxCountDelta int `json:"txCountDelta"`
+	// LeftFailedTxCount is the number of failed transactions in the left batch.
+	LeftFailedTxCount int `json:"leftFailedTxCount"`
+	// RightFailedTxCount is the number of failed transactions in the right batch.
+	RightFailedTxCount int `json:"rightFailedTxCount"`
+	// LeftFeeCharged is the total fee charged across all transactions in the left batch (stroops).
+	LeftFeeCharged int64 `json:"leftFeeCharged"`
+	// RightFeeCharged is the total fee charged across all transactions in the right batch (stroops).
+	RightFeeCharged int64 `json:"rightFeeCharged"`
+	// FeeChargedDelta is RightFeeCharged - LeftFeeCharged.
+	FeeChargedDelta int64 `json:"feeChargedDelta"`
+}
+
+// DiffLedgerBatch computes aggregate statistics across two
+// LedgerCloseMetaBatch values and returns a comparison summary. Either
+// argument may be nil, in which case its statistics are recorded as zero.
+func DiffLedgerBatch(left, right *xdr.LedgerCloseMetaBatch) *BatchDiffSummary {
+	s := &BatchDiffSummary{}
+	if left != nil {
+		s.LeftStartSequence = uint32(left.StartSequence)
+		s.LeftEndSequence = uint32(left.EndSequence)
+		s.LeftLedgerCount, s.LeftTxCount, s.LeftFailedTxCount, s.LeftFeeCharged = aggregateBatchStats(left)
+	}
+	if right != nil {
+		s.RightStartSequence = uint32(right.StartSequence)
+		s.RightEndSequence = uint32(right.EndSequence)
+		s.RightLedgerCount, s.RightTxCount, s.RightFailedTxCount, s.RightFeeCharged = aggregateBatchStats(right)
+	}
+	s.LedgerCountDelta = s.RightLedgerCount - s.LeftLedgerCount
+	s.TxCountDelta = s.RightTxCount - s.LeftTxCount
+	s.FeeChargedDelta = s.RightFeeCharged - s.LeftFeeCharged
+	return s
+}
+
+func aggregateBatchStats(batch *xdr.LedgerCloseMetaBatch) (ledgerCount, txCount, failedTxCount int, feeCharged int64) {
+	if batch == nil {
+		return
+	}
+	ledgerCount = len(batch.LedgerCloseMetas)
+	for _, meta := range batch.LedgerCloseMetas {
+		t, f, fee := ledgerCloseMetaTxStats(meta)
+		txCount += t
+		failedTxCount += f
+		feeCharged += fee
+	}
+	return
+}
+
+func ledgerCloseMetaTxStats(meta xdr.LedgerCloseMeta) (txCount, failedTxCount int, feeCharged int64) {
+	switch meta.V {
+	case 0:
+		if meta.V0 == nil {
+			return
+		}
+		for _, tp := range meta.V0.TxProcessing {
+			txCount++
+			feeCharged += int64(tp.Result.Result.FeeCharged)
+			if tp.Result.Result.Result.Code != xdr.TransactionResultCodeTxSuccess {
+				failedTxCount++
+			}
+		}
+	case 1:
+		if meta.V1 == nil {
+			return
+		}
+		for _, tp := range meta.V1.TxProcessing {
+			txCount++
+			feeCharged += int64(tp.Result.Result.FeeCharged)
+			if tp.Result.Result.Result.Code != xdr.TransactionResultCodeTxSuccess {
+				failedTxCount++
+			}
+		}
+	case 2:
+		if meta.V2 == nil {
+			return
+		}
+		for _, tp := range meta.V2.TxProcessing {
+			txCount++
+			feeCharged += int64(tp.Result.Result.FeeCharged)
+			if tp.Result.Result.Result.Code != xdr.TransactionResultCodeTxSuccess {
+				failedTxCount++
+			}
+		}
+	}
+	return
+}
+
 // BalanceDelta describes the balance change for one ledger entry. Amounts are
 // stored in stroops for XLM and in the asset's smallest ledger unit otherwise.
 type BalanceDelta struct {

@@ -1512,3 +1512,117 @@ func TestDiffWithOptions_MaskPaths(t *testing.T) {
 		t.Fatalf("expected Equal() with IgnorePaths, got %v", ignored.Changes)
 	}
 }
+
+// --- Issue #282: TTL delta annotation ---
+
+func TestDiffTTLDeltaAnnotation(t *testing.T) {
+	t.Parallel()
+
+	// Build two TtlEntry XDR values with different LiveUntilLedgerSeq.
+	before := xdr.TtlEntry{KeyHash: xdr.Hash{1}, LiveUntilLedgerSeq: xdr.Uint32(1000)}
+	after := xdr.TtlEntry{KeyHash: xdr.Hash{1}, LiveUntilLedgerSeq: xdr.Uint32(18280)} // +17280 ledgers (~24h)
+
+	result, err := lens.DiffBase64(mustMarshal(t, before), mustMarshal(t, after), "TtlEntry")
+	if err != nil {
+		t.Fatalf("DiffBase64() error = %v", err)
+	}
+	if result.Equal() {
+		t.Fatal("expected diff, got equal")
+	}
+
+	var ttlChange *lens.Change
+	for i := range result.Changes {
+		if strings.Contains(result.Changes[i].Path, "LiveUntilLedgerSeq") {
+			ttlChange = &result.Changes[i]
+			break
+		}
+	}
+	if ttlChange == nil {
+		t.Fatalf("no LiveUntilLedgerSeq change found in %v", result.Changes)
+	}
+	// Both BeforeNote and AfterNote should contain the delta annotation.
+	if !strings.Contains(ttlChange.BeforeNote, "ledgers") {
+		t.Errorf("BeforeNote %q does not contain delta annotation", ttlChange.BeforeNote)
+	}
+	if !strings.Contains(ttlChange.AfterNote, "ledgers") {
+		t.Errorf("AfterNote %q does not contain delta annotation", ttlChange.AfterNote)
+	}
+	// The delta is +17280 ledgers.
+	if !strings.Contains(ttlChange.BeforeNote, "+17280") {
+		t.Errorf("BeforeNote %q does not show +17280 ledgers delta", ttlChange.BeforeNote)
+	}
+}
+
+func TestDiffTTLDeltaAnnotationNegative(t *testing.T) {
+	t.Parallel()
+
+	before := xdr.TtlEntry{KeyHash: xdr.Hash{2}, LiveUntilLedgerSeq: xdr.Uint32(5000)}
+	after := xdr.TtlEntry{KeyHash: xdr.Hash{2}, LiveUntilLedgerSeq: xdr.Uint32(4900)}
+
+	result, err := lens.DiffBase64(mustMarshal(t, before), mustMarshal(t, after), "TtlEntry")
+	if err != nil {
+		t.Fatalf("DiffBase64() error = %v", err)
+	}
+
+	for i := range result.Changes {
+		c := &result.Changes[i]
+		if strings.Contains(c.Path, "LiveUntilLedgerSeq") {
+			if !strings.Contains(c.BeforeNote, "-100") {
+				t.Errorf("BeforeNote %q should show -100 ledger delta", c.BeforeNote)
+			}
+			return
+		}
+	}
+	t.Fatal("no LiveUntilLedgerSeq change found")
+}
+
+// --- Issue #288: --diff-threshold suppresses small numeric changes ---
+
+func TestDiffThresholdSuppressesSmallChange(t *testing.T) {
+	t.Parallel()
+
+	aid := xdr.MustAddress("GCJNHFXJEQEY54NPKU4DBMT5WOBJUHMYSFBDAQF4OMTEGJN4BQU7ZST6")
+	left := xdr.AccountEntry{AccountId: aid, Balance: xdr.Int64(10_000_000)}
+	right := xdr.AccountEntry{AccountId: aid, Balance: xdr.Int64(10_000_100)} // delta = 100 stroops
+
+	leftB64 := mustMarshal(t, left)
+	rightB64 := mustMarshal(t, right)
+
+	// Without threshold, the balance change should appear.
+	without, err := lens.DiffBase64WithOptions(leftB64, rightB64, "AccountEntry", lens.DiffOptions{})
+	if err != nil {
+		t.Fatalf("DiffBase64WithOptions() error = %v", err)
+	}
+	if without.Equal() {
+		t.Fatal("expected diff without threshold")
+	}
+
+	// With threshold = 1000 (> 100), the balance change should be suppressed.
+	with, err := lens.DiffBase64WithOptions(leftB64, rightB64, "AccountEntry", lens.DiffOptions{Threshold: 1000})
+	if err != nil {
+		t.Fatalf("DiffBase64WithOptions() with threshold error = %v", err)
+	}
+	if !with.Equal() {
+		t.Errorf("expected no diff with threshold=1000; got %v", with.Changes)
+	}
+}
+
+func TestDiffThresholdPreservesLargeChange(t *testing.T) {
+	t.Parallel()
+
+	key := xdr.MustAddress("GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN")
+	left := xdr.AccountEntry{AccountId: key, Balance: xdr.Int64(10_000_000)}
+	right := xdr.AccountEntry{AccountId: key, Balance: xdr.Int64(20_000_000)} // delta = 10 000 000 stroops
+
+	leftB64 := mustMarshal(t, left)
+	rightB64 := mustMarshal(t, right)
+
+	// Threshold of 1000 is far below the actual delta — change must be reported.
+	result, err := lens.DiffBase64WithOptions(leftB64, rightB64, "AccountEntry", lens.DiffOptions{Threshold: 1000})
+	if err != nil {
+		t.Fatalf("DiffBase64WithOptions() error = %v", err)
+	}
+	if result.Equal() {
+		t.Fatal("expected diff to be preserved when delta exceeds threshold")
+	}
+}
