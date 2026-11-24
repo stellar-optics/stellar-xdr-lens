@@ -196,6 +196,8 @@ func EncodeJSONValue(typeName string, value any) (encoded string, err error) {
 
 // registryType resolves a type name case-insensitively.
 func registryType(typeName string) (xdrType, bool) {
+	registryMu.RLock()
+	defer registryMu.RUnlock()
 	for _, t := range registry {
 		if strings.EqualFold(t.name, typeName) {
 			return t, true

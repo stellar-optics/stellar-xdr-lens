@@ -55,6 +55,8 @@ type TypeInfo struct {
 // which keeps the index usable without decoding anything and keeps the
 // offline-first property: no fixtures or network access are involved.
 func RegistryIndex() []TypeInfo {
+	registryMu.RLock()
+	defer registryMu.RUnlock()
 	infos := make([]TypeInfo, 0, len(registry))
 	for _, t := range registry {
 		doc := typeDocs[t.name]
