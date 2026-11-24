@@ -144,6 +144,20 @@ lumen buying liabilities behind dest_full.`,
 				}
 			}
 
+			if metaVal != nil {
+				var resVal *lens.Value
+				if primary.Type == "TransactionResult" {
+					resVal = primary
+				} else {
+					resVal = resultVal
+				}
+				if resVal != nil {
+					if trap, err := lens.CorrelateTrapFromValues(resVal, metaVal); err == nil && trap.Trapped {
+						summary.DiagnosticTrace = trap.DiagnosticTrace
+					}
+				}
+			}
+
 			if asMarkdown {
 				if err := format.NewMarkdownFormatter().FormatSummary(stdout, summary); err != nil {
 					return err

@@ -46,6 +46,9 @@ type Summary struct {
 	Outcome *Outcome `json:"outcome,omitempty"`
 	// Warnings lists non-fatal diagnostic warnings discovered across operations.
 	Warnings []string `json:"warnings,omitempty"`
+	// DiagnosticTrace contains parsed Soroban events correlated by the CLI when
+	// transaction metadata is supplied.
+	DiagnosticTrace []DiagnosticDetail `json:"diagnosticTrace,omitempty"`
 }
 
 // OpSummary describes one operation.

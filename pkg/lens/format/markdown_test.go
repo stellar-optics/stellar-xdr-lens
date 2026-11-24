@@ -22,8 +22,9 @@ func TestMarkdownFormatterCanonicalFixtures(t *testing.T) {
 			name:   "tx_success.env",
 			result: "tx_success.res",
 			wantContain: []string{
+				"[STATUS: SUCCESS]",
 				"| Status | Succeeded |",
-				"| Operation | Source | Description | Result | Status | Hint |",
+				"| # | Operation | Source | Status | Details |",
 				"| Succeeded |",
 			},
 		},
@@ -31,6 +32,7 @@ func TestMarkdownFormatterCanonicalFixtures(t *testing.T) {
 			name:   "tx_failed.env",
 			result: "tx_failed.res",
 			wantContain: []string{
+				"[STATUS: FAILED]",
 				"| Status | Failed |",
 				"invoke_host_function_trapped",
 				"| Failed |",
@@ -63,14 +65,6 @@ func TestMarkdownFormatterCanonicalFixtures(t *testing.T) {
 			for _, want := range tc.wantContain {
 				if !strings.Contains(got, want) {
 					t.Errorf("Markdown output does not contain %q:\n%s", want, got)
-				}
-			}
-			for _, line := range strings.Split(strings.TrimSuffix(got, "\n"), "\n") {
-				if line == "" {
-					continue
-				}
-				if !strings.HasPrefix(line, "|") {
-					t.Errorf("expected every output line to be a Markdown table row, got %q", line)
 				}
 			}
 		})
@@ -143,6 +137,13 @@ func TestMarkdownFormatterFormatSummaryEscapesAndHandlesOptionalFields(t *testin
 				Summary: "inner result",
 			},
 		},
+		DiagnosticTrace: []lens.DiagnosticDetail{{
+			InSuccessfulCall: false,
+			Type:             "diagnostic",
+			ContractID:       "CABC123",
+			Topics:           []string{"panic"},
+			Data:             "balance | too low",
+		}},
 	}
 
 	var out bytes.Buffer
@@ -151,16 +152,21 @@ func TestMarkdownFormatterFormatSummaryEscapesAndHandlesOptionalFields(t *testin
 	}
 	got := out.String()
 	for _, want := range []string{
+		"[STATUS: FAILED] [FEE: 80 stroops]",
 		"| Summary | failed \\| transaction\\\\path<br>with a line break |",
 		"| Source | source\\|account |",
 		"| Fee bid (stroops) | 100 |",
 		"| Fee charged (stroops) | 80 |",
 		"| Memo | first line<br>second \\| line |",
 		"| Precondition | valid \\| condition |",
-		"| 0 | payment | op\\|source | send \\| funds<br>now | payment_underfunded: not enough \\| funds | Failed | add funds<br>first |",
-		"| 1 | manage_data | - | manage_data | success:  | Succeeded | - |",
-		"| 2 | unknown | - | - | - | Not reported | - |",
+		"| # | Operation | Source | Status | Details |",
+		"| 0 | payment | op\\|source | Failed | send \\| funds<br>now<br>payment_underfunded: not enough \\| funds<br>Hint: add funds<br>first |",
+		"| 1 | manage_data | - | Succeeded | manage_data<br>success:  |",
+		"| 2 | unknown | - | Not reported | - |",
 		"| Inner result | inner_failed: inner result |",
+		"<details>\n<summary>Diagnostic Trace</summary>",
+		"[failed] diagnostic event from CABC123 topics=[panic] data=\"balance | too low\"",
+		"</details>",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("Markdown output does not contain %q:\n%s", want, got)
@@ -176,7 +182,7 @@ func TestMarkdownFormatterWithoutOutcomeOrOperations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FormatSummary() error = %v", err)
 	}
-	if !strings.Contains(out.String(), "| - | No operations | - | - | - | - | - |") {
+	if !strings.Contains(out.String(), "| - | No operations | - | - | - |") {
 		t.Errorf("output should explicitly show the empty operation list:\n%s", out.String())
 	}
 
