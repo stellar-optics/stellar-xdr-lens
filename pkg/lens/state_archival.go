@@ -3,6 +3,7 @@ package lens
 import (
 	"fmt"
 	"reflect"
+	"strings"
 	"time"
 
 	"github.com/stellar/go-stellar-sdk/xdr"
@@ -108,4 +109,62 @@ func ttlKeyHashNote(n *Node, hash xdr.Hash) {
 	}
 	kh.Value = hash.HexString()
 	kh.Note = "state archival key hash: contract code or contract data"
+}
+
+// DiagnoseStateArchivalOp explains a failed extend_footprint_ttl or
+// restore_footprint operation. opType accepts the operation's snake_case name
+// or its XDR constant, and code accepts a short result code or its XDR
+// constant. It returns an empty string when the operation type is not a state
+// archival one, the code does not belong to it, or the code is a success.
+func DiagnoseStateArchivalOp(opType string, extendTo uint32, code string) string {
+	r, ok := stateArchivalReason(code)
+	if !ok || r.Success {
+		return ""
+	}
+	name := strings.ToLower(strings.NewReplacer("_", "", "-", "").Replace(strings.TrimSpace(opType)))
+	switch strings.TrimPrefix(name, "operationtype") {
+	case "extendfootprintttl":
+		if !strings.HasPrefix(r.Constant, "ExtendFootprintTtlResultCode") {
+			return ""
+		}
+		return reasonDiagnosisText(deepenExtendFootprintTtlFailure(xdr.ExtendFootprintTtlOp{ExtendTo: xdr.Uint32(extendTo)}, r))
+	case "restorefootprint":
+		if !strings.HasPrefix(r.Constant, "RestoreFootprintResultCode") {
+			return ""
+		}
+		return reasonDiagnosisText(deepenRestoreFootprintFailure(xdr.RestoreFootprintOp{}, r))
+	}
+	return ""
+}
+
+// stateArchivalReason resolves a short result code or XDR constant name.
+func stateArchivalReason(code string) (Reason, bool) {
+	if r, ok := ReasonByCode(code); ok {
+		return r, true
+	}
+	if _, ok := reasons[code]; ok {
+		return ExplainCode(code), true
+	}
+	return Reason{}, false
+}
+
+// extendFootprintMalformedDiagnosis lists what stellar-core validates before
+// applying extend_footprint_ttl. Archived entries are not among those checks:
+// they are skipped when the operation applies, as are entries that already live
+// long enough, so the hint separates live state from archived state.
+func extendFootprintMalformedDiagnosis(extendTo uint32) (summary, hint string) {
+	summary = fmt.Sprintf(
+		"The extend-footprint-TTL operation with extendTo=%d failed validation: extendTo must be below the network's maximum entry TTL, the read-write footprint must be empty, and the read-only footprint may list only contract data and contract code keys.",
+		extendTo)
+	hint = "Extending only affects live entries: extendTo must reach past an entry's current live-until ledger to change it, and archived entries are skipped until RestoreFootprint brings them back."
+	return summary, hint
+}
+
+// restoreFootprintMalformedDiagnosis lists what stellar-core validates before
+// applying restore_footprint. Entries that are still live are skipped when the
+// operation applies rather than rejected, so the hint points them at extending.
+func restoreFootprintMalformedDiagnosis() (summary, hint string) {
+	summary = "The restore-footprint operation failed validation: the read-only footprint must be empty and the read-write footprint may list only persistent contract data and contract code keys; temporary entries can never be restored."
+	hint = "Restoring only affects archived entries, meaning persistent entries past their live-until ledger. Entries that are still live are skipped, so keep those alive with ExtendFootprintTTL instead."
+	return summary, hint
 }

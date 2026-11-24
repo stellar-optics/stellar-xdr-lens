@@ -373,7 +373,15 @@ func deepenOperationFailure(source string, op xdr.Operation, r Reason) Reason {
 	switch {
 	case strings.HasPrefix(r.Constant, "SetOptionsResultCode"):
 		if body, ok := op.Body.GetSetOptionsOp(); ok {
-			return deepenSetOptionsFailure(operationEffectiveSource(source, op), body, r)
+			return deepenSetOptionsDiagnostics(operationEffectiveSource(source, op), body, r)
+		}
+	case strings.HasPrefix(r.Constant, "ChangeTrustResultCode"):
+		if body, ok := op.Body.GetChangeTrustOp(); ok {
+			return deepenChangeTrustFailure(body, r)
+		}
+	case strings.HasPrefix(r.Constant, "RevokeSponsorshipResultCode"):
+		if body, ok := op.Body.GetRevokeSponsorshipOp(); ok {
+			return deepenRevokeSponsorshipFailure(operationEffectiveSource(source, op), body, r)
 		}
 	case strings.HasPrefix(r.Constant, "LiquidityPoolDepositResultCode"):
 		if body, ok := op.Body.GetLiquidityPoolDepositOp(); ok {
@@ -415,6 +423,8 @@ func deepenExtendFootprintTtlFailure(o xdr.ExtendFootprintTtlOp, r Reason) Reaso
 		if o.ExtendTo == 0 {
 			r.Summary = "the operation asks to extend entries to 0 ledgers; a TTL extension must target a positive lifetime"
 			r.Hint = "Set extendTo to a positive number of ledgers and retry. A value of zero does not preserve any lifetime."
+		} else {
+			r.Summary, r.Hint = extendFootprintMalformedDiagnosis(uint32(o.ExtendTo))
 		}
 	case "ExtendFootprintTtlResultCodeExtendFootprintTtlResourceLimitExceeded":
 		r.Summary = "the operation tries to extend the TTL of more ledger entries than the transaction's declared resource budget allows"
@@ -428,6 +438,8 @@ func deepenExtendFootprintTtlFailure(o xdr.ExtendFootprintTtlOp, r Reason) Reaso
 
 func deepenRestoreFootprintFailure(o xdr.RestoreFootprintOp, r Reason) Reason {
 	switch r.Constant {
+	case "RestoreFootprintResultCodeRestoreFootprintMalformed":
+		r.Summary, r.Hint = restoreFootprintMalformedDiagnosis()
 	case "RestoreFootprintResultCodeRestoreFootprintResourceLimitExceeded":
 		r.Summary = "the operation tries to restore more archived entries than the transaction's declared resource budget allows"
 		r.Hint = "Reduce the footprint or split the restore into smaller operations so the declared resource limits fit the work."
@@ -1581,12 +1593,6 @@ func contextualizeChangeTrustFailure(op xdr.Operation, reason Reason) Reason {
 		}
 		reason.Summary = fmt.Sprintf("The trustline for %s cannot be created because the issuer account %s does not exist on-chain.", asset, issuer)
 		reason.Hint = fmt.Sprintf("Create or fund the issuer account %s on the target network before retrying with %s.", issuer, asset)
-	case "change_trust_invalid_limit":
-		reason.Summary = fmt.Sprintf("The new limit for %s is below the current liabilities or balance already held, so the trustline would shrink beneath existing obligations.", asset)
-		reason.Hint = "Increase the limit to at least the current liabilities or balance, or reduce the existing balance and liabilities before resubmitting."
-	case "change_trust_low_reserve":
-		reason.Summary = fmt.Sprintf("Opening or updating a trustline for %s would leave the account below the minimum XLM reserve required for another trustline.", asset)
-		reason.Hint = "Fund the source account with enough XLM to cover the network reserve requirement for this additional trustline, then retry."
 	}
 	return reason
 }
