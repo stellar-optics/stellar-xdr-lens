@@ -251,6 +251,36 @@ func stroopsToXLM(stroops int64) string {
 	return amount.StringFromInt64(stroops) + " XLM"
 }
 
+// NetBalanceMathNote returns a one-line summary of a BalanceDelta, e.g.
+// "GA… XLM: 10.0000000 XLM → 9.9999000 XLM (−100 stroops)".
+// When before is unknown it replaces the before value with "?".
+func NetBalanceMathNote(d BalanceDelta) string {
+	sign := "+"
+	if d.Delta < 0 {
+		sign = ""
+	}
+	before := "?"
+	if d.BeforeKnown {
+		before = formatNetBalance(d.Asset, d.Before)
+	}
+	after := formatNetBalance(d.Asset, d.After)
+	switch d.Asset {
+	case "XLM":
+		return fmt.Sprintf("%s %s: %s → %s (%s%d stroops)",
+			d.Holder, d.Asset, before, after, sign, d.Delta)
+	default:
+		return fmt.Sprintf("%s %s: %s → %s (%s%d)",
+			d.Holder, d.Asset, before, after, sign, d.Delta)
+	}
+}
+
+func formatNetBalance(asset string, v int64) string {
+	if asset == "XLM" {
+		return stroopsToXLM(v)
+	}
+	return fmt.Sprintf("%d", v)
+}
+
 func pluralEnding(n uint32) string {
 	if n == 1 {
 		return "y"
