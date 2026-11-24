@@ -107,6 +107,9 @@ func (f *MarkdownFormatter) FormatSummary(w io.Writer, s *lens.Summary) error {
 			if description == "" {
 				description = "-"
 			}
+			if op.Deprecation != "" {
+				description += " — " + op.Deprecation
+			}
 			source := op.Source
 			if source == "" {
 				source = "-"
