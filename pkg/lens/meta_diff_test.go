@@ -307,3 +307,121 @@ func TestDiffTransactionMetaBalancesCanonicalEntryFixture(t *testing.T) {
 		t.Errorf("canonical fixture delta = %+v", got.Changes)
 	}
 }
+
+// --- Issue #283: CalculateNetBalanceDeltas multi-account ---
+
+func TestCalculateNetBalanceDeltasMultiAccount(t *testing.T) {
+	t.Parallel()
+
+	// Use the same accountLedgerEntryWithID helper used by the rest of this file.
+	// ID byte 0x01 and 0x02 produce distinct key hashes → two separate accounts.
+	before1 := accountLedgerEntryWithID(1_000_000_000, 0x01)
+	after1 := accountLedgerEntryWithID(999_900_000, 0x01)
+	before2 := accountLedgerEntryWithID(500_000_000, 0x02)
+	after2 := accountLedgerEntryWithID(500_100_000, 0x02)
+
+	meta := xdr.TransactionMeta{V: 2, V2: &xdr.TransactionMetaV2{
+		TxChangesBefore: xdr.LedgerEntryChanges{
+			ledgerChange(xdr.LedgerEntryChangeTypeLedgerEntryState, before1),
+			ledgerChange(xdr.LedgerEntryChangeTypeLedgerEntryState, before2),
+		},
+		TxChangesAfter: xdr.LedgerEntryChanges{
+			ledgerChange(xdr.LedgerEntryChangeTypeLedgerEntryUpdated, after1),
+			ledgerChange(xdr.LedgerEntryChangeTypeLedgerEntryUpdated, after2),
+		},
+	}}
+
+	deltas, err := lens.CalculateNetBalanceDeltas(&meta)
+	if err != nil {
+		t.Fatalf("CalculateNetBalanceDeltas() error = %v", err)
+	}
+	if len(deltas) != 2 {
+		t.Fatalf("expected 2 deltas, got %d: %+v", len(deltas), deltas)
+	}
+	// Accumulate deltas; the two accounts should have opposite signs.
+	var totalDelta int64
+	for _, d := range deltas {
+		totalDelta += d.Delta
+	}
+	// Net should cancel out: −100 000 + 100 000 = 0.
+	if totalDelta != 0 {
+		t.Errorf("net delta across two accounts = %d; want 0", totalDelta)
+	}
+	// Individual deltas must be non-zero and opposite.
+	if deltas[0].Delta == 0 || deltas[1].Delta == 0 {
+		t.Errorf("unexpected zero delta: %+v", deltas)
+	}
+	if deltas[0].Delta+deltas[1].Delta != 0 {
+		t.Errorf("deltas should be equal and opposite: %d, %d", deltas[0].Delta, deltas[1].Delta)
+	}
+}
+
+func TestCalculateNetBalanceDeltasNilMeta(t *testing.T) {
+	t.Parallel()
+	_, err := lens.CalculateNetBalanceDeltas(nil)
+	if err == nil {
+		t.Fatal("expected error for nil meta")
+	}
+	if !errors.Is(err, lens.ErrInvalidArgument) {
+		t.Errorf("error = %v; want ErrInvalidArgument", err)
+	}
+}
+
+// --- Issue #287: DiffLedgerBatch aggregate stats ---
+
+func makeBatch(startSeq, endSeq uint32) *xdr.LedgerCloseMetaBatch {
+	var metas []xdr.LedgerCloseMeta
+	for seq := startSeq; seq <= endSeq; seq++ {
+		header := xdr.LedgerHeader{LedgerSeq: xdr.Uint32(seq)}
+		metas = append(metas, xdr.LedgerCloseMeta{
+			V: 0,
+			V0: &xdr.LedgerCloseMetaV0{
+				LedgerHeader: xdr.LedgerHeaderHistoryEntry{Header: header},
+			},
+		})
+	}
+	return &xdr.LedgerCloseMetaBatch{
+		StartSequence:    xdr.Uint32(startSeq),
+		EndSequence:      xdr.Uint32(endSeq),
+		LedgerCloseMetas: metas,
+	}
+}
+
+func TestDiffLedgerBatchLedgerCount(t *testing.T) {
+	t.Parallel()
+
+	left := makeBatch(100, 109) // 10 ledgers
+	right := makeBatch(200, 214) // 15 ledgers
+
+	summary := lens.DiffLedgerBatch(left, right)
+	if summary == nil {
+		t.Fatal("DiffLedgerBatch returned nil")
+	}
+	if summary.LeftLedgerCount != 10 {
+		t.Errorf("LeftLedgerCount = %d; want 10", summary.LeftLedgerCount)
+	}
+	if summary.RightLedgerCount != 15 {
+		t.Errorf("RightLedgerCount = %d; want 15", summary.RightLedgerCount)
+	}
+	if summary.LedgerCountDelta != 5 {
+		t.Errorf("LedgerCountDelta = %d; want 5", summary.LedgerCountDelta)
+	}
+	if uint32(summary.LeftStartSequence) != 100 {
+		t.Errorf("LeftStartSequence = %d; want 100", summary.LeftStartSequence)
+	}
+	if uint32(summary.RightEndSequence) != 214 {
+		t.Errorf("RightEndSequence = %d; want 214", summary.RightEndSequence)
+	}
+}
+
+func TestDiffLedgerBatchNilBatches(t *testing.T) {
+	t.Parallel()
+	summary := lens.DiffLedgerBatch(nil, nil)
+	if summary == nil {
+		t.Fatal("DiffLedgerBatch(nil,nil) returned nil")
+	}
+	if summary.LeftLedgerCount != 0 || summary.RightLedgerCount != 0 {
+		t.Errorf("unexpected non-zero counts for nil batches: %+v", summary)
+	}
+}
+
