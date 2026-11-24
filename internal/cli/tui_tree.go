@@ -23,29 +23,29 @@ type treeRow struct {
 
 // TUITree is an interactive expandable terminal tree explorer for XDR structures.
 type TUITree struct {
-	valueType     string
-	root          *lens.Node
-	expandedState map[*lens.Node]bool
-	rows          []*treeRow
-	cursor        int
-	scrollOffset  int
-	height        int
-	width         int
-	filter        string
-	searchMode    bool
-	searchBuffer  string
-	searchQuery   string
-	searchMatches   []int
-	searchIndex     int
-	showHelp        bool
-	helpVisible     bool
-	showInspector   bool
+	valueType        string
+	root             *lens.Node
+	expandedState    map[*lens.Node]bool
+	rows             []*treeRow
+	cursor           int
+	scrollOffset     int
+	height           int
+	width            int
+	filter           string
+	searchMode       bool
+	searchBuffer     string
+	searchQuery      string
+	searchMatches    []int
+	searchIndex      int
+	showHelp         bool
+	helpVisible      bool
+	showInspector    bool
 	inspectorVisible bool
-	palette         format.Palette
-	in            io.Reader
-	out           io.Writer
-	quit          bool
-	statusMsg     string
+	palette          format.Palette
+	in               io.Reader
+	out              io.Writer
+	quit             bool
+	statusMsg        string
 }
 
 // NewTUITree initializes an interactive tree explorer for value.
