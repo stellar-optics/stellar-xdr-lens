@@ -971,3 +971,138 @@ func TestJSONFormatterDeterministicMapKeys(t *testing.T) {
 		}
 	}
 }
+
+func TestHTMLFormatterRendersTreeAndSummary(t *testing.T) {
+	t.Parallel()
+
+	v := loadValue(t, "tx_success.env")
+	var buf bytes.Buffer
+	f := format.NewHTMLFormatter()
+	if err := f.Format(&buf, v); err != nil {
+		t.Fatalf("Format() error = %v", err)
+	}
+
+	out := buf.String()
+
+	// Must be valid, standalone HTML
+	for _, want := range []string{
+		"<!DOCTYPE html>",
+		"<html lang=\"en\">",
+		"<title>Stellar XDR Lens Report - TransactionEnvelope</title>",
+		"details class=\"xdr-node\" open",
+		"summary class=\"xdr-summary\"",
+		"<svg class=\"svg-chevron\"",
+		"<svg class=\"svg-icon icon-folder\"",
+		"id=\"theme-toggle\"",
+		"class=\"syn-key\"",
+		"class=\"syn-type\"",
+		"class=\"syn-addr",
+		"class=\"tree-container\"",
+		"Transaction Overview",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("HTML output missing expected marker %q", want)
+		}
+	}
+}
+
+func TestHTMLFormatterZeroExternalResources(t *testing.T) {
+	t.Parallel()
+
+	v := loadValue(t, "tx_success.env")
+	var buf bytes.Buffer
+	if err := format.NewHTMLFormatter().Format(&buf, v); err != nil {
+		t.Fatalf("Format() error = %v", err)
+	}
+
+	out := buf.String()
+
+	// Offline-first guarantee: zero external scripts, fonts or stylesheets
+	forbidden := []string{
+		"<link",
+		"<script src",
+		"@import",
+		"http://",
+		"https://",
+		"//cdn",
+		"//fonts",
+		"//unpkg",
+	}
+
+	for _, token := range forbidden {
+		if strings.Contains(strings.ToLower(out), token) {
+			t.Errorf("HTML output contains forbidden external reference marker %q (violates offline guarantee)", token)
+		}
+	}
+}
+
+func TestHTMLFormatterSummary(t *testing.T) {
+	t.Parallel()
+
+	env := loadValue(t, "tx_failed.env")
+	res := loadValue(t, "tx_failed.res")
+	s, err := lens.ExplainPair(env, res)
+	if err != nil {
+		t.Fatalf("ExplainPair error = %v", err)
+	}
+
+	var buf bytes.Buffer
+	f := format.NewHTMLFormatter(format.WithHTMLTitle("Test Failure Report"))
+	if err := f.FormatSummary(&buf, s); err != nil {
+		t.Fatalf("FormatSummary() error = %v", err)
+	}
+
+	out := buf.String()
+	for _, want := range []string{
+		"<!DOCTYPE html>",
+		"Test Failure Report",
+		"Transaction Overview",
+		"Outcome",
+		"Failed",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("FormatSummary output missing %q", want)
+		}
+	}
+}
+
+func TestHTMLFormatterFormatAll(t *testing.T) {
+	t.Parallel()
+
+	v1 := loadValue(t, "tx_success.env")
+	v2 := loadValue(t, "tx_failed.env")
+
+	var buf bytes.Buffer
+	f := format.NewHTMLFormatter()
+	if err := f.FormatAll(&buf, []*lens.Value{v1, v2}); err != nil {
+		t.Fatalf("FormatAll() error = %v", err)
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, "Value 1:") || !strings.Contains(out, "Value 2:") {
+		t.Errorf("FormatAll output missing multi-value headers:\n%s", out)
+	}
+}
+
+func TestHTMLFormatterNilValues(t *testing.T) {
+	t.Parallel()
+
+	f := format.NewHTMLFormatter()
+	var buf bytes.Buffer
+
+	if err := f.Format(&buf, nil); err == nil {
+		t.Error("Format(nil) error = nil, want error")
+	}
+
+	if err := f.FormatAll(&buf, nil); err == nil {
+		t.Error("FormatAll(nil) error = nil, want error")
+	}
+
+	if err := f.FormatAll(&buf, []*lens.Value{nil}); err == nil {
+		t.Error("FormatAll([nil]) error = nil, want error")
+	}
+
+	if err := f.FormatSummary(&buf, nil); err == nil {
+		t.Error("FormatSummary(nil) error = nil, want error")
+	}
+}
