@@ -352,15 +352,20 @@ reviewer can consume. All three are deterministic and make no network calls.
   `patch`-style consumer expects, so a structural change can be attached to a
   review verbatim. Identical values produce no output, matching diff(1).
 - `format/json_patch.go` emits an RFC 6902 JSON Patch: an array of `add`,
-  `remove` and `replace` operations addressed by RFC 6901 JSON Pointers
-  relative to the decoded value. When the two decoded values are supplied with
-  `WithJSONPatchSources`, each operation carries the full JSON subtree from the
-  tree, so the patch is directly applicable; without them the scalar recorded
-  on the change is used.
+  `remove`, `replace` and `move` operations addressed by RFC 6901 JSON
+  Pointers relative to the decoded value. A reordered list element becomes a
+  `move` whose `from` names its old index and whose `path` names its new one,
+  rather than a `remove`/`add` pair. When the two decoded values are supplied
+  with `WithJSONPatchSources`, each non-move operation carries the full JSON
+  subtree from the tree, so the patch is directly applicable; without them the
+  scalar recorded on the change is used.
 - `format/side_by_side.go` emits a colourised two-column view, pairing each
-  removed line with the added line that replaced it. Columns are padded before
-  colour is applied, so ANSI escapes never disturb the layout, and the palette
-  comes from the same environment-selected theme as the other terminal output.
+  removed line with the added line that replaced it. A replaced line isolates
+  the run of characters between the longest common prefix and suffix and
+  layers the `AddInline`/`RemoveInline` palette styles over it, so only the
+  part that moved is emphasised. Columns are padded before colour is applied,
+  so ANSI escapes never disturb the layout, and the palette comes from the
+  same environment-selected theme as the other terminal output.
 
 `format/linediff.go` provides the shared engine: it flattens a decoded value
 into a deterministic one-line-per-node stream and aligns two streams with an
