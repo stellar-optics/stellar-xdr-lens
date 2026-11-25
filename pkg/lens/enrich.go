@@ -200,6 +200,8 @@ var amountFields = map[string]bool{
 	"Selling":                         true,
 	"NewBaseFee":                      true,
 	"NewBaseReserve":                  true,
+	"AmountSold":                      true,
+	"AmountBought":                    true,
 }
 
 // enrichAmountField applies stroop formatting when a field is known to carry

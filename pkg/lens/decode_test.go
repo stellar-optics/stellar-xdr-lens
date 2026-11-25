@@ -297,6 +297,91 @@ func truncate(s string) string {
 	return s[:32] + "..."
 }
 
+// TestDecodeNewRegistryTypes verifies that all types added for issues
+// #269, #272, #274, #276 decode successfully and are auto-detected.
+func TestDecodeNewRegistryTypes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		fixture  string
+		wantType string
+	}{
+		{"ConfigSettingId", "config_setting_id", "ConfigSettingId"},
+		{"OperationBody", "operation_body", "OperationBody"},
+		{"ClaimOfferAtom", "claim_offer_atom", "ClaimOfferAtom"},
+		{"ClaimOfferAtomV0", "claim_offer_atom_v0", "ClaimOfferAtomV0"},
+		{"LedgerEntryChange created", "ledger_entry_change_created", "LedgerEntryChange"},
+		{"LedgerEntryChange updated", "ledger_entry_change_updated", "LedgerEntryChange"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := lens.DecodeAs(loadFixture(t, tc.fixture), tc.wantType)
+			if err != nil {
+				t.Fatalf("DecodeAs(%q) error = %v", tc.wantType, err)
+			}
+			if got.Type != tc.wantType {
+				t.Errorf("Type = %q, want %q", got.Type, tc.wantType)
+			}
+		})
+	}
+}
+
+// TestConfigSettingIdEnrichment checks that a ConfigSettingId value is
+// rendered as a human-readable string rather than a raw integer.
+func TestConfigSettingIdEnrichment(t *testing.T) {
+	t.Parallel()
+
+	v, err := lens.DecodeAs(loadFixture(t, "config_setting_id"), "ConfigSettingId")
+	if err != nil {
+		t.Fatalf("DecodeAs() error = %v", err)
+	}
+	val, ok := v.Node.Value.(string)
+	if !ok {
+		t.Fatalf("Value is %T (%v), want a string", v.Node.Value, v.Node.Value)
+	}
+	if !strings.Contains(val, "ConfigSettingId") {
+		t.Errorf("Value = %q, want a string containing 'ConfigSettingId'", val)
+	}
+}
+
+// TestClaimOfferAtomNote checks the nodeHook sets a Note with the seller address.
+func TestClaimOfferAtomNote(t *testing.T) {
+	t.Parallel()
+
+	v, err := lens.DecodeAs(loadFixture(t, "claim_offer_atom"), "ClaimOfferAtom")
+	if err != nil {
+		t.Fatalf("DecodeAs() error = %v", err)
+	}
+	if v.Node.Note == "" {
+		t.Fatal("ClaimOfferAtom node has no Note; expected seller and offer info")
+	}
+	if !strings.Contains(v.Node.Note, "seller") {
+		t.Errorf("Note = %q, want it to contain 'seller'", v.Node.Note)
+	}
+}
+
+// TestLedgerEntryChangeUnionArms checks that created and updated arms decode.
+func TestLedgerEntryChangeUnionArms(t *testing.T) {
+	t.Parallel()
+
+	for _, fixture := range []string{"ledger_entry_change_created", "ledger_entry_change_updated"} {
+		t.Run(fixture, func(t *testing.T) {
+			t.Parallel()
+			v, err := lens.DecodeAs(loadFixture(t, fixture), "LedgerEntryChange")
+			if err != nil {
+				t.Fatalf("DecodeAs() error = %v", err)
+			}
+			if v.Node == nil || len(v.Node.Children) == 0 {
+				t.Error("expected a non-empty tree for LedgerEntryChange")
+			}
+		})
+	}
+}
+
 func wrapAt(s string, n int) string {
 	var b strings.Builder
 	for i := 0; i < len(s); i += n {
