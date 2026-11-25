@@ -711,16 +711,27 @@ func CoerceChangeTrustAsset(v any) (xdr.ChangeTrustAsset, error) {
 
 	// Check if liquidity pool
 	if m, ok := v.(map[string]any); ok {
-		if typ, ok := m["type"].(string); ok && strings.EqualFold(typ, "pool") {
+		typ, _ := m["type"].(string)
+		typLower := strings.ToLower(strings.TrimSpace(typ))
+		isPool := typLower == "pool" || typLower == "pool_share" || typLower == "liquidity_pool" || typLower == "liquidity_pool_share"
+		if isPool || m["asset_a"] != nil || m["assetA"] != nil || m["pool_id"] != nil || m["poolId"] != nil {
 			poolIDVal, ok := m["pool_id"]
 			if !ok {
 				poolIDVal = m["poolId"]
+			}
+			assetAVal := m["asset_a"]
+			if assetAVal == nil {
+				assetAVal = m["assetA"]
+			}
+			assetBVal := m["asset_b"]
+			if assetBVal == nil {
+				assetBVal = m["assetB"]
 			}
 			if poolIDVal != nil {
 				if _, err := CoerceHash(poolIDVal); err != nil {
 					return cta, err
 				}
-				if m["asset_a"] == nil && m["asset_b"] == nil {
+				if assetAVal == nil && assetBVal == nil {
 					return xdr.ChangeTrustAsset{
 						Type: xdr.AssetTypeAssetTypePoolShare,
 						LiquidityPool: &xdr.LiquidityPoolParameters{
@@ -730,15 +741,15 @@ func CoerceChangeTrustAsset(v any) (xdr.ChangeTrustAsset, error) {
 					}, nil
 				}
 			}
-			assetA, errA := CoerceAsset(m["asset_a"])
+			assetA, errA := CoerceAsset(assetAVal)
 			if errA != nil {
 				return cta, errA
 			}
-			assetB, errB := CoerceAsset(m["asset_b"])
+			assetB, errB := CoerceAsset(assetBVal)
 			if errB != nil {
 				return cta, errB
 			}
-			fee := int32(0)
+			fee := int32(xdr.LiquidityPoolFeeV18)
 			if fVal, ok := m["fee"]; ok && fVal != nil {
 				feeNum, errF := CoerceInt32(fVal)
 				if errF != nil {
@@ -763,89 +774,7 @@ func CoerceChangeTrustAsset(v any) (xdr.ChangeTrustAsset, error) {
 	return cta, err
 }
 
-// CoercePrice converts "n/d", float, or map into an xdr.Price.
+// CoercePrice converts "n/d", float, or map into a canonical xdr.Price.
 func CoercePrice(v any) (xdr.Price, error) {
-	var price xdr.Price
-	if v == nil {
-		return price, fmt.Errorf("%w: cannot coerce nil to Price", ErrCoercionFailed)
-	}
-
-	switch val := v.(type) {
-	case xdr.Price:
-		return val, nil
-	case *xdr.Price:
-		if val == nil {
-			return price, fmt.Errorf("%w: nil *xdr.Price", ErrCoercionFailed)
-		}
-		return *val, nil
-	case string:
-		s := cleanNumberString(val)
-		if strings.Contains(s, "/") {
-			parts := strings.Split(s, "/")
-			if len(parts) == 2 {
-				n, err1 := CoerceInt32(parts[0])
-				d, err2 := CoerceInt32(parts[1])
-				if err1 == nil && err2 == nil {
-					if d == 0 {
-						return price, fmt.Errorf("%w: division by zero in price", ErrCoercionFailed)
-					}
-					return xdr.Price{N: xdr.Int32(n), D: xdr.Int32(d)}, nil
-				}
-			}
-		}
-		// Try float
-		f, err := strconv.ParseFloat(s, 64)
-		if err != nil {
-			return price, fmt.Errorf("%w: invalid price string %q: %w", ErrCoercionFailed, val, err)
-		}
-		return floatToPrice(f)
-	case float32:
-		return floatToPrice(float64(val))
-	case float64:
-		return floatToPrice(val)
-	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
-		n, err := CoerceInt32(val)
-		if err != nil {
-			return price, err
-		}
-		return xdr.Price{N: xdr.Int32(n), D: 1}, nil
-	case map[string]any:
-		nVal, ok1 := val["n"]
-		dVal, ok2 := val["d"]
-		if !ok1 || !ok2 {
-			nVal, ok1 = val["numerator"]
-			dVal, ok2 = val["denominator"]
-		}
-		if !ok1 || !ok2 {
-			return price, fmt.Errorf("%w: missing numerator/n or denominator/d in price map", ErrCoercionFailed)
-		}
-		n, err1 := CoerceInt32(nVal)
-		d, err2 := CoerceInt32(dVal)
-		if err1 != nil || err2 != nil {
-			return price, fmt.Errorf("%w: invalid numerator or denominator in price", ErrCoercionFailed)
-		}
-		if d == 0 {
-			return price, fmt.Errorf("%w: denominator cannot be zero", ErrCoercionFailed)
-		}
-		return xdr.Price{N: xdr.Int32(n), D: xdr.Int32(d)}, nil
-	default:
-		return price, fmt.Errorf("%w: unsupported type %T for Price", ErrCoercionFailed, v)
-	}
-}
-
-func floatToPrice(f float64) (xdr.Price, error) {
-	if f <= 0 || math.IsNaN(f) || math.IsInf(f, 0) {
-		return xdr.Price{}, fmt.Errorf("%w: price must be a positive finite number, got %v", ErrCoercionFailed, f)
-	}
-	// Approximate as fraction with max denominator 1,000,000
-	d := int32(1)
-	for d <= 100000 {
-		n := math.Round(f * float64(d))
-		if math.Abs(n/float64(d)-f) < 1e-7 && n <= math.MaxInt32 {
-			return xdr.Price{N: xdr.Int32(n), D: xdr.Int32(d)}, nil
-		}
-		d *= 10
-	}
-	n := int32(math.Round(f * 1000000))
-	return xdr.Price{N: xdr.Int32(n), D: 1000000}, nil
+	return ParsePriceFraction(v)
 }

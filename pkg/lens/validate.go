@@ -4,10 +4,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
+	"math/big"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/stellar/go-stellar-sdk/strkey"
+	"github.com/stellar/go-stellar-sdk/xdr"
 )
 
 // ErrValidationFailed indicates that input JSON does not conform to the expected schema.
@@ -320,6 +324,18 @@ func ValidatePositiveAmount(v any, path string) error {
 	return nil
 }
 
+// ValidateNonNegativeAmount verifies an amount is >= 0.
+func ValidateNonNegativeAmount(v any, path string) error {
+	n, err := CoerceAmount(v)
+	if err != nil {
+		return err
+	}
+	if n < 0 {
+		return fmt.Errorf("amount %d must be greater than or equal to 0", n)
+	}
+	return nil
+}
+
 // StrictTxSpecSchema returns a strict validation schema for TransactionEnvelope JSON templates.
 func StrictTxSpecSchema() *SchemaRule {
 	return &SchemaRule{
@@ -450,6 +466,16 @@ func OperationSpecSchema() *SchemaRule {
 			"offerId":         "offer_id",
 			"dataName":        "data_name",
 			"dataValue":       "data_value",
+			"name":            "data_name",
+			"value":           "data_value",
+			"inflationDest":   "inflation_dest",
+			"setFlags":        "set_flags",
+			"clearFlags":      "clear_flags",
+			"masterWeight":    "master_weight",
+			"lowThreshold":    "low_threshold",
+			"medThreshold":    "med_threshold",
+			"highThreshold":   "high_threshold",
+			"homeDomain":      "home_domain",
 			"functionName":    "function_name",
 			"contractId":      "contract_id",
 		},
@@ -465,6 +491,256 @@ func OperationSpecSchema() *SchemaRule {
 		},
 		Custom: validateOperationDetails,
 	}
+}
+
+// ChangeTrustOpSchema returns the validation schema for ChangeTrust operations.
+func ChangeTrustOpSchema() *SchemaRule {
+	return &SchemaRule{
+		Type: "object",
+		Aliases: map[string]string{
+			"sourceAccount": "source_account",
+			"source":        "source_account",
+		},
+		Properties: map[string]*SchemaRule{
+			"type": {
+				Type:     "string",
+				Required: true,
+				Enum:     []any{"change_trust"},
+			},
+			"source_account": {
+				Type:   "string",
+				Custom: ValidateAccountAddress,
+			},
+			"line": {
+				Type:   "any",
+				Custom: ValidateChangeTrustLine,
+			},
+			"asset": {
+				Type:   "any",
+				Custom: ValidateChangeTrustLine,
+			},
+			"limit": {
+				Type:   "any",
+				Custom: ValidateNonNegativeAmount,
+			},
+		},
+		Custom: func(val any, path string) error {
+			m, ok := val.(map[string]any)
+			if !ok {
+				return nil
+			}
+			if m["line"] == nil && m["asset"] == nil {
+				return fmt.Errorf("change_trust operation requires 'line' or 'asset'")
+			}
+			return nil
+		},
+	}
+}
+
+// ValidateChangeTrustLine validates an asset or liquidity pool share specification for ChangeTrust.
+func ValidateChangeTrustLine(v any, path string) error {
+	if v == nil {
+		return fmt.Errorf("change_trust line/asset cannot be nil")
+	}
+	if _, err := CoerceChangeTrustAsset(v); err != nil {
+		return err
+	}
+	return nil
+}
+
+// ParsePriceFraction parses a fraction string ("3/2"), decimal string ("1.5"),
+// float, integer, or {n, d} object into a canonical xdr.Price.
+func ParsePriceFraction(v any) (xdr.Price, error) {
+	var zero xdr.Price
+	if v == nil {
+		return zero, fmt.Errorf("%w: cannot coerce nil to Price", ErrCoercionFailed)
+	}
+
+	switch val := v.(type) {
+	case xdr.Price:
+		if val.N <= 0 || val.D <= 0 {
+			return zero, fmt.Errorf("%w: price numerator and denominator must be positive, got %d/%d", ErrCoercionFailed, val.N, val.D)
+		}
+		return canonicalPrice(int64(val.N), int64(val.D))
+	case *xdr.Price:
+		if val == nil {
+			return zero, fmt.Errorf("%w: nil *xdr.Price", ErrCoercionFailed)
+		}
+		return ParsePriceFraction(*val)
+	case json.Number:
+		return ParsePriceFraction(string(val))
+	case string:
+		s := cleanNumberString(val)
+		if s == "" {
+			return zero, fmt.Errorf("%w: empty price string", ErrCoercionFailed)
+		}
+		if strings.Contains(s, "/") {
+			parts := strings.Split(s, "/")
+			if len(parts) != 2 {
+				return zero, fmt.Errorf("%w: invalid price fraction %q", ErrCoercionFailed, val)
+			}
+			n, err1 := CoerceInt64(parts[0])
+			d, err2 := CoerceInt64(parts[1])
+			if err1 != nil || err2 != nil {
+				return zero, fmt.Errorf("%w: invalid price fraction %q", ErrCoercionFailed, val)
+			}
+			if d == 0 {
+				return zero, fmt.Errorf("%w: division by zero in price", ErrCoercionFailed)
+			}
+			return canonicalPrice(n, d)
+		}
+		if p, ok, err := decimalStringToPrice(s); ok {
+			return p, err
+		}
+		f, err := strconv.ParseFloat(s, 64)
+		if err != nil {
+			return zero, fmt.Errorf("%w: invalid price string %q: %w", ErrCoercionFailed, val, err)
+		}
+		return floatToCanonicalPrice(f)
+	case float32:
+		return floatToCanonicalPrice(float64(val))
+	case float64:
+		return floatToCanonicalPrice(val)
+	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
+		n, err := CoerceInt64(val)
+		if err != nil {
+			return zero, err
+		}
+		return canonicalPrice(n, 1)
+	case map[string]any:
+		nVal, ok1 := val["n"]
+		dVal, ok2 := val["d"]
+		if !ok1 || !ok2 {
+			nVal, ok1 = val["numerator"]
+			dVal, ok2 = val["denominator"]
+		}
+		if !ok1 || !ok2 {
+			return zero, fmt.Errorf("%w: missing numerator/n or denominator/d in price map", ErrCoercionFailed)
+		}
+		n, err1 := CoerceInt64(nVal)
+		d, err2 := CoerceInt64(dVal)
+		if err1 != nil || err2 != nil {
+			return zero, fmt.Errorf("%w: invalid numerator or denominator in price", ErrCoercionFailed)
+		}
+		if d == 0 {
+			return zero, fmt.Errorf("%w: denominator cannot be zero", ErrCoercionFailed)
+		}
+		return canonicalPrice(n, d)
+	default:
+		return zero, fmt.Errorf("%w: unsupported type %T for Price", ErrCoercionFailed, v)
+	}
+}
+
+func decimalStringToPrice(s string) (xdr.Price, bool, error) {
+	if strings.ContainsAny(s, "eE") {
+		return xdr.Price{}, false, nil
+	}
+	parts := strings.Split(s, ".")
+	if len(parts) > 2 {
+		return xdr.Price{}, true, fmt.Errorf("%w: invalid decimal price %q", ErrCoercionFailed, s)
+	}
+	if len(parts) == 1 {
+		n, err := CoerceInt64(parts[0])
+		if err != nil {
+			return xdr.Price{}, false, nil
+		}
+		p, err := canonicalPrice(n, 1)
+		return p, true, err
+	}
+	intPart := parts[0]
+	fracPart := strings.TrimRight(parts[1], "0")
+	if intPart == "" {
+		intPart = "0"
+	}
+	if strings.HasPrefix(intPart, "-") {
+		return xdr.Price{}, true, fmt.Errorf("%w: price must be positive, got %q", ErrCoercionFailed, s)
+	}
+	intPart = strings.TrimPrefix(intPart, "+")
+	if fracPart == "" {
+		n, err := CoerceInt64(intPart)
+		if err != nil {
+			return xdr.Price{}, false, nil
+		}
+		p, err := canonicalPrice(n, 1)
+		return p, true, err
+	}
+	digits := intPart + fracPart
+	numBig, ok := new(big.Int).SetString(digits, 10)
+	if !ok {
+		return xdr.Price{}, false, nil
+	}
+	if numBig.Sign() <= 0 {
+		return xdr.Price{}, true, fmt.Errorf("%w: price must be positive, got %q", ErrCoercionFailed, s)
+	}
+	denBig := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(len(fracPart))), nil)
+	g := new(big.Int).GCD(nil, nil, numBig, denBig)
+	numBig.Div(numBig, g)
+	denBig.Div(denBig, g)
+	max32 := big.NewInt(math.MaxInt32)
+	if numBig.Cmp(max32) <= 0 && denBig.Cmp(max32) <= 0 {
+		return xdr.Price{N: xdr.Int32(numBig.Int64()), D: xdr.Int32(denBig.Int64())}, true, nil
+	}
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return xdr.Price{}, true, fmt.Errorf("%w: invalid decimal price %q: %w", ErrCoercionFailed, s, err)
+	}
+	p, err := floatToCanonicalPrice(f)
+	return p, true, err
+}
+
+func canonicalPrice(n, d int64) (xdr.Price, error) {
+	if d == 0 {
+		return xdr.Price{}, fmt.Errorf("%w: division by zero in price", ErrCoercionFailed)
+	}
+	if d < 0 {
+		n = -n
+		d = -d
+	}
+	if n <= 0 {
+		return xdr.Price{}, fmt.Errorf("%w: price must be positive, got %d/%d", ErrCoercionFailed, n, d)
+	}
+	g := gcdInt64(n, d)
+	n /= g
+	d /= g
+	if n > math.MaxInt32 || d > math.MaxInt32 {
+		return xdr.Price{}, fmt.Errorf("%w: price %d/%d exceeds int32 bounds", ErrCoercionFailed, n, d)
+	}
+	return xdr.Price{N: xdr.Int32(n), D: xdr.Int32(d)}, nil
+}
+
+func floatToCanonicalPrice(f float64) (xdr.Price, error) {
+	if f <= 0 || math.IsNaN(f) || math.IsInf(f, 0) {
+		return xdr.Price{}, fmt.Errorf("%w: price must be a positive finite number, got %v", ErrCoercionFailed, f)
+	}
+	d := int64(1)
+	for d <= 1000000 {
+		n := math.Round(f * float64(d))
+		if n > 0 && math.Abs(n/float64(d)-f) < 1e-9 && n <= math.MaxInt32 {
+			return canonicalPrice(int64(n), d)
+		}
+		d *= 10
+	}
+	n := int64(math.Round(f * 1000000))
+	if n <= 0 {
+		return xdr.Price{}, fmt.Errorf("%w: price underflows int32 representation: %v", ErrCoercionFailed, f)
+	}
+	return canonicalPrice(n, 1000000)
+}
+
+func gcdInt64(a, b int64) int64 {
+	if a < 0 {
+		a = -a
+	}
+	if b < 0 {
+		b = -b
+	}
+	for b != 0 {
+		a, b = b, a%b
+	}
+	if a == 0 {
+		return 1
+	}
+	return a
 }
 
 func validateOperationDetails(val any, path string) error {
@@ -496,18 +772,38 @@ func validateOperationDetails(val any, path string) error {
 			}
 		}
 	case "change_trust":
-		if _, ok := m["line"]; !ok {
-			if _, ok := m["asset"]; !ok {
-				return fmt.Errorf("change_trust operation requires 'line' or 'asset'")
+		lineVal := m["line"]
+		if lineVal == nil {
+			lineVal = m["asset"]
+		}
+		if lineVal == nil {
+			return fmt.Errorf("change_trust operation requires 'line' or 'asset'")
+		}
+		if err := ValidateChangeTrustLine(lineVal, joinPath(path, "line")); err != nil {
+			return err
+		}
+		if lim, exists := m["limit"]; exists && lim != nil {
+			if err := ValidateNonNegativeAmount(lim, joinPath(path, "limit")); err != nil {
+				return err
 			}
 		}
 	case "manage_data":
-		if _, ok := m["data_name"]; !ok {
-			if _, ok := m["dataName"]; !ok {
-				if _, ok := m["name"]; !ok {
-					return fmt.Errorf("manage_data operation requires 'data_name'")
-				}
-			}
+		nameVal := m["data_name"]
+		if nameVal == nil {
+			nameVal = m["dataName"]
+		}
+		if nameVal == nil {
+			nameVal = m["name"]
+		}
+		if nameVal == nil {
+			return fmt.Errorf("manage_data operation requires 'data_name'")
+		}
+		nameStr, ok := nameVal.(string)
+		if !ok {
+			return fmt.Errorf("manage_data 'name' must be a string, got %T", nameVal)
+		}
+		if err := ValidateDataName(nameStr); err != nil {
+			return err
 		}
 	case "bump_sequence":
 		if _, ok := m["bump_to"]; !ok {
@@ -526,11 +822,25 @@ func validateOperationDetails(val any, path string) error {
 		if _, ok := m["buying"]; !ok {
 			return fmt.Errorf("manage_buy_offer operation requires 'buying'")
 		}
-		if _, ok := m["buy_amount"]; !ok && m["buyAmount"] == nil {
+		buyAmt := m["buy_amount"]
+		if buyAmt == nil {
+			buyAmt = m["buyAmount"]
+		}
+		if buyAmt == nil {
+			buyAmt = m["amount"]
+		}
+		if buyAmt == nil {
 			return fmt.Errorf("manage_buy_offer operation requires 'buy_amount'")
 		}
-		if _, ok := m["price"]; !ok {
+		if err := ValidateNonNegativeAmount(buyAmt, joinPath(path, "buy_amount")); err != nil {
+			return err
+		}
+		priceVal, ok := m["price"]
+		if !ok || priceVal == nil {
 			return fmt.Errorf("manage_buy_offer operation requires 'price'")
+		}
+		if _, err := ParsePriceFraction(priceVal); err != nil {
+			return err
 		}
 	case "manage_sell_offer":
 		if _, ok := m["selling"]; !ok {
@@ -539,11 +849,19 @@ func validateOperationDetails(val any, path string) error {
 		if _, ok := m["buying"]; !ok {
 			return fmt.Errorf("manage_sell_offer operation requires 'buying'")
 		}
-		if _, ok := m["amount"]; !ok {
+		amtVal, ok := m["amount"]
+		if !ok || amtVal == nil {
 			return fmt.Errorf("manage_sell_offer operation requires 'amount'")
 		}
-		if _, ok := m["price"]; !ok {
+		if err := ValidateNonNegativeAmount(amtVal, joinPath(path, "amount")); err != nil {
+			return err
+		}
+		priceVal, ok := m["price"]
+		if !ok || priceVal == nil {
 			return fmt.Errorf("manage_sell_offer operation requires 'price'")
+		}
+		if _, err := ParsePriceFraction(priceVal); err != nil {
+			return err
 		}
 	case "create_passive_sell_offer":
 		if _, ok := m["selling"]; !ok {
@@ -555,8 +873,12 @@ func validateOperationDetails(val any, path string) error {
 		if _, ok := m["amount"]; !ok {
 			return fmt.Errorf("create_passive_sell_offer operation requires 'amount'")
 		}
-		if _, ok := m["price"]; !ok {
+		priceVal, ok := m["price"]
+		if !ok || priceVal == nil {
 			return fmt.Errorf("create_passive_sell_offer operation requires 'price'")
+		}
+		if _, err := ParsePriceFraction(priceVal); err != nil {
+			return err
 		}
 	case "path_payment_strict_receive":
 		if _, ok := m["destination"]; !ok {
@@ -579,7 +901,37 @@ func validateOperationDetails(val any, path string) error {
 			return fmt.Errorf("path_payment_strict_send operation requires 'dest_min'")
 		}
 	case "set_options":
-		// All fields are optional in set_options
+		if inf := firstPresent(m, "inflation_dest", "inflationDest"); inf != nil {
+			if err := ValidateAccountAddress(inf, joinPath(path, "inflation_dest")); err != nil {
+				return err
+			}
+		}
+		for _, pair := range [][2]string{
+			{"master_weight", "masterWeight"},
+			{"low_threshold", "lowThreshold"},
+			{"med_threshold", "medThreshold"},
+			{"high_threshold", "highThreshold"},
+		} {
+			if v := firstPresent(m, pair[0], pair[1]); v != nil {
+				if err := ValidateThresholdRange(v, joinPath(path, pair[0])); err != nil {
+					return err
+				}
+			}
+		}
+		if hd := firstPresent(m, "home_domain", "homeDomain"); hd != nil {
+			s, ok := hd.(string)
+			if !ok {
+				return fmt.Errorf("home_domain must be string, got %T", hd)
+			}
+			if len(s) > 32 {
+				return fmt.Errorf("home_domain exceeds 32 bytes (%d)", len(s))
+			}
+		}
+		if sig, ok := m["signer"]; ok && sig != nil {
+			if _, err := ParseSigner(sig); err != nil {
+				return err
+			}
+		}
 	case "set_trust_line_flags":
 		if _, ok := m["trustor"]; !ok {
 			return fmt.Errorf("set_trust_line_flags operation requires 'trustor'")

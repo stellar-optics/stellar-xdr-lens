@@ -1,7 +1,10 @@
 package lens
 
 import (
+	"encoding/base64"
+	"math"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/stellar/go-stellar-sdk/strkey"
@@ -599,5 +602,540 @@ func TestBuildTransactionV0AndFeeBumpErrors(t *testing.T) {
 	}
 	if _, err := BuildTransactionEnvelope(s); err == nil {
 		t.Errorf("expected error on invalid signature hex")
+	}
+}
+
+func TestBuildManageDataOp(t *testing.T) {
+	validAccount := "GA2JRQOF6EA3HQWDCEDBPPMLYPJCFLDDGYZLEQGMS5SOBQIB3BAFHVAW"
+
+	// Set UTF-8 string value via JSON template
+	setJSON := []byte(`{
+		"source_account": "` + validAccount + `",
+		"fee": 100,
+		"sequence": 1,
+		"operations": [
+			{"type": "manage_data", "name": "config", "value": "enabled"}
+		]
+	}`)
+	env, err := BuildTransactionEnvelopeFromJSON(setJSON)
+	if err != nil {
+		t.Fatalf("manage_data set failed: %v", err)
+	}
+	md := env.V1.Tx.Operations[0].Body.ManageDataOp
+	if md == nil || string(md.DataName) != "config" {
+		t.Fatalf("unexpected DataName: %+v", md)
+	}
+	if md.DataValue == nil || string(*md.DataValue) != "enabled" {
+		t.Fatalf("unexpected DataValue: %v", md.DataValue)
+	}
+
+	// Delete entry via null value
+	delJSON := []byte(`{
+		"source_account": "` + validAccount + `",
+		"fee": 100,
+		"sequence": 2,
+		"operations": [
+			{"type": "manage_data", "name": "config", "value": null}
+		]
+	}`)
+	envDel, err := BuildTransactionEnvelopeFromJSON(delJSON)
+	if err != nil {
+		t.Fatalf("manage_data delete failed: %v", err)
+	}
+	mdDel := envDel.V1.Tx.Operations[0].Body.ManageDataOp
+	if mdDel == nil || string(mdDel.DataName) != "config" || mdDel.DataValue != nil {
+		t.Fatalf("expected DataValue=nil for deletion, got %+v", mdDel)
+	}
+
+	// Base64 object value
+	rawBin := []byte{0x00, 0x01, 0xfe, 0xff}
+	b64Str := base64.StdEncoding.EncodeToString(rawBin)
+	mdB64, err := buildManageDataOp(map[string]any{
+		"name":  "bin_key",
+		"value": map[string]any{"base64": b64Str},
+	})
+	if err != nil {
+		t.Fatalf("manage_data base64 failed: %v", err)
+	}
+	if mdB64.DataValue == nil || !bytes.Equal(*mdB64.DataValue, rawBin) {
+		t.Fatalf("expected binary %x, got %v", rawBin, mdB64.DataValue)
+	}
+
+	// Name > 64 bytes error
+	if _, err := buildManageDataOp(map[string]any{
+		"name":  strings.Repeat("a", 65),
+		"value": "ok",
+	}); err == nil {
+		t.Fatalf("expected error for data name > 64 bytes")
+	}
+
+	// Value > 64 bytes error
+	if _, err := buildManageDataOp(map[string]any{
+		"name":  "too_long",
+		"value": strings.Repeat("b", 65),
+	}); err == nil {
+		t.Fatalf("expected error for data value > 64 bytes")
+	}
+}
+
+func TestBuildManageOfferOps(t *testing.T) {
+	validAccount := "GA2JRQOF6EA3HQWDCEDBPPMLYPJCFLDDGYZLEQGMS5SOBQIB3BAFHVAW"
+
+	// ManageSellOffer from JSON with decimal price "1.5" -> canonical 3/2 and default offerId=0
+	sellJSON := []byte(`{
+		"source_account": "` + validAccount + `",
+		"fee": 100,
+		"sequence": 10,
+		"operations": [
+			{
+				"type": "manage_sell_offer",
+				"selling": "native",
+				"buying": "USD:` + validAccount + `",
+				"amount": "100",
+				"price": "1.5"
+			},
+			{
+				"type": "manage_sell_offer",
+				"selling": "native",
+				"buying": "USD:` + validAccount + `",
+				"amount": "0",
+				"price": "3/2",
+				"offerId": 42
+			},
+			{
+				"type": "manage_buy_offer",
+				"selling": "USD:` + validAccount + `",
+				"buying": "native",
+				"buyAmount": "50",
+				"price": 1.5
+			},
+			{
+				"type": "manage_buy_offer",
+				"selling": "USD:` + validAccount + `",
+				"buying": "native",
+				"buy_amount": "0",
+				"price": "3/2",
+				"offer_id": 99
+			}
+		]
+	}`)
+	env, err := BuildTransactionEnvelopeFromJSON(sellJSON)
+	if err != nil {
+		t.Fatalf("failed building offer ops from JSON: %v", err)
+	}
+	ops := env.V1.Tx.Operations
+	if len(ops) != 4 {
+		t.Fatalf("expected 4 operations, got %d", len(ops))
+	}
+
+	sellNew := ops[0].Body.ManageSellOfferOp
+	if sellNew.OfferId != 0 || sellNew.Price.N != 3 || sellNew.Price.D != 2 {
+		t.Fatalf("unexpected sellNew: %+v", sellNew)
+	}
+	sellCancel := ops[1].Body.ManageSellOfferOp
+	if sellCancel.Amount != 0 || sellCancel.OfferId != 42 || sellCancel.Price.N != 3 || sellCancel.Price.D != 2 {
+		t.Fatalf("unexpected sellCancel: %+v", sellCancel)
+	}
+	buyNew := ops[2].Body.ManageBuyOfferOp
+	if buyNew.OfferId != 0 || buyNew.Price.N != 3 || buyNew.Price.D != 2 {
+		t.Fatalf("unexpected buyNew: %+v", buyNew)
+	}
+	buyCancel := ops[3].Body.ManageBuyOfferOp
+	if buyCancel.BuyAmount != 0 || buyCancel.OfferId != 99 {
+		t.Fatalf("unexpected buyCancel: %+v", buyCancel)
+	}
+
+	// Invalid price error
+	if _, err := buildManageSellOfferOp(map[string]any{
+		"selling": "native",
+		"buying":  "USD:" + validAccount,
+		"amount":  100,
+		"price":   "1/0",
+	}); err == nil {
+		t.Fatalf("expected error for zero denominator price")
+	}
+}
+
+func TestBuildSetOptionsOp(t *testing.T) {
+	validAccount := "GA2JRQOF6EA3HQWDCEDBPPMLYPJCFLDDGYZLEQGMS5SOBQIB3BAFHVAW"
+	signerAccount := "GCJNHFXJEQEY54NPKU4DBMT5WOBJUHMYSFBDAQF4OMTEGJN4BQU7ZST6"
+
+	// Partial SetOptions from JSON
+	partialJSON := []byte(`{
+		"source_account": "` + validAccount + `",
+		"fee": 100,
+		"sequence": 1,
+		"operations": [
+			{
+				"type": "set_options",
+				"masterWeight": 2,
+				"lowThreshold": 1,
+				"medThreshold": 2,
+				"highThreshold": 3,
+				"homeDomain": "stellar.org",
+				"signer": {
+					"key": "` + signerAccount + `",
+					"weight": 1
+				}
+			}
+		]
+	}`)
+	env, err := BuildTransactionEnvelopeFromJSON(partialJSON)
+	if err != nil {
+		t.Fatalf("failed partial set_options: %v", err)
+	}
+	so := env.V1.Tx.Operations[0].Body.SetOptionsOp
+	if so == nil {
+		t.Fatal("expected SetOptionsOp")
+	}
+	if so.MasterWeight == nil || *so.MasterWeight != 2 {
+		t.Fatalf("unexpected MasterWeight: %v", so.MasterWeight)
+	}
+	if so.LowThreshold == nil || *so.LowThreshold != 1 || so.MedThreshold == nil || *so.MedThreshold != 2 || so.HighThreshold == nil || *so.HighThreshold != 3 {
+		t.Fatalf("unexpected thresholds: %+v", so)
+	}
+	if so.HomeDomain == nil || string(*so.HomeDomain) != "stellar.org" {
+		t.Fatalf("unexpected HomeDomain: %v", so.HomeDomain)
+	}
+	if so.Signer == nil || so.Signer.Weight != 1 || so.Signer.Key.Type != xdr.SignerKeyTypeSignerKeyTypeEd25519 {
+		t.Fatalf("unexpected Signer: %+v", so.Signer)
+	}
+
+	// Full SetOptions via buildSetOptionsOp
+	fullOp, err := buildSetOptionsOp(map[string]any{
+		"inflation_dest": signerAccount,
+		"clear_flags":    1,
+		"set_flags":      2,
+		"master_weight":  10,
+		"low_threshold":  5,
+		"med_threshold":  10,
+		"high_threshold": 15,
+		"home_domain":    "example.com",
+		"signer": map[string]any{
+			"key":    signerAccount,
+			"weight": 5,
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed full buildSetOptionsOp: %v", err)
+	}
+	if fullOp.InflationDest == nil || fullOp.ClearFlags == nil || fullOp.SetFlags == nil {
+		t.Fatalf("expected inflation_dest, clear_flags, set_flags to be set")
+	}
+
+	// Threshold out of range (> 255)
+	if _, err := buildSetOptionsOp(map[string]any{"high_threshold": 256}); err == nil {
+		t.Fatalf("expected error for high_threshold > 255")
+	}
+	if _, err := buildSetOptionsOp(map[string]any{"low_threshold": -1}); err == nil {
+		t.Fatalf("expected error for low_threshold < 0")
+	}
+	if _, err := buildSetOptionsOp(map[string]any{
+		"signer": map[string]any{"key": signerAccount, "weight": 300},
+	}); err == nil {
+		t.Fatalf("expected error for signer weight > 255")
+	}
+}
+
+func TestBuildChangeTrustOp(t *testing.T) {
+	validAccount := "GA2JRQOF6EA3HQWDCEDBPPMLYPJCFLDDGYZLEQGMS5SOBQIB3BAFHVAW"
+
+	// Omitted limit defaults to math.MaxInt64
+	ctJSON := []byte(`{
+		"source_account": "` + validAccount + `",
+		"fee": 100,
+		"sequence": 1,
+		"operations": [
+			{
+				"type": "change_trust",
+				"asset": "USD:` + validAccount + `"
+			},
+			{
+				"type": "change_trust",
+				"line": {
+					"type": "pool_share",
+					"asset_a": "native",
+					"asset_b": "USD:` + validAccount + `",
+					"fee": 30
+				},
+				"limit": "1000"
+			}
+		]
+	}`)
+	env, err := BuildTransactionEnvelopeFromJSONStrict(ctJSON)
+	if err != nil {
+		t.Fatalf("failed strict change_trust JSON: %v", err)
+	}
+	ops := env.V1.Tx.Operations
+	if len(ops) != 2 {
+		t.Fatalf("expected 2 operations, got %d", len(ops))
+	}
+
+	ctDefault := ops[0].Body.ChangeTrustOp
+	if ctDefault == nil || ctDefault.Limit != xdr.Int64(math.MaxInt64) {
+		t.Fatalf("expected default max int64 limit, got %v", ctDefault)
+	}
+	ctPool := ops[1].Body.ChangeTrustOp
+	if ctPool == nil || ctPool.Line.Type != xdr.AssetTypeAssetTypePoolShare || ctPool.Limit != 1000 {
+		t.Fatalf("unexpected pool ChangeTrustOp: %+v", ctPool)
+	}
+
+	// Base64 XDR encoding verification
+	b64, err := EncodeTransactionEnvelopeBase64(&TxSpec{
+		SourceAccount: validAccount,
+		Fee:           100,
+		Sequence:      1,
+		Operations: []OperationSpec{
+			{Type: "change_trust", Asset: "USD:" + validAccount},
+		},
+	})
+	if err != nil || b64 == "" {
+		t.Fatalf("failed EncodeTransactionEnvelopeBase64 for change_trust: %v", err)
+	}
+
+	// Invalid negative limit error
+	if _, err := buildChangeTrustOp(map[string]any{
+		"asset": "USD:" + validAccount,
+		"limit": -5,
+	}); err == nil {
+		t.Fatalf("expected error for negative limit")
+	}
+}
+
+func TestBuildManageDataOp(t *testing.T) {
+	validAccount := "GA2JRQOF6EA3HQWDCEDBPPMLYPJCFLDDGYZLEQGMS5SOBQIB3BAFHVAW"
+
+	// Set UTF-8 string value via JSON template
+	setJSON := []byte(`{
+		"source_account": "` + validAccount + `",
+		"fee": 100,
+		"sequence": 1,
+		"operations": [
+			{"type": "manage_data", "name": "config", "value": "enabled"}
+		]
+	}`)
+	env, err := BuildTransactionEnvelopeFromJSON(setJSON)
+	if err != nil {
+		t.Fatalf("manage_data set failed: %v", err)
+	}
+	md := env.V1.Tx.Operations[0].Body.ManageDataOp
+	if md == nil || string(md.DataName) != "config" || md.DataValue == nil || string(*md.DataValue) != "enabled" {
+		t.Fatalf("unexpected ManageDataOp for set: %+v", md)
+	}
+
+	// Delete entry via null value
+	delJSON := []byte(`{
+		"source_account": "` + validAccount + `",
+		"fee": 100,
+		"sequence": 2,
+		"operations": [
+			{"type": "manage_data", "name": "config", "value": null}
+		]
+	}`)
+	envDel, err := BuildTransactionEnvelopeFromJSON(delJSON)
+	if err != nil {
+		t.Fatalf("manage_data delete failed: %v", err)
+	}
+	mdDel := envDel.V1.Tx.Operations[0].Body.ManageDataOp
+	if mdDel == nil || string(mdDel.DataName) != "config" || mdDel.DataValue != nil {
+		t.Fatalf("expected nil DataValue for deletion, got %+v", mdDel)
+	}
+
+	// Base64 object value
+	rawBin := []byte{0x01, 0x02, 0xff, 0xfe}
+	b64Val := base64.StdEncoding.EncodeToString(rawBin)
+	op, err := buildManageDataOp(map[string]any{
+		"name":  "bin_key",
+		"value": map[string]any{"base64": b64Val},
+	})
+	if err != nil {
+		t.Fatalf("manage_data base64 failed: %v", err)
+	}
+	if op.DataValue == nil || string(*op.DataValue) != string(rawBin) {
+		t.Fatalf("unexpected decoded base64 bytes: %v", op.DataValue)
+	}
+
+	// Validation: name > 64 bytes and value > 64 bytes
+	if _, err := buildManageDataOp(map[string]any{"name": strings.Repeat("a", 65), "value": "ok"}); err == nil {
+		t.Fatalf("expected error for data name > 64 bytes")
+	}
+	if _, err := buildManageDataOp(map[string]any{"name": "ok", "value": strings.Repeat("b", 65)}); err == nil {
+		t.Fatalf("expected error for data value > 64 bytes")
+	}
+}
+
+func TestBuildManageOfferOps(t *testing.T) {
+	validAccount := "GA2JRQOF6EA3HQWDCEDBPPMLYPJCFLDDGYZLEQGMS5SOBQIB3BAFHVAW"
+
+	txJSON := []byte(`{
+		"source_account": "` + validAccount + `",
+		"fee": 100,
+		"sequence": 10,
+		"operations": [
+			{
+				"type": "manage_sell_offer",
+				"selling": "native",
+				"buying": "USD:` + validAccount + `",
+				"amount": "100",
+				"price": "1.5"
+			},
+			{
+				"type": "manage_buy_offer",
+				"selling": "USD:` + validAccount + `",
+				"buying": "native",
+				"buy_amount": "0",
+				"price": "3/2",
+				"offerId": 42
+			}
+		]
+	}`)
+	env, err := BuildTransactionEnvelopeFromJSON(txJSON)
+	if err != nil {
+		t.Fatalf("manage offers JSON failed: %v", err)
+	}
+
+	sellOp := env.V1.Tx.Operations[0].Body.ManageSellOfferOp
+	if sellOp == nil || sellOp.Price.N != 3 || sellOp.Price.D != 2 || sellOp.OfferId != 0 {
+		t.Fatalf("unexpected ManageSellOfferOp: %+v", sellOp)
+	}
+
+	buyOp := env.V1.Tx.Operations[1].Body.ManageBuyOfferOp
+	if buyOp == nil || buyOp.BuyAmount != 0 || buyOp.Price.N != 3 || buyOp.Price.D != 2 || buyOp.OfferId != 42 {
+		t.Fatalf("unexpected ManageBuyOfferOp: %+v", buyOp)
+	}
+
+	// Cancel sell offer (amount: "0")
+	cancelSell, err := buildManageSellOfferOp(map[string]any{
+		"selling":  "native",
+		"buying":   "USD:" + validAccount,
+		"amount":   "0",
+		"price":    1.5,
+		"offer_id": 99,
+	})
+	if err != nil {
+		t.Fatalf("cancel sell offer failed: %v", err)
+	}
+	if cancelSell.Amount != 0 || cancelSell.OfferId != 99 || cancelSell.Price.N != 3 || cancelSell.Price.D != 2 {
+		t.Fatalf("unexpected canceled sell offer: %+v", cancelSell)
+	}
+
+	// Invalid price error
+	if _, err := ParsePriceFraction("1/0"); err == nil {
+		t.Fatalf("expected error on zero denominator")
+	}
+}
+
+func TestBuildSetOptionsOp(t *testing.T) {
+	validAccount := "GA2JRQOF6EA3HQWDCEDBPPMLYPJCFLDDGYZLEQGMS5SOBQIB3BAFHVAW"
+	signerAccount := "GCJNHFXJEQEY54NPKU4DBMT5WOBJUHMYSFBDAQF4OMTEGJN4BQU7ZST6"
+
+	txJSON := []byte(`{
+		"source_account": "` + validAccount + `",
+		"fee": 100,
+		"sequence": 20,
+		"operations": [
+			{
+				"type": "set_options",
+				"inflation_dest": "` + signerAccount + `",
+				"clear_flags": 1,
+				"set_flags": ["auth_required", "auth_revocable"],
+				"masterWeight": 10,
+				"lowThreshold": 5,
+				"medThreshold": 10,
+				"highThreshold": 20,
+				"home_domain": "stellar.org",
+				"signer": {"key": "` + signerAccount + `", "weight": 5}
+			},
+			{
+				"type": "set_options",
+				"master_weight": 0
+			}
+		]
+	}`)
+	env, err := BuildTransactionEnvelopeFromJSON(txJSON)
+	if err != nil {
+		t.Fatalf("set_options JSON failed: %v", err)
+	}
+
+	full := env.V1.Tx.Operations[0].Body.SetOptionsOp
+	if full == nil || full.InflationDest == nil || full.ClearFlags == nil || *full.ClearFlags != 1 ||
+		full.SetFlags == nil || *full.SetFlags != 3 ||
+		full.MasterWeight == nil || *full.MasterWeight != 10 ||
+		full.LowThreshold == nil || *full.LowThreshold != 5 ||
+		full.MedThreshold == nil || *full.MedThreshold != 10 ||
+		full.HighThreshold == nil || *full.HighThreshold != 20 ||
+		full.HomeDomain == nil || string(*full.HomeDomain) != "stellar.org" ||
+		full.Signer == nil || full.Signer.Weight != 5 ||
+		full.Signer.Key.Type != xdr.SignerKeyTypeSignerKeyTypeEd25519 {
+		t.Fatalf("unexpected full SetOptionsOp: %+v", full)
+	}
+
+	partial := env.V1.Tx.Operations[1].Body.SetOptionsOp
+	if partial == nil || partial.MasterWeight == nil || *partial.MasterWeight != 0 ||
+		partial.LowThreshold != nil || partial.Signer != nil {
+		t.Fatalf("unexpected partial SetOptionsOp: %+v", partial)
+	}
+
+	// Out-of-range threshold error (> 255)
+	if _, err := buildSetOptionsOp(map[string]any{"high_threshold": 256}); err == nil {
+		t.Fatalf("expected error for threshold > 255")
+	}
+	if _, err := buildSetOptionsOp(map[string]any{"low_threshold": -1}); err == nil {
+		t.Fatalf("expected error for threshold < 0")
+	}
+}
+
+func TestBuildChangeTrustOp(t *testing.T) {
+	validAccount := "GA2JRQOF6EA3HQWDCEDBPPMLYPJCFLDDGYZLEQGMS5SOBQIB3BAFHVAW"
+
+	// Omitted limit defaults to math.MaxInt64 + liquidity pool share support
+	txJSON := []byte(`{
+		"source_account": "` + validAccount + `",
+		"fee": 100,
+		"sequence": 30,
+		"operations": [
+			{
+				"type": "change_trust",
+				"asset": "USD:` + validAccount + `"
+			},
+			{
+				"type": "change_trust",
+				"line": {
+					"type": "pool_share",
+					"asset_a": "native",
+					"asset_b": "USDC:` + validAccount + `",
+					"fee": 30
+				},
+				"limit": "500.5"
+			}
+		]
+	}`)
+	if err := ValidateJSON(txJSON, StrictTxSpecSchema()); err != nil {
+		t.Fatalf("strict schema validation failed for change_trust: %v", err)
+	}
+	env, err := BuildTransactionEnvelopeFromJSON(txJSON)
+	if err != nil {
+		t.Fatalf("change_trust JSON failed: %v", err)
+	}
+
+	ctDefault := env.V1.Tx.Operations[0].Body.ChangeTrustOp
+	if ctDefault == nil || ctDefault.Limit != xdr.Int64(math.MaxInt64) {
+		t.Fatalf("expected default MaxInt64 limit, got %+v", ctDefault)
+	}
+
+	ctPool := env.V1.Tx.Operations[1].Body.ChangeTrustOp
+	if ctPool == nil || ctPool.Line.Type != xdr.AssetTypeAssetTypePoolShare || ctPool.Limit != 5005000000 {
+		t.Fatalf("unexpected pool ChangeTrustOp: %+v", ctPool)
+	}
+
+	// Verify XDR base64 encoding
+	b64, err := EncodeTransactionEnvelopeBase64(&TxSpec{
+		SourceAccount: validAccount,
+		Fee:           100,
+		Sequence:      31,
+		Operations:    []OperationSpec{{Type: "change_trust", Asset: "USD:" + validAccount}},
+	})
+	if err != nil || b64 == "" {
+		t.Fatalf("EncodeTransactionEnvelopeBase64 failed: %v", err)
 	}
 }
