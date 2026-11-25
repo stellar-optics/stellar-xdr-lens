@@ -342,6 +342,8 @@ These are mutually exclusive with each other and with --json/--stats/--summary.`
 		"compare the Soroban ledger footprints of the two values as sets")
 	cmd.Flags().BoolVar(&statsOnly, "stats", false,
 		"print only the statistical summary of the diff")
+	cmd.Flags().BoolVar(&summaryOnly, "summary", false,
+		"print a table of change counts by top-level field path")
 	cmd.Flags().Float64Var(&diffThreshold, "diff-threshold", 0,
 		"ignore scalar numeric differences below the given delta")
 	cmd.Flags().BoolVar(&exitDiff, "exit-code", false,

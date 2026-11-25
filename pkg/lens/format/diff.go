@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"sort"
 	"strings"
 
 	"github.com/stellar-optics/stellar-xdr-lens/pkg/lens"
@@ -167,52 +166,10 @@ func (f *DiffSummaryFormatter) Format(w io.Writer, d *lens.DiffResult) error {
 		return nil
 	}
 
-	// Group changes by top-level section
-	sectionCounts := make(map[string]map[lens.ChangeOp]int)
-	for _, c := range d.Changes {
-		section := topLevelSection(c.Path)
-		if sectionCounts[section] == nil {
-			sectionCounts[section] = make(map[lens.ChangeOp]int)
-		}
-		sectionCounts[section][c.Op]++
-	}
-
-	// Sort sections for deterministic output
-	sections := make([]string, 0, len(sectionCounts))
-	for s := range sectionCounts {
-		sections = append(sections, s)
-	}
-	sort.Strings(sections)
-
-	// Print table header
-	fmt.Fprintf(&b, "%s%-30s %8s %8s %8s %8s%s\n", p.Type, "SECTION", "ADDED", "REMOVED", "MODIFIED", "REORDERED", p.Reset)
-	fmt.Fprintf(&b, "%s%s%s\n", p.Dim, strings.Repeat("─", 70), p.Reset)
-
-	for _, section := range sections {
-		counts := sectionCounts[section]
-		added := counts[lens.ChangeAdded]
-		removed := counts[lens.ChangeRemoved]
-		modified := counts[lens.ChangeModified]
-		reordered := counts[lens.ChangeReordered]
-		typeChanged := counts[lens.ChangeTypeChanged]
-		// Combine type_changed into modified for display
-		modified += typeChanged
-
-		fmt.Fprintf(&b, "%-30s %8d %8d %8d %8d\n",
-			truncate(section, 30), added, removed, modified, reordered)
-	}
-
-	fmt.Fprintf(&b, "%s%s%s\n", p.Dim, strings.Repeat("─", 70), p.Reset)
-
-	// Totals
-	totalAdded, totalRemoved, totalModified, totalReordered := 0, 0, 0, 0
-	for _, counts := range sectionCounts {
-		totalAdded += counts[lens.ChangeAdded]
-		totalRemoved += counts[lens.ChangeRemoved]
-		totalModified += counts[lens.ChangeModified] + counts[lens.ChangeTypeChanged]
-		totalReordered += counts[lens.ChangeReordered]
-	}
-	fmt.Fprintf(&b, "%-30s %8d %8d %8d %8d\n", "TOTAL", totalAdded, totalRemoved, totalModified, totalReordered)
+	// The statistics table is the single implementation of the per-path
+	// breakdown, shared by --summary and --format summary.
+	stats := lens.SummarizeDiff(d)
+	b.WriteString(FormatDiffStatsTable(&stats))
 
 	if len(d.Warnings) > 0 {
 		fmt.Fprintf(&b, "\n")
@@ -227,25 +184,6 @@ func (f *DiffSummaryFormatter) Format(w io.Writer, d *lens.DiffResult) error {
 		return fmt.Errorf("format: write diff summary: %w", err)
 	}
 	return nil
-}
-
-// topLevelSection extracts the top-level section from a path.
-func topLevelSection(path string) string {
-	if path == "" {
-		return "(root)"
-	}
-	// Split by dot, but handle bracketed indices
-	segments := strings.Split(path, ".")
-	if len(segments) == 0 {
-		return "(root)"
-	}
-	first := segments[0]
-	// If first segment contains [, it's an array at root
-	if strings.Contains(first, "[") {
-		idx := strings.Index(first, "[")
-		return first[:idx]
-	}
-	return first
 }
 
 // truncate truncates a string to maxLen characters.
