@@ -812,6 +812,7 @@ func writeScalarNode(w io.Writer, n *lens.Node, palette format.Palette) error {
 
 func newTypesCmd(stdout io.Writer) *cobra.Command {
 	var asJSON bool
+	var category string
 
 	cmd := &cobra.Command{
 		Use:   "types",
@@ -820,11 +821,37 @@ func newTypesCmd(stdout io.Writer) *cobra.Command {
 
 With --json the command emits the introspection index: the name, category,
 one-line description, detection priority and minimum encoded size of each type.
-The shape is stable and intended for scripts.`,
+The shape is stable and intended for scripts.
+
+Use --category to filter by one of the well-known category names:
+  transaction, ledger, history, overlay, consensus, soroban,
+  state-archival, ledger-entry, primitive`,
 		Example: `  lens types
-  lens types --json | jq '.[] | select(.category == "overlay") | .name'`,
+  lens types --json | jq '.[] | select(.category == "overlay") | .name'
+  lens types --category soroban
+  lens types --category transaction --json`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if category != "" {
+				infos := lens.TypesByCategory(category)
+				if len(infos) == 0 {
+					return fmt.Errorf("no types found for category %q (known: transaction, ledger, history, overlay, consensus, soroban, state-archival, ledger-entry, primitive)", category)
+				}
+				if asJSON {
+					enc := json.NewEncoder(stdout)
+					enc.SetIndent("", "  ")
+					if err := enc.Encode(infos); err != nil {
+						return fmt.Errorf("encoding type index: %w", err)
+					}
+					return nil
+				}
+				names := make([]string, 0, len(infos))
+				for _, info := range infos {
+					names = append(names, info.Name)
+				}
+				_, err := fmt.Fprintln(stdout, strings.Join(names, "\n"))
+				return err
+			}
 			if asJSON {
 				enc := json.NewEncoder(stdout)
 				enc.SetIndent("", "  ")
@@ -839,6 +866,7 @@ The shape is stable and intended for scripts.`,
 	}
 
 	cmd.Flags().BoolVar(&asJSON, "json", false, "emit the introspection index as JSON")
+	cmd.Flags().StringVar(&category, "category", "", "filter to types in this category (e.g. soroban, transaction, overlay)")
 
 	return cmd
 }

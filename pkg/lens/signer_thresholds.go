@@ -24,6 +24,24 @@ import (
 func init() {
 	registerEnricher(reflect.TypeOf(xdr.Thresholds{}), enrichThresholds)
 	nodeHooks[reflect.TypeOf(xdr.AccountEntry{})] = annotateAccountSignerThresholds
+	nodeHooks[reflect.TypeOf(xdr.Signer{})] = annotateSignerNode
+}
+
+// annotateSignerNode attaches a human-readable note to a decoded Signer node
+// so that the address and weight are visible without expanding sub-fields.
+func annotateSignerNode(n *Node, v any) {
+	s, ok := v.(xdr.Signer)
+	if !ok {
+		return
+	}
+	label := hex.EncodeToString(func() []byte {
+		b, _ := s.Key.MarshalBinary()
+		return b
+	}())
+	if addr, err := s.Key.GetAddress(); err == nil && addr != "" {
+		label = addr
+	}
+	n.Note = fmt.Sprintf("%s (weight %d)", label, uint32(s.Weight))
 }
 
 // thresholdTripletNote renders the low/medium/high/master quartet the way
