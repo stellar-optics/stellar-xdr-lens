@@ -155,6 +155,8 @@ var typeDocs = map[string]typeDoc{
 		"A single operation with its source account and type-specific body."},
 	"OperationResult": {CategoryTransaction,
 		"The result of one operation, including its type-specific result code."},
+	"OperationResultTr": {CategoryTransaction,
+		"The inner union of OperationResult holding the operation-specific result (e.g. PaymentResult, CreateAccountResult)."},
 	"PeerAddress": {CategoryOverlay,
 		"One peer address advertised in a Peers message, with its failure count."},
 	"Price": {CategoryPrimitive,

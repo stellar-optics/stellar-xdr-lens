@@ -215,10 +215,10 @@ func readU32(b []byte) (uint32, int, error) {
 
 func init() {
 	nodeHooks[reflect.TypeOf(xdr.ContractCodeEntry{})] = decorateContractCode
-	// Spec, EnvMeta and Meta are parsed from the Code bytes and appended to
-	// the decoded tree; they are not XDR fields, so the JSON encoder ignores
-	// them rather than treating them as unknown keys.
-	registerDerivedNodeFields(reflect.TypeOf(xdr.ContractCodeEntry{}), "Spec", "EnvMeta", "Meta")
+	// Spec, EnvMeta, Meta and WASMExports are parsed from the Code bytes and
+	// appended to the decoded tree; they are not XDR fields, so the JSON
+	// encoder ignores them rather than treating them as unknown keys.
+	registerDerivedNodeFields(reflect.TypeOf(xdr.ContractCodeEntry{}), "Spec", "EnvMeta", "Meta", "WASMExports")
 }
 
 // decorateContractCode attaches the parsed metadata to a decoded
@@ -247,6 +247,70 @@ func decorateContractCode(n *Node, v any) {
 	if list := metaListNode(parsed.Meta); list != nil {
 		n.Children = append(n.Children, list)
 	}
+	if list := wasmExportsListNode(entry.Code); list != nil {
+		n.Children = append(n.Children, list)
+	}
+}
+
+// wasmExportsListNode parses the WASM binary and returns a node listing every
+// exported function and its signature. Memory, table and global exports are
+// omitted — only function exports are relevant to Soroban callers.
+func wasmExportsListNode(code []byte) *Node {
+	if len(code) == 0 || !isWASM(code) {
+		return nil
+	}
+	mod, err := ParseWASM(code)
+	if err != nil {
+		return nil
+	}
+
+	var exports []*Node
+	for _, exp := range mod.Exports {
+		if exp.Kind != ExportKindFunction {
+			continue
+		}
+		note := exp.Signature
+		if note == "" {
+			note = "() -> ()"
+		}
+		exports = append(exports, &Node{
+			Name:  exp.Name,
+			Kind:  KindScalar,
+			Value: note,
+		})
+	}
+	if len(exports) == 0 {
+		return nil
+	}
+
+	list := &Node{Name: "WASMExports", Kind: KindList, TypeName: "WASMExport"}
+	list.Children = exports
+
+	var hostImports []*Node
+	for _, imp := range mod.Imports {
+		if imp.Kind != ExportKindFunction {
+			continue
+		}
+		if imp.Module != "v" && imp.Module != "x" {
+			continue
+		}
+		sig := imp.Signature
+		if sig == "" {
+			sig = "() -> ()"
+		}
+		hostImports = append(hostImports, &Node{
+			Name:  fmt.Sprintf("%s::%s", imp.Module, imp.Field),
+			Kind:  KindScalar,
+			Value: sig,
+		})
+	}
+	if len(hostImports) > 0 {
+		importsNode := &Node{Name: "HostImports", Kind: KindList, TypeName: "WASMImport"}
+		importsNode.Children = hostImports
+		list.Children = append(list.Children, importsNode)
+	}
+
+	return list
 }
 
 // contractCodeNote summarises the bytecode on its leaf so the raw hex string

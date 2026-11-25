@@ -415,6 +415,10 @@
       "trustline_entry_v2": {
         "type": "TrustLineEntry",
         "description": "Pool-share trustline whose v1 ext nests a v2: liquidity pool use count 5."
+      },
+      "operation_result_tr_payment": {
+        "type": "OperationResultTr",
+        "description": "Synthetic minimal OperationResultTr with PAYMENT/success (8 bytes); used to verify that bare inner operation results decode correctly (issue #270)."
       }
     }
   }

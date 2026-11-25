@@ -351,3 +351,45 @@ func TestDiagnosticEventNodeHookSuccessful(t *testing.T) {
 		t.Errorf("Node.Note %q should describe the call outcome", v.Node.Note)
 	}
 }
+
+// TestFormatContractEvent verifies FormatContractEvent produces readable output
+// with the event type, contract ID and topic/data values.
+func TestFormatContractEvent(t *testing.T) {
+	t.Parallel()
+
+	sym := xdr.ScSymbol("transfer")
+	eventType := xdr.ContractEventTypeContract
+	event := xdr.ContractEvent{
+		Type: eventType,
+		Body: xdr.ContractEventBody{
+			V: 0,
+			V0: &xdr.ContractEventV0{
+				Topics: []xdr.ScVal{
+					{Type: xdr.ScValTypeScvSymbol, Sym: &sym},
+				},
+				Data: xdr.ScVal{Type: xdr.ScValTypeScvVoid},
+			},
+		},
+	}
+
+	got := lens.FormatContractEvent(&event)
+	if !strings.Contains(got, "type=") {
+		t.Errorf("FormatContractEvent() = %q, want 'type=' prefix", got)
+	}
+	if !strings.Contains(got, "transfer") {
+		t.Errorf("FormatContractEvent() = %q, want symbol 'transfer' in topics", got)
+	}
+	if !strings.Contains(got, "void") {
+		t.Errorf("FormatContractEvent() = %q, want 'void' data", got)
+	}
+}
+
+// TestFormatContractEventNil verifies FormatContractEvent is safe with nil input.
+func TestFormatContractEventNil(t *testing.T) {
+	t.Parallel()
+
+	got := lens.FormatContractEvent(nil)
+	if got == "" {
+		t.Error("FormatContractEvent(nil) returned empty string, want a descriptive message")
+	}
+}

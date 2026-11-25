@@ -2,6 +2,7 @@ package lens_test
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -308,4 +309,46 @@ func wrapAt(s string, n int) string {
 		b.WriteString("\n")
 	}
 	return b.String()
+}
+
+// TestDecodeAsOperationResultTr verifies that OperationResultTr is registered
+// and decodes correctly. Indexing pipelines often store inner operation results
+// directly, so bare OperationResultTr payloads must be decodable standalone.
+func TestDecodeAsOperationResultTr(t *testing.T) {
+	t.Parallel()
+
+	got, err := lens.DecodeAs(loadFixture(t, "operation_result_tr_payment"), "OperationResultTr")
+	if err != nil {
+		t.Fatalf("DecodeAs() error = %v", err)
+	}
+	if got.Type != "OperationResultTr" {
+		t.Errorf("Type = %q, want OperationResultTr", got.Type)
+	}
+	if got.Raw == nil {
+		t.Fatal("Raw is nil")
+	}
+	if got.Node == nil {
+		t.Fatal("Node is nil")
+	}
+	opType := got.Node.Find("Type")
+	if opType == nil {
+		t.Fatal("Type node not found")
+	}
+	// PAYMENT operation type expected.
+	if !strings.Contains(fmt.Sprintf("%v", opType.Value), "Payment") {
+		t.Errorf("Type.Value = %v, want a value containing 'Payment'", opType.Value)
+	}
+}
+
+// TestOperationResultTrIsInTypeNames verifies the registry lists OperationResultTr.
+func TestOperationResultTrIsInTypeNames(t *testing.T) {
+	t.Parallel()
+
+	names := lens.TypeNames()
+	for _, n := range names {
+		if n == "OperationResultTr" {
+			return
+		}
+	}
+	t.Error("TypeNames() does not include OperationResultTr")
 }
