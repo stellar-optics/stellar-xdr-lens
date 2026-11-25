@@ -1,7 +1,9 @@
 package lens
 
 import (
+	"encoding/base64"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/stellar/go-stellar-sdk/strkey"
@@ -136,6 +138,221 @@ func TestBuildTransactionEnvelopeFromJSON(t *testing.T) {
 	}
 	if envStrict.Type != xdr.EnvelopeTypeEnvelopeTypeTx {
 		t.Fatalf("expected V1 envelope in strict")
+	}
+}
+
+func TestBuildPaymentOp(t *testing.T) {
+	t.Parallel()
+
+	const issuer = "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN"
+	const dest = "GCJNHFXJEQEY54NPKU4DBMT5WOBJUHMYSFBDAQF4OMTEGJN4BQU7ZST6"
+
+	muxedAccount := xdr.MuxedAccount{
+		Type: xdr.CryptoKeyTypeKeyTypeMuxedEd25519,
+		Med25519: &xdr.MuxedAccountMed25519{
+			Id:      7,
+			Ed25519: *xdr.MustAddress(dest).Ed25519,
+		},
+	}
+	muxed := muxedAccount.Address()
+
+	tests := []struct {
+		name       string
+		spec       map[string]any
+		wantAsset  xdr.AssetType
+		wantCode   string
+		wantAmount int64
+		wantMuxed  bool
+	}{
+		{
+			name:       "amount defaults to a native asset",
+			spec:       map[string]any{"destination": dest, "amount": "10.5"},
+			wantAsset:  xdr.AssetTypeAssetTypeNative,
+			wantAmount: 105000000,
+		},
+		{
+			name:       "explicit native asset",
+			spec:       map[string]any{"destination": dest, "amount": "0.0000001", "asset": "native"},
+			wantAsset:  xdr.AssetTypeAssetTypeNative,
+			wantAmount: 1,
+		},
+		{
+			name: "issued asset object",
+			spec: map[string]any{
+				"destination": dest,
+				"amount":      "100.5",
+				"asset":       map[string]any{"code": "USDC", "issuer": issuer},
+			},
+			wantAsset:  xdr.AssetTypeAssetTypeCreditAlphanum4,
+			wantCode:   "USDC",
+			wantAmount: 1005000000,
+		},
+		{
+			name:       "muxed destination",
+			spec:       map[string]any{"destination": muxed, "amount": 10},
+			wantAsset:  xdr.AssetTypeAssetTypeNative,
+			wantAmount: 10,
+			wantMuxed:  true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			op, err := buildPaymentOp(tc.spec)
+			if err != nil {
+				t.Fatalf("buildPaymentOp() error = %v", err)
+			}
+			if int64(op.Amount) != tc.wantAmount {
+				t.Errorf("Amount = %d, want %d", op.Amount, tc.wantAmount)
+			}
+			if op.Asset.Type != tc.wantAsset {
+				t.Errorf("Asset.Type = %v, want %v", op.Asset.Type, tc.wantAsset)
+			}
+			if tc.wantCode != "" {
+				if op.Asset.AlphaNum4 == nil {
+					t.Fatalf("Asset.AlphaNum4 is nil for a code asset")
+				}
+				if got := strings.TrimRight(string(op.Asset.AlphaNum4.AssetCode[:]), "\x00"); got != tc.wantCode {
+					t.Errorf("Asset code = %q, want %q", got, tc.wantCode)
+				}
+			}
+			gotMuxed := op.Destination.Type == xdr.CryptoKeyTypeKeyTypeMuxedEd25519
+			if gotMuxed != tc.wantMuxed {
+				t.Errorf("Destination muxed = %v, want %v", gotMuxed, tc.wantMuxed)
+			}
+		})
+	}
+}
+
+func TestBuildPaymentOpRejectsInvalidSpecs(t *testing.T) {
+	t.Parallel()
+
+	const dest = "GCJNHFXJEQEY54NPKU4DBMT5WOBJUHMYSFBDAQF4OMTEGJN4BQU7ZST6"
+	const badChecksum = "GA2JRQOF6EA3HQWDCEDBPPMLYPJCFLDDGYZLEQGMS5SOBQIB3BAFHVAX"
+
+	tests := []struct {
+		name string
+		spec map[string]any
+		want string
+	}{
+		{name: "nil spec", spec: nil, want: "destination"},
+		{name: "missing destination", spec: map[string]any{"amount": 1}, want: "destination"},
+		{name: "blank destination", spec: map[string]any{"destination": "  ", "amount": 1}, want: "destination"},
+		{name: "invalid destination", spec: map[string]any{"destination": badChecksum, "amount": 1}, want: "destination"},
+		{name: "missing amount", spec: map[string]any{"destination": dest}, want: "amount"},
+		{name: "unparseable amount", spec: map[string]any{"destination": dest, "amount": "ten"}, want: "amount"},
+		{
+			name: "asset without issuer",
+			spec: map[string]any{"destination": dest, "amount": 1, "asset": map[string]any{"code": "USDC"}},
+			want: "asset",
+		},
+		{
+			name: "asset with invalid issuer",
+			spec: map[string]any{"destination": dest, "amount": 1, "asset": map[string]any{"code": "USDC", "issuer": badChecksum}},
+			want: "asset",
+		},
+		{name: "unparseable asset", spec: map[string]any{"destination": dest, "amount": 1, "asset": "USDC"}, want: "asset"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			op, err := buildPaymentOp(tc.spec)
+			if err == nil {
+				t.Fatalf("buildPaymentOp() = %+v, want an error", op)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("error = %q, want it to mention %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestBuildTransactionEnvelopeFromJSONIntuitivePayment(t *testing.T) {
+	t.Parallel()
+
+	const issuer = "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN"
+	const dest = "GCJNHFXJEQEY54NPKU4DBMT5WOBJUHMYSFBDAQF4OMTEGJN4BQU7ZST6"
+
+	template := `{
+		"source_account": "GA2JRQOF6EA3HQWDCEDBPPMLYPJCFLDDGYZLEQGMS5SOBQIB3BAFHVAW",
+		"fee": 100,
+		"sequence": 1,
+		"operations": [{
+			"type": "payment",
+			"destination": "` + dest + `",
+			"amount": "10.5",
+			"asset": {"code": "USDC", "issuer": "` + issuer + `"}
+		}]
+	}`
+
+	env, err := BuildTransactionEnvelopeFromJSONStrict([]byte(template))
+	if err != nil {
+		t.Fatalf("BuildTransactionEnvelopeFromJSONStrict() error = %v", err)
+	}
+	if env.V1 == nil || len(env.V1.Tx.Operations) != 1 {
+		t.Fatalf("envelope has no payment operation: %+v", env)
+	}
+
+	paymentOp := env.V1.Tx.Operations[0].Body.PaymentOp
+	if paymentOp == nil {
+		t.Fatal("operation body is not a PaymentOp")
+	}
+	if int64(paymentOp.Amount) != 105000000 {
+		t.Errorf("amount = %d, want 105000000 stroops", paymentOp.Amount)
+	}
+	if paymentOp.Asset.Type != xdr.AssetTypeAssetTypeCreditAlphanum4 {
+		t.Fatalf("asset type = %v, want alphanum4", paymentOp.Asset.Type)
+	}
+	if got := strings.TrimRight(string(paymentOp.Asset.AlphaNum4.AssetCode[:]), "\x00"); got != "USDC" {
+		t.Errorf("asset code = %q, want USDC", got)
+	}
+
+	// Round-trip the built envelope through the decoder: the decoded amount
+	// and asset must match the intuitive input.
+	raw, err := env.MarshalBinary()
+	if err != nil {
+		t.Fatalf("MarshalBinary() error = %v", err)
+	}
+	value, err := Decode(base64.StdEncoding.EncodeToString(raw))
+	if err != nil {
+		t.Fatalf("Decode() error = %v", err)
+	}
+	amountNode := value.Node.Find("V1.Tx.Operations[0].Body.PaymentOp.Amount")
+	if amountNode == nil {
+		t.Fatal("decoded tree has no payment amount")
+	}
+	if got := amountNode.String(); !strings.Contains(got, "105000000") {
+		t.Errorf("decoded amount = %q, want 105000000 stroops", got)
+	}
+	assetNode := value.Node.Find("V1.Tx.Operations[0].Body.PaymentOp.Asset")
+	if assetNode == nil {
+		t.Fatal("decoded tree has no payment asset")
+	}
+	if rendered := assetNode.String(); !strings.Contains(rendered, "USDC") || !strings.Contains(rendered, issuer) {
+		t.Errorf("decoded asset = %q, want it to name USDC and the issuer", rendered)
+	}
+}
+
+func TestBuildTransactionEnvelopeStrictRejectsInvalidPayment(t *testing.T) {
+	t.Parallel()
+
+	template := `{
+		"source_account": "GA2JRQOF6EA3HQWDCEDBPPMLYPJCFLDDGYZLEQGMS5SOBQIB3BAFHVAW",
+		"fee": 100,
+		"sequence": 1,
+		"operations": [{
+			"type": "payment",
+			"destination": "GA2JRQOF6EA3HQWDCEDBPPMLYPJCFLDDGYZLEQGMS5SOBQIB3BAFHVAX",
+			"amount": "10.5"
+		}]
+	}`
+
+	if _, err := BuildTransactionEnvelopeFromJSONStrict([]byte(template)); err == nil {
+		t.Fatal("strict build accepted an invalid payment destination")
 	}
 }
 

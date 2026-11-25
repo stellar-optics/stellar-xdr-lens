@@ -100,7 +100,7 @@ func TestSummarizeDiffFromRealFixtures(t *testing.T) {
 	if stats.Total != len(diff.Changes) {
 		t.Errorf("Total = %d, want %d", stats.Total, len(diff.Changes))
 	}
-	if stats.Modified+stats.Added+stats.Removed+stats.TypeChanged != stats.Total {
+	if stats.Modified+stats.Added+stats.Removed+stats.TypeChanged+stats.Reordered != stats.Total {
 		t.Errorf("kind counts do not sum to Total: %+v", stats)
 	}
 	if stats.Equal {
@@ -145,6 +145,37 @@ func TestSummarizeStatsStringTypeMismatch(t *testing.T) {
 	})
 	if !strings.Contains(stats.String(), "TransactionEnvelope vs TransactionResult") {
 		t.Errorf("String() = %q, want it to show both types", stats.String())
+	}
+}
+
+func TestSummarizeChangesCountsReorderedSeparately(t *testing.T) {
+	t.Parallel()
+
+	stats := lens.SummarizeChanges("TransactionEnvelope", "TransactionEnvelope", []lens.Change{
+		{Path: "V1.Tx.Operations[0]", Op: lens.ChangeReordered, Before: 1, After: 0},
+		{Path: "V1.Tx.Operations[1]", Op: lens.ChangeReordered, Before: 0, After: 1},
+		{Path: "V1.Tx.SeqNum", Op: lens.ChangeModified},
+	})
+
+	if stats.Total != 3 {
+		t.Fatalf("Total = %d, want 3", stats.Total)
+	}
+	if stats.Reordered != 2 {
+		t.Errorf("Reordered = %d, want 2", stats.Reordered)
+	}
+	if stats.Modified != 1 {
+		t.Errorf("Modified = %d, want 1 (a reorder is not a modification)", stats.Modified)
+	}
+	if stats.Modified+stats.Added+stats.Removed+stats.TypeChanged+stats.Reordered != stats.Total {
+		t.Errorf("kind counts do not sum to Total: %+v", stats)
+	}
+
+	section, ok := stats.Section("V1")
+	if !ok || section.Reordered != 2 || section.Total != 3 {
+		t.Errorf("Section(V1) = %+v, %v, want 3 changes with 2 reordered", section, ok)
+	}
+	if !strings.Contains(stats.Summary(), "2 reordered") {
+		t.Errorf("Summary() = %q, want it to count reordered changes", stats.Summary())
 	}
 }
 
