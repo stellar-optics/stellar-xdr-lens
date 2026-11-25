@@ -574,25 +574,17 @@ func buildOperation(op OperationSpec) (xdr.Operation, error) {
 	typ := strings.ToLower(strings.TrimSpace(op.Type))
 	switch typ {
 	case "payment":
-		dest, err := CoerceMuxedAccount(op.Destination)
+		paymentOp, err := buildPaymentOp(map[string]any{
+			"destination": op.Destination,
+			"amount":      op.Amount,
+			"asset":       op.Asset,
+		})
 		if err != nil {
-			return operation, fmt.Errorf("payment destination: %w", err)
-		}
-		ast, err := CoerceAsset(op.Asset)
-		if err != nil {
-			ast = xdr.Asset{Type: xdr.AssetTypeAssetTypeNative}
-		}
-		amt, err := CoerceAmount(op.Amount)
-		if err != nil {
-			return operation, fmt.Errorf("payment amount: %w", err)
+			return operation, err
 		}
 		operation.Body = xdr.OperationBody{
-			Type: xdr.OperationTypePayment,
-			PaymentOp: &xdr.PaymentOp{
-				Destination: dest,
-				Asset:       ast,
-				Amount:      xdr.Int64(amt),
-			},
+			Type:      xdr.OperationTypePayment,
+			PaymentOp: paymentOp,
 		}
 		return operation, nil
 

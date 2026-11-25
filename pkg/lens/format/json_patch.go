@@ -10,14 +10,17 @@ import (
 )
 
 // JSONPatchFormatter renders a structural diff as an RFC 6902 JSON Patch: a
-// JSON array of add, remove and replace operations addressed by RFC 6901 JSON
-// Pointers.
+// JSON array of add, remove, replace and move operations addressed by RFC 6901
+// JSON Pointers.
 //
 // The paths are relative to the decoded value itself — the object nested under
 // "value" in `lens decode --json` output — so a patch can be applied to that
 // value with any compliant JSON Patch implementation. Added and modified
 // changes become "add" and "replace" operations carrying the right-hand value;
-// removed changes become "remove" operations.
+// removed changes become "remove" operations. A reordered list element becomes
+// a "move" operation whose "from" pointer names its old position and whose
+// "path" names its new one, which is the semantic RFC 6902 form of a move
+// rather than a remove/add pair.
 //
 // When the two decoded values are supplied with WithJSONPatchSources, the
 // operation value is the full JSON subtree taken from the tree, which makes the
@@ -60,12 +63,15 @@ func NewJSONPatchFormatter(opts ...JSONPatchOption) *JSONPatchFormatter {
 
 // JSONPatchOperation is one RFC 6902 operation in the emitted array.
 type JSONPatchOperation struct {
-	// Op is one of "add", "remove" or "replace".
+	// Op is one of "add", "remove", "replace" or "move".
 	Op string `json:"op"`
+	// From is the RFC 6901 JSON Pointer a move operation copies from. It is
+	// present only for move operations.
+	From string `json:"from,omitempty"`
 	// Path is the RFC 6901 JSON Pointer locating the change.
 	Path string `json:"path"`
 	// Value is the right-hand value for add and replace operations. It is
-	// omitted for remove.
+	// omitted for remove and move.
 	Value any `json:"value,omitempty"`
 }
 
@@ -111,9 +117,28 @@ func (f *JSONPatchFormatter) operation(change lens.Change) JSONPatchOperation {
 		return JSONPatchOperation{Op: "add", Path: pointer, Value: f.value(f.right, change.Path, change.After)}
 	case lens.ChangeRemoved:
 		return JSONPatchOperation{Op: "remove", Path: pointer}
+	case lens.ChangeReordered:
+		return JSONPatchOperation{Op: "move", From: moveSourcePointer(change), Path: pointer}
 	default:
 		return JSONPatchOperation{Op: "replace", Path: pointer, Value: f.value(f.right, change.Path, change.After)}
 	}
+}
+
+// moveSourcePointer builds the RFC 6901 pointer a reordered element moves
+// from. The change path addresses the element at its new index, for example
+// "V1.Tx.Operations[0]", and Before records the index it came from, so the
+// source is the same list with the final index token replaced.
+func moveSourcePointer(change lens.Change) string {
+	from := fmt.Sprintf("%v", change.Before)
+	if from == "" || from == "<nil>" {
+		return jsonPointer(change.Path)
+	}
+	open := strings.LastIndexByte(change.Path, '[')
+	closing := strings.LastIndexByte(change.Path, ']')
+	if open < 0 || closing < open {
+		return jsonPointer(change.Path)
+	}
+	return jsonPointer(change.Path[:open] + "[" + from + "]")
 }
 
 // value resolves the JSON value for a change path from the right-hand tree,

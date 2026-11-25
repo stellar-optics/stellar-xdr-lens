@@ -474,6 +474,28 @@ func TestDiffFormatSummary(t *testing.T) {
 	}
 }
 
+func TestDiffSummaryFlag(t *testing.T) {
+	t.Parallel()
+
+	stdout, _, err := run(t, "", "diff", "--summary",
+		fixturePath("tx_soroban.res"), fixturePath("tx_failed.res"))
+	if err != nil {
+		t.Fatalf("diff --summary error = %v", err)
+	}
+	for _, want := range []string{"SECTION", "ADDED", "REMOVED", "MODIFIED", "REORDERED", "TOTAL", "Result"} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("--summary output does not contain %q:\n%s", want, stdout)
+		}
+	}
+
+	// --summary is the same mode as --format summary, so combining it with
+	// another output mode must be rejected rather than silently pick one.
+	if _, _, err := run(t, "", "diff", "--summary", "--json-patch",
+		fixturePath("tx_soroban.res"), fixturePath("tx_failed.res")); err == nil {
+		t.Error("--summary --json-patch error = nil, want a mode conflict")
+	}
+}
+
 func TestDiffMaskPathsFlag(t *testing.T) {
 	t.Parallel()
 

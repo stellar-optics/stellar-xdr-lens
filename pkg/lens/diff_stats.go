@@ -30,6 +30,9 @@ type DiffStats struct {
 	// TypeChanged counts paths whose value changed kind, such as a union
 	// switching arms.
 	TypeChanged int `json:"typeChanged"`
+	// Reordered counts list elements that moved to a different index without
+	// changing their content.
+	Reordered int `json:"reordered"`
 	// Sections aggregates the changes by their top-level path segment, in
 	// the order they first appear in the diff.
 	Sections []DiffSection `json:"sections,omitempty"`
@@ -46,11 +49,13 @@ type DiffSection struct {
 	Path string `json:"path"`
 	// Total is the number of changes under this section.
 	Total int `json:"total"`
-	// Modified, Added, Removed and TypeChanged break Total down by kind.
+	// Modified, Added, Removed, TypeChanged and Reordered break Total down
+	// by kind.
 	Modified    int `json:"modified"`
 	Added       int `json:"added"`
 	Removed     int `json:"removed"`
 	TypeChanged int `json:"typeChanged"`
+	Reordered   int `json:"reordered"`
 }
 
 // SummarizeDiff computes statistics for a DiffResult. A nil result is treated
@@ -79,8 +84,7 @@ func SummarizeChanges(leftType, rightType string, changes []Change) DiffStats {
 	deepestDepth := -1
 
 	for _, change := range changes {
-		stats.Modified, stats.Added, stats.Removed, stats.TypeChanged = addChange(
-			stats.Modified, stats.Added, stats.Removed, stats.TypeChanged, change.Op)
+		stats.add(change.Op)
 
 		section := topLevelSection(change.Path)
 		aggregate, ok := byPath[section]
@@ -89,8 +93,7 @@ func SummarizeChanges(leftType, rightType string, changes []Change) DiffStats {
 			byPath[section] = aggregate
 			order = append(order, section)
 		}
-		aggregate.Modified, aggregate.Added, aggregate.Removed, aggregate.TypeChanged = addChange(
-			aggregate.Modified, aggregate.Added, aggregate.Removed, aggregate.TypeChanged, change.Op)
+		aggregate.add(change.Op)
 		aggregate.Total++
 
 		if depth := pathDepth(change.Path); depth > deepestDepth {
@@ -108,19 +111,31 @@ func SummarizeChanges(leftType, rightType string, changes []Change) DiffStats {
 	return stats
 }
 
-// addChange folds one change operation into a running set of counters.
-func addChange(modified, added, removed, typeChanged int, op ChangeOp) (int, int, int, int) {
+// add folds one change operation into the statistics.
+func (s *DiffStats) add(op ChangeOp) {
+	addChange(op, &s.Modified, &s.Added, &s.Removed, &s.TypeChanged, &s.Reordered)
+}
+
+// add folds one change operation into the section counters.
+func (s *DiffSection) add(op ChangeOp) {
+	addChange(op, &s.Modified, &s.Added, &s.Removed, &s.TypeChanged, &s.Reordered)
+}
+
+// addChange increments the counter matching the change kind. A modified change
+// is the fallback because every other kind is explicitly enumerated.
+func addChange(op ChangeOp, modified, added, removed, typeChanged, reordered *int) {
 	switch op {
 	case ChangeAdded:
-		added++
+		*added++
 	case ChangeRemoved:
-		removed++
+		*removed++
 	case ChangeTypeChanged:
-		typeChanged++
+		*typeChanged++
+	case ChangeReordered:
+		*reordered++
 	default:
-		modified++
+		*modified++
 	}
-	return modified, added, removed, typeChanged
 }
 
 // Section returns the aggregate for a top-level path segment, if present.
@@ -152,6 +167,9 @@ func (s DiffStats) Summary() string {
 	}
 	if s.TypeChanged > 0 {
 		parts = append(parts, strconv.Itoa(s.TypeChanged)+" type changed")
+	}
+	if s.Reordered > 0 {
+		parts = append(parts, strconv.Itoa(s.Reordered)+" reordered")
 	}
 	return fmt.Sprintf("%d change(s): %s", s.Total, strings.Join(parts, ", "))
 }

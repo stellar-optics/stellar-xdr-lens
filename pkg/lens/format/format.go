@@ -33,23 +33,31 @@ type Palette struct {
 	Dim    string
 	Add    string
 	Remove string
-	Change string
-	Reset  string
+	// AddInline and RemoveInline style the exact substrings that changed
+	// inside a modified line, layered on top of Add and Remove. They let a
+	// side-by-side view point at the characters that moved rather than the
+	// whole line; an empty sequence leaves the line style unchanged.
+	AddInline    string
+	RemoveInline string
+	Change       string
+	Reset        string
 }
 
 // ColorPalette is the default 16-colour scheme, chosen to stay legible on
 // both light and dark terminal backgrounds.
 var ColorPalette = Palette{
-	Key:    "\x1b[36m",
-	Type:   "\x1b[35m",
-	Str:    "\x1b[32m",
-	Num:    "\x1b[33m",
-	Note:   "\x1b[90m",
-	Dim:    "\x1b[90m",
-	Add:    "\x1b[32m",
-	Remove: "\x1b[31m",
-	Change: "\x1b[33m",
-	Reset:  "\x1b[0m",
+	Key:          "\x1b[36m",
+	Type:         "\x1b[35m",
+	Str:          "\x1b[32m",
+	Num:          "\x1b[33m",
+	Note:         "\x1b[90m",
+	Dim:          "\x1b[90m",
+	Add:          "\x1b[32m",
+	Remove:       "\x1b[31m",
+	AddInline:    "\x1b[1;32m",
+	RemoveInline: "\x1b[1;31m",
+	Change:       "\x1b[33m",
+	Reset:        "\x1b[0m",
 }
 
 // NoColor is the empty palette: every sequence is a no-op.

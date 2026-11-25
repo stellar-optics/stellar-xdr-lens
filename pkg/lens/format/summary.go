@@ -8,6 +8,60 @@ import (
 	"github.com/stellar-optics/stellar-xdr-lens/pkg/lens"
 )
 
+// diffStatsColumns describes the fixed-width layout of the diff statistics
+// table: the section name followed by one numeric column per change kind and a
+// total.
+const (
+	diffStatsSectionWidth = 30
+	diffStatsColumnWidth  = 9
+	diffStatsColumnCount  = 5
+)
+
+// FormatDiffStatsTable renders lens.DiffStats as a fixed-width table with one
+// row per top-level path section, followed by a TOTAL row. Type changes are
+// counted as modifications, matching how the diff commands describe them.
+//
+// The row order is the order the sections first appear in the diff, so the
+// table is deterministic and mirrors the document. A nil or empty statistic
+// set renders the same "no differences" line the other diff formatters use.
+//
+//nolint:revive // FormatDiffStatsTable is the public API name pinned by the issue spec.
+func FormatDiffStatsTable(stats *lens.DiffStats) string {
+	if stats == nil || stats.Total == 0 {
+		return "no differences\n"
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "%-*s", diffStatsSectionWidth, "SECTION")
+	for _, heading := range []string{"ADDED", "REMOVED", "MODIFIED", "REORDERED", "TOTAL"} {
+		fmt.Fprintf(&b, " %*s", diffStatsColumnWidth, heading)
+	}
+	b.WriteByte('\n')
+
+	divider := strings.Repeat("\u2500", diffStatsSectionWidth+diffStatsColumnCount*(diffStatsColumnWidth+1))
+	b.WriteString(divider + "\n")
+
+	for _, section := range stats.Sections {
+		fmt.Fprintf(&b, "%-*s", diffStatsSectionWidth, truncate(section.Path, diffStatsSectionWidth))
+		writeDiffStatsRow(&b, section.Added, section.Removed,
+			section.Modified+section.TypeChanged, section.Reordered, section.Total)
+	}
+
+	fmt.Fprintf(&b, "%-*s", diffStatsSectionWidth, "TOTAL")
+	writeDiffStatsRow(&b, stats.Added, stats.Removed,
+		stats.Modified+stats.TypeChanged, stats.Reordered, stats.Total)
+
+	return b.String()
+}
+
+// writeDiffStatsRow writes the numeric columns of one table row.
+func writeDiffStatsRow(b *strings.Builder, added, removed, modified, reordered, total int) {
+	for _, value := range []int{added, removed, modified, reordered, total} {
+		fmt.Fprintf(b, " %*d", diffStatsColumnWidth, value)
+	}
+	b.WriteByte('\n')
+}
+
 // CompactFormatter renders decoded XDR as a terse, single-line summary
 // suitable for grep, awk, cut, and shell pipelines.
 //
