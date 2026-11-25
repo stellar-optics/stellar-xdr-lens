@@ -159,3 +159,58 @@ func TestStateArchivalDetectionIsUnambiguous(t *testing.T) {
 		})
 	}
 }
+
+// TestFormatTtlRemaining exercises FormatTtlRemaining for the common cases.
+func TestFormatTtlRemaining(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		liveUntil     uint32
+		currentLedger uint32
+		wantSubstr    string
+	}{
+		{
+			name:          "already expired: liveUntil zero",
+			liveUntil:     0,
+			currentLedger: 1_000_000,
+			wantSubstr:    "EXPIRED",
+		},
+		{
+			name:          "already expired: liveUntil <= current",
+			liveUntil:     500_000,
+			currentLedger: 500_000,
+			wantSubstr:    "EXPIRED",
+		},
+		{
+			name:          "expired in the past",
+			liveUntil:     100,
+			currentLedger: 200,
+			wantSubstr:    "EXPIRED",
+		},
+		{
+			// 518,400 ledgers * 5s = 2,592,000s = 30 days
+			name:          "about 30 days remaining",
+			liveUntil:     1_518_400,
+			currentLedger: 1_000_000,
+			wantSubstr:    "remaining",
+		},
+		{
+			name:          "less than one day",
+			liveUntil:     1_000_100,
+			currentLedger: 1_000_000,
+			wantSubstr:    "remaining",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := lens.FormatTtlRemaining(tc.liveUntil, tc.currentLedger)
+			if !strings.Contains(got, tc.wantSubstr) {
+				t.Errorf("FormatTtlRemaining(%d, %d) = %q, want substring %q",
+					tc.liveUntil, tc.currentLedger, got, tc.wantSubstr)
+			}
+		})
+	}
+}

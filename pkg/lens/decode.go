@@ -122,6 +122,11 @@ var registry = []xdrType{
 	// frequently ambiguous with one another, hence the low priority.
 	{"Operation", func() any { return new(xdr.Operation) }, 20},
 	{"OperationResult", func() any { return new(xdr.OperationResult) }, 19},
+	// OperationResultTr is the inner union of OperationResult that holds the
+	// operation-specific result (PaymentResult, CreateAccountResult, etc.).
+	// Indexing pipelines often store inner results directly, so it registers
+	// at a lower priority than the outer envelope.
+	{"OperationResultTr", func() any { return new(xdr.OperationResultTr) }, 18},
 	{"Memo", func() any { return new(xdr.Memo) }, 10},
 	// Ledger upgrades are commonly ambiguous with StellarMessage and Price.
 	{"LedgerUpgrade", func() any { return new(xdr.LedgerUpgrade) }, 38},

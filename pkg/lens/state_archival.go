@@ -65,6 +65,46 @@ func EstimateTTLExpiry(liveUntilLedgerSeq uint32) (time.Time, bool) {
 	return TTLExpiryAt(ttlReferenceLedgerSeq, liveUntilLedgerSeq, ttlReferenceCloseTime)
 }
 
+// FormatTtlRemaining formats the remaining life of a Soroban entry relative to
+// the current ledger sequence. It returns a string of the form
+// "~N days remaining (K ledgers)" when the entry is still live, or
+// "EXPIRED / ARCHIVED" when liveUntil <= currentLedger. The duration estimate
+// uses LedgerCloseInterval (5 s per ledger) and is explicitly labelled as
+// approximate.
+func FormatTtlRemaining(liveUntil uint32, currentLedger uint32) string {
+	if liveUntil == 0 || liveUntil <= currentLedger {
+		return "EXPIRED / ARCHIVED"
+	}
+	remaining := liveUntil - currentLedger
+	dur := time.Duration(remaining) * LedgerCloseInterval
+	days := dur.Hours() / 24
+	if days >= 1 {
+		return fmt.Sprintf("~%.0f days remaining (%s ledgers)", days, formatCount(remaining))
+	}
+	hours := dur.Hours()
+	if hours >= 1 {
+		return fmt.Sprintf("~%.0f hours remaining (%s ledgers)", hours, formatCount(remaining))
+	}
+	minutes := dur.Minutes()
+	return fmt.Sprintf("~%.0f minutes remaining (%s ledgers)", minutes, formatCount(remaining))
+}
+
+// formatCount formats an integer with comma thousands separators.
+func formatCount(n uint32) string {
+	s := fmt.Sprintf("%d", n)
+	if len(s) <= 3 {
+		return s
+	}
+	var b []byte
+	for i, c := range s {
+		if i > 0 && (len(s)-i)%3 == 0 {
+			b = append(b, ',')
+		}
+		b = append(b, byte(c))
+	}
+	return string(b)
+}
+
 // liveUntilLedgerNote renders the TTL field as an expiry in ledger terms plus
 // the estimated date that ledger closes. The entry is live through the named
 // ledger, so it expires once the ledger sequence passes it. A TTL of zero
