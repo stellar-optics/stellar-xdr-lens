@@ -16,6 +16,81 @@ var (
 	ErrPathNotFound  = errors.New("specified JSON path not found")
 )
 
+// FieldValidationError reports a schema violation at a specific JSON field path.
+// It names the offending path and, where known, the expected and actual values so
+// callers can point users at the exact field that failed validation.
+type FieldValidationError struct {
+	// Path is the dot/bracket JSON path of the offending field, e.g. "operations[0].amount".
+	Path string
+	// Expected describes the value the schema requires, e.g. "positive decimal string".
+	Expected string
+	// Actual is the offending value rendered for humans, e.g. "-5.0".
+	Actual string
+	// Message overrides the default "expected X, got Y" wording when set.
+	Message string
+	// Err is an optional underlying cause.
+	Err error
+}
+
+// Error formats the violation as "at <path>: <reason>" so the invalid field is obvious.
+func (e *FieldValidationError) Error() string {
+	if e.Path == "" {
+		return e.Detail()
+	}
+	return "at " + e.Path + ": " + e.Detail()
+}
+
+// Detail returns the reason without the path prefix.
+func (e *FieldValidationError) Detail() string {
+	if e.Message != "" {
+		return e.Message
+	}
+	switch {
+	case e.Expected != "" && e.Actual != "":
+		return fmt.Sprintf("expected %s, got %s", e.Expected, e.Actual)
+	case e.Expected != "":
+		return "expected " + e.Expected
+	case e.Actual != "":
+		return "got " + e.Actual
+	default:
+		return "invalid value"
+	}
+}
+
+// Unwrap exposes the underlying cause, defaulting to ErrValidationFailed.
+func (e *FieldValidationError) Unwrap() error {
+	if e.Err != nil {
+		return e.Err
+	}
+	return ErrValidationFailed
+}
+
+// FormatActualValue renders a decoded JSON value for inclusion in a field error.
+func FormatActualValue(val any) string {
+	switch v := val.(type) {
+	case nil:
+		return "null"
+	case string:
+		return strconv.Quote(v)
+	case json.Number:
+		return v.String()
+	case float32:
+		return strconv.FormatFloat(float64(v), 'g', -1, 32)
+	case float64:
+		return strconv.FormatFloat(v, 'g', -1, 64)
+	case bool:
+		return strconv.FormatBool(v)
+	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
+		return fmt.Sprintf("%v", v)
+	case map[string]any:
+		return "object"
+	case []any:
+		return "array"
+	default:
+		return fmt.Sprintf("%v", v)
+	}
+}
+
 // JSONPosition records a location within a JSON source.
 type JSONPosition struct {
 	Line   int   // 1-based line number

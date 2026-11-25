@@ -3,6 +3,7 @@ package lens
 import (
 	"errors"
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/stellar/go-stellar-sdk/strkey"
@@ -360,5 +361,114 @@ func TestValidateContractAddressAndPositiveAmount(t *testing.T) {
 	// NonNegativeNumber error
 	if err := ValidateNonNegativeNumber("invalid", "num"); err == nil {
 		t.Errorf("expected error on non-numeric value")
+	}
+}
+
+func TestValidatePreconditions(t *testing.T) {
+	if err := ValidatePreconditions(nil); err != nil {
+		t.Fatalf("nil preconditions should be valid: %v", err)
+	}
+	if err := ValidatePreconditions(&xdr.Preconditions{Type: xdr.PreconditionTypePrecondNone}); err != nil {
+		t.Fatalf("PRECOND_NONE should be valid: %v", err)
+	}
+
+	// Valid time bounds, including an unbounded max_time of 0.
+	for _, tb := range []*xdr.TimeBounds{
+		{MinTime: 100, MaxTime: 200},
+		{MinTime: 100, MaxTime: 0},
+		{MinTime: 0, MaxTime: 0},
+	} {
+		if err := ValidatePreconditions(&xdr.Preconditions{Type: xdr.PreconditionTypePrecondTime, TimeBounds: tb}); err != nil {
+			t.Fatalf("expected valid time bounds %+v: %v", tb, err)
+		}
+	}
+
+	// Reversed time bounds.
+	err := ValidatePreconditions(&xdr.Preconditions{
+		Type:       xdr.PreconditionTypePrecondTime,
+		TimeBounds: &xdr.TimeBounds{MinTime: 200, MaxTime: 100},
+	})
+	if err == nil {
+		t.Fatal("expected reversed time bounds to fail")
+	}
+	if !errors.Is(err, ErrInvalidPrecondition) {
+		t.Fatalf("expected ErrInvalidPrecondition, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "min_time 200") || !strings.Contains(err.Error(), "max_time 100") {
+		t.Fatalf("expected descriptive time bounds error, got %q", err.Error())
+	}
+
+	// Reversed ledger bounds inside a V2 precondition.
+	err = ValidatePreconditions(&xdr.Preconditions{
+		Type: xdr.PreconditionTypePrecondV2,
+		V2: &xdr.PreconditionsV2{
+			LedgerBounds: &xdr.LedgerBounds{MinLedger: 50, MaxLedger: 10},
+		},
+	})
+	if err == nil || !errors.Is(err, ErrInvalidPrecondition) {
+		t.Fatalf("expected ErrInvalidPrecondition for reversed ledger bounds, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "min_ledger 50") || !strings.Contains(err.Error(), "max_ledger 10") {
+		t.Fatalf("expected descriptive ledger bounds error, got %q", err.Error())
+	}
+
+	// Valid V2 combined bounds.
+	if err := ValidatePreconditions(&xdr.Preconditions{
+		Type: xdr.PreconditionTypePrecondV2,
+		V2: &xdr.PreconditionsV2{
+			TimeBounds:   &xdr.TimeBounds{MinTime: 1, MaxTime: 2},
+			LedgerBounds: &xdr.LedgerBounds{MinLedger: 10, MaxLedger: 20},
+		},
+	}); err != nil {
+		t.Fatalf("valid V2 preconditions failed: %v", err)
+	}
+
+	// Malformed unions and unknown discriminants.
+	if err := ValidatePreconditions(&xdr.Preconditions{Type: xdr.PreconditionTypePrecondTime}); err == nil {
+		t.Error("expected PRECOND_TIME without time bounds to fail")
+	}
+	if err := ValidatePreconditions(&xdr.Preconditions{Type: xdr.PreconditionTypePrecondV2}); err == nil {
+		t.Error("expected PRECOND_V2 without a body to fail")
+	}
+	if err := ValidatePreconditions(&xdr.Preconditions{Type: xdr.PreconditionType(99)}); err == nil {
+		t.Error("expected unknown precondition type to fail")
+	}
+}
+
+func TestBuildEnvelopeRejectsReversedBounds(t *testing.T) {
+	validAccount := "GA2JRQOF6EA3HQWDCEDBPPMLYPJCFLDDGYZLEQGMS5SOBQIB3BAFHVAW"
+	ops := []OperationSpec{{Type: "payment", Destination: validAccount, Amount: 100}}
+
+	_, err := BuildTransactionEnvelope(&TxSpec{
+		SourceAccount: validAccount,
+		Fee:           100,
+		Sequence:      1,
+		TimeBounds:    &TimeBoundsSpec{Min: 200, Max: 100},
+		Operations:    ops,
+	})
+	if err == nil || !errors.Is(err, ErrInvalidPrecondition) {
+		t.Fatalf("expected ErrInvalidPrecondition for reversed time bounds, got %v", err)
+	}
+
+	_, err = BuildTransactionEnvelope(&TxSpec{
+		SourceAccount: validAccount,
+		Fee:           100,
+		Sequence:      1,
+		LedgerBounds:  &LedgerBoundsSpec{Min: 50, Max: 10},
+		Operations:    ops,
+	})
+	if err == nil || !errors.Is(err, ErrInvalidPrecondition) {
+		t.Fatalf("expected ErrInvalidPrecondition for reversed ledger bounds, got %v", err)
+	}
+
+	// Unbounded max values are accepted.
+	if _, err := BuildTransactionEnvelope(&TxSpec{
+		SourceAccount: validAccount,
+		Fee:           100,
+		Sequence:      1,
+		TimeBounds:    &TimeBoundsSpec{Min: 200, Max: 0},
+		Operations:    ops,
+	}); err != nil {
+		t.Fatalf("expected unbounded time bounds to encode: %v", err)
 	}
 }

@@ -1,6 +1,9 @@
 package lens
 
 import (
+	"bytes"
+	"errors"
+	"fmt"
 	"os"
 	"testing"
 
@@ -599,5 +602,300 @@ func TestBuildTransactionV0AndFeeBumpErrors(t *testing.T) {
 	}
 	if _, err := BuildTransactionEnvelope(s); err == nil {
 		t.Errorf("expected error on invalid signature hex")
+	}
+}
+
+func invokeContractID(t *testing.T, seed byte) (string, xdr.Hash) {
+	t.Helper()
+	raw := bytes.Repeat([]byte{seed}, 32)
+	var want xdr.Hash
+	copy(want[:], raw)
+	contract, err := strkey.Encode(strkey.VersionByteContract, raw)
+	if err != nil {
+		t.Fatalf("failed to encode contract ID: %v", err)
+	}
+	return contract, want
+}
+
+func TestBuildInvokeContractFromJSON(t *testing.T) {
+	validAccount := "GA2JRQOF6EA3HQWDCEDBPPMLYPJCFLDDGYZLEQGMS5SOBQIB3BAFHVAW"
+	contract, wantContract := invokeContractID(t, 7)
+
+	jsonSpec := fmt.Sprintf(`{
+		"source_account": %q,
+		"fee": 100,
+		"sequence": 1,
+		"operations": [
+			{"type": "invoke_contract", "contract": %q, "function": "hello", "args": ["world", 42]}
+		]
+	}`, validAccount, contract)
+
+	env, err := BuildTransactionEnvelopeFromJSON([]byte(jsonSpec))
+	if err != nil {
+		t.Fatalf("failed to build invoke_contract envelope: %v", err)
+	}
+	if env.V1 == nil || len(env.V1.Tx.Operations) != 1 {
+		t.Fatalf("expected a single operation, got %+v", env.V1)
+	}
+
+	op := env.V1.Tx.Operations[0]
+	if op.Body.Type != xdr.OperationTypeInvokeHostFunction {
+		t.Fatalf("expected invoke_host_function body, got %v", op.Body.Type)
+	}
+	hostOp := op.Body.InvokeHostFunctionOp
+	if hostOp == nil || hostOp.HostFunction.Type != xdr.HostFunctionTypeHostFunctionTypeInvokeContract {
+		t.Fatalf("expected invoke_contract host function, got %+v", hostOp)
+	}
+	invoke := hostOp.HostFunction.InvokeContract
+	if invoke == nil {
+		t.Fatal("expected invoke contract args")
+	}
+	if invoke.ContractAddress.Type != xdr.ScAddressTypeScAddressTypeContract {
+		t.Fatalf("expected contract address, got %v", invoke.ContractAddress.Type)
+	}
+	if got := xdr.Hash(*invoke.ContractAddress.ContractId); got != wantContract {
+		t.Fatalf("contract ID mismatch: got %x want %x", got, wantContract)
+	}
+	if invoke.FunctionName != "hello" {
+		t.Fatalf("expected function symbol hello, got %q", invoke.FunctionName)
+	}
+	if len(invoke.Args) != 2 {
+		t.Fatalf("expected 2 args, got %d", len(invoke.Args))
+	}
+	if invoke.Args[0].Type != xdr.ScValTypeScvSymbol || string(*invoke.Args[0].Sym) != "world" {
+		t.Fatalf("expected symbol arg world, got %+v", invoke.Args[0])
+	}
+	if invoke.Args[1].Type != xdr.ScValTypeScvI64 || int64(*invoke.Args[1].I64) != 42 {
+		t.Fatalf("expected i64 arg 42, got %+v", invoke.Args[1])
+	}
+
+	// The result must survive an XDR round trip.
+	raw, err := env.MarshalBinary()
+	if err != nil {
+		t.Fatalf("failed to marshal envelope: %v", err)
+	}
+	var decoded xdr.TransactionEnvelope
+	if err := decoded.UnmarshalBinary(raw); err != nil {
+		t.Fatalf("failed to unmarshal envelope: %v", err)
+	}
+	decodedInvoke := decoded.V1.Tx.Operations[0].Body.InvokeHostFunctionOp.HostFunction.InvokeContract
+	if decodedInvoke == nil || decodedInvoke.FunctionName != "hello" {
+		t.Fatalf("decoded invocation mismatch: %+v", decodedInvoke)
+	}
+	if got := xdr.Hash(*decodedInvoke.ContractAddress.ContractId); got != wantContract {
+		t.Fatalf("decoded contract ID mismatch: got %x want %x", got, wantContract)
+	}
+}
+
+func TestBuildInvokeContractRejectsInvalidSpec(t *testing.T) {
+	validAccount := "GA2JRQOF6EA3HQWDCEDBPPMLYPJCFLDDGYZLEQGMS5SOBQIB3BAFHVAW"
+	base := TxSpec{
+		SourceAccount: validAccount,
+		Fee:           100,
+		Sequence:      1,
+	}
+
+	for name, op := range map[string]OperationSpec{
+		"missing contract":   {Type: "invoke_contract", Function: "hello"},
+		"invalid contract":   {Type: "invoke_contract", Contract: "not-a-contract", Function: "hello"},
+		"missing function":   {Type: "invoke_contract", Contract: "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4"},
+		"unsupported hostfn": {Type: "invoke_host_function", Function: "upload_wasm", ContractID: "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			spec := base
+			spec.Operations = []OperationSpec{op}
+			if _, err := BuildTransactionEnvelope(&spec); err == nil {
+				t.Fatalf("expected error for %s", name)
+			} else if !errors.Is(err, ErrInvalidTxSpec) {
+				t.Fatalf("expected ErrInvalidTxSpec, got %v", err)
+			}
+		})
+	}
+}
+
+func TestBuildInvokeHostFunctionAuthEntries(t *testing.T) {
+	validAccount := "GA2JRQOF6EA3HQWDCEDBPPMLYPJCFLDDGYZLEQGMS5SOBQIB3BAFHVAW"
+	contract, wantContract := invokeContractID(t, 9)
+
+	spec := &TxSpec{
+		SourceAccount: validAccount,
+		Fee:           1000,
+		Sequence:      5,
+		Operations: []OperationSpec{
+			{
+				Type:         "invoke_host_function",
+				Function:     "invoke_contract",
+				ContractID:   contract,
+				FunctionName: "transfer",
+				Args:         []any{validAccount, 1000},
+				Auth: []any{
+					map[string]any{
+						"credentials": map[string]any{"type": "source_account"},
+						"root_invocation": map[string]any{
+							"contract": contract,
+							"function": "transfer",
+							"args":     []any{validAccount, 1000},
+							"sub_invocations": []any{
+								map[string]any{"contract": contract, "function": "approve", "args": []any{validAccount}},
+							},
+						},
+					},
+					map[string]any{
+						"credentials": map[string]any{
+							"type":                        "address",
+							"address":                     validAccount,
+							"nonce":                       7,
+							"signature_expiration_ledger": 42,
+							"signature":                   map[string]any{"type": "void"},
+						},
+						"root_invocation": map[string]any{"contract": contract, "function": "hello"},
+					},
+				},
+			},
+		},
+	}
+
+	env, err := BuildTransactionEnvelope(spec)
+	if err != nil {
+		t.Fatalf("failed auth envelope: %v", err)
+	}
+	hostOp := env.V1.Tx.Operations[0].Body.InvokeHostFunctionOp
+	if len(hostOp.Auth) != 2 {
+		t.Fatalf("expected 2 auth entries, got %d", len(hostOp.Auth))
+	}
+
+	sourceEntry := hostOp.Auth[0]
+	if sourceEntry.Credentials.Type != xdr.SorobanCredentialsTypeSorobanCredentialsSourceAccount {
+		t.Fatalf("expected source account credentials, got %v", sourceEntry.Credentials.Type)
+	}
+	root := sourceEntry.RootInvocation
+	if root.Function.Type != xdr.SorobanAuthorizedFunctionTypeSorobanAuthorizedFunctionTypeContractFn || root.Function.ContractFn == nil {
+		t.Fatalf("expected contract_fn root invocation, got %+v", root.Function)
+	}
+	if root.Function.ContractFn.FunctionName != "transfer" {
+		t.Fatalf("expected transfer root invocation, got %q", root.Function.ContractFn.FunctionName)
+	}
+	if got := xdr.Hash(*root.Function.ContractFn.ContractAddress.ContractId); got != wantContract {
+		t.Fatalf("root invocation contract mismatch: got %x want %x", got, wantContract)
+	}
+	if len(root.SubInvocations) != 1 {
+		t.Fatalf("expected 1 sub-invocation, got %d", len(root.SubInvocations))
+	}
+	sub := root.SubInvocations[0]
+	if sub.Function.ContractFn == nil || sub.Function.ContractFn.FunctionName != "approve" {
+		t.Fatalf("expected approve sub-invocation, got %+v", sub.Function)
+	}
+
+	addrEntry := hostOp.Auth[1]
+	if addrEntry.Credentials.Type != xdr.SorobanCredentialsTypeSorobanCredentialsAddress || addrEntry.Credentials.Address == nil {
+		t.Fatalf("expected address credentials, got %+v", addrEntry.Credentials)
+	}
+	addrCreds := addrEntry.Credentials.Address
+	if addrCreds.Address.Type != xdr.ScAddressTypeScAddressTypeAccount {
+		t.Fatalf("expected account address, got %v", addrCreds.Address.Type)
+	}
+	if int64(addrCreds.Nonce) != 7 || uint32(addrCreds.SignatureExpirationLedger) != 42 {
+		t.Fatalf("unexpected nonce/expiration: %+v", addrCreds)
+	}
+	if addrCreds.Signature.Type != xdr.ScValTypeScvVoid {
+		t.Fatalf("expected void signature, got %v", addrCreds.Signature.Type)
+	}
+
+	// Auth entries must survive an XDR round trip.
+	raw, err := env.MarshalBinary()
+	if err != nil {
+		t.Fatalf("failed to marshal envelope: %v", err)
+	}
+	var decoded xdr.TransactionEnvelope
+	if err := decoded.UnmarshalBinary(raw); err != nil {
+		t.Fatalf("failed to unmarshal envelope: %v", err)
+	}
+	decodedAuth := decoded.V1.Tx.Operations[0].Body.InvokeHostFunctionOp.Auth
+	if len(decodedAuth) != 2 {
+		t.Fatalf("expected 2 decoded auth entries, got %d", len(decodedAuth))
+	}
+	if decodedAuth[0].RootInvocation.SubInvocations[0].Function.ContractFn.FunctionName != "approve" {
+		t.Fatalf("decoded sub-invocation mismatch: %+v", decodedAuth[0].RootInvocation)
+	}
+	if int64(decodedAuth[1].Credentials.Address.Nonce) != 7 {
+		t.Fatalf("decoded nonce mismatch: %+v", decodedAuth[1].Credentials.Address)
+	}
+}
+
+func TestBuildSorobanAuthorizationEntryDefaults(t *testing.T) {
+	contract, _ := invokeContractID(t, 11)
+
+	entry, err := BuildSorobanAuthorizationEntry(map[string]any{
+		"credentials":     "source_account",
+		"root_invocation": map[string]any{"contract_id": contract, "function_name": "hello"},
+	})
+	if err != nil {
+		t.Fatalf("failed to build auth entry: %v", err)
+	}
+	if entry.Credentials.Type != xdr.SorobanCredentialsTypeSorobanCredentialsSourceAccount {
+		t.Fatalf("expected source account credentials, got %v", entry.Credentials.Type)
+	}
+	if entry.RootInvocation.Function.ContractFn.FunctionName != "hello" {
+		t.Fatalf("unexpected function name %q", entry.RootInvocation.Function.ContractFn.FunctionName)
+	}
+
+	if _, err := BuildSorobanAuthorizationEntry(map[string]any{
+		"root_invocation": map[string]any{"contract": contract, "function": "hello"},
+	}); err != nil {
+		t.Fatalf("expected omitted credentials to default: %v", err)
+	}
+
+	if _, err := BuildSorobanAuthorizationEntry(map[string]any{
+		"credentials":     map[string]any{"type": "address"},
+		"root_invocation": map[string]any{"contract": contract, "function": "hello"},
+	}); err == nil {
+		t.Fatal("expected error for address credentials without an address")
+	}
+}
+
+func TestBuildInvokeHostFunctionAuthFromJSON(t *testing.T) {
+	validAccount := "GA2JRQOF6EA3HQWDCEDBPPMLYPJCFLDDGYZLEQGMS5SOBQIB3BAFHVAW"
+	contract, _ := invokeContractID(t, 13)
+
+	jsonSpec := fmt.Sprintf(`{
+		"source_account": %q,
+		"fee": 1000,
+		"sequence": 5,
+		"operations": [{
+			"type": "invoke_host_function",
+			"function": "invoke_contract",
+			"contract_id": %q,
+			"function_name": "transfer",
+			"args": [%q, 1000],
+			"auth": [{
+				"credentials": {"type": "address", "address": %q, "nonce": 7, "signature_expiration_ledger": 42, "signature": {"type": "void"}},
+				"root_invocation": {
+					"contract": %q,
+					"function": "transfer",
+					"args": [%q, 1000],
+					"sub_invocations": [{"contract": %q, "function": "approve"}]
+				}
+			}]
+		}]
+	}`, validAccount, contract, validAccount, validAccount, contract, validAccount, contract)
+
+	env, err := BuildTransactionEnvelopeFromJSON([]byte(jsonSpec))
+	if err != nil {
+		t.Fatalf("failed to build envelope with auth from JSON: %v", err)
+	}
+	hostOp := env.V1.Tx.Operations[0].Body.InvokeHostFunctionOp
+	if len(hostOp.Auth) != 1 {
+		t.Fatalf("expected 1 auth entry, got %d", len(hostOp.Auth))
+	}
+	creds := hostOp.Auth[0].Credentials
+	if creds.Type != xdr.SorobanCredentialsTypeSorobanCredentialsAddress || creds.Address == nil {
+		t.Fatalf("expected address credentials, got %+v", creds)
+	}
+	if int64(creds.Address.Nonce) != 7 || uint32(creds.Address.SignatureExpirationLedger) != 42 {
+		t.Fatalf("unexpected address credentials: %+v", creds.Address)
+	}
+	subs := hostOp.Auth[0].RootInvocation.SubInvocations
+	if len(subs) != 1 || subs[0].Function.ContractFn == nil || subs[0].Function.ContractFn.FunctionName != "approve" {
+		t.Fatalf("unexpected sub-invocations: %+v", subs)
 	}
 }

@@ -8,6 +8,151 @@ import (
 	"testing"
 )
 
+func TestFieldValidationErrorFormatting(t *testing.T) {
+	fieldErr := &FieldValidationError{
+		Path:     "operations[0].amount",
+		Expected: "positive decimal string",
+		Actual:   "-5.0",
+	}
+	if got, want := fieldErr.Error(), "at operations[0].amount: expected positive decimal string, got -5.0"; got != want {
+		t.Errorf("unexpected error string: got %q want %q", got, want)
+	}
+	if got, want := fieldErr.Detail(), "expected positive decimal string, got -5.0"; got != want {
+		t.Errorf("unexpected detail: got %q want %q", got, want)
+	}
+	if !errors.Is(fieldErr, ErrValidationFailed) {
+		t.Error("expected FieldValidationError to match ErrValidationFailed")
+	}
+
+	// Message overrides the expected/actual wording.
+	withMessage := &FieldValidationError{Path: "fee", Message: "required field is missing or null"}
+	if got, want := withMessage.Error(), "at fee: required field is missing or null"; got != want {
+		t.Errorf("unexpected message error: got %q want %q", got, want)
+	}
+
+	// Partial and pathless errors still render sensibly.
+	if got := (&FieldValidationError{Expected: "string"}).Error(); got != "expected string" {
+		t.Errorf("unexpected expected-only error: %q", got)
+	}
+	if got := (&FieldValidationError{Actual: "object"}).Error(); got != "got object" {
+		t.Errorf("unexpected actual-only error: %q", got)
+	}
+	if got := (&FieldValidationError{}).Error(); got != "invalid value" {
+		t.Errorf("unexpected empty error: %q", got)
+	}
+
+	// A wrapped cause is exposed through errors.As/Is.
+	cause := errors.New("cause")
+	wrapped := &FieldValidationError{Path: "x", Err: cause}
+	if !errors.Is(wrapped, cause) {
+		t.Error("expected underlying cause to be discoverable")
+	}
+}
+
+func TestFormatActualValue(t *testing.T) {
+	cases := []struct {
+		val  any
+		want string
+	}{
+		{nil, "null"},
+		{"abc", `"abc"`},
+		{json.Number("-5.0"), "-5.0"},
+		{float64(-5), "-5"},
+		{float32(1.5), "1.5"},
+		{true, "true"},
+		{int64(42), "42"},
+		{map[string]any{}, "object"},
+		{[]any{}, "array"},
+	}
+	for _, tc := range cases {
+		if got := FormatActualValue(tc.val); got != tc.want {
+			t.Errorf("FormatActualValue(%#v) = %q, want %q", tc.val, got, tc.want)
+		}
+	}
+}
+
+func TestValidateJSONReportsFieldPaths(t *testing.T) {
+	validAccount := "GA2JRQOF6EA3HQWDCEDBPPMLYPJCFLDDGYZLEQGMS5SOBQIB3BAFHVAW"
+
+	badAmount := []byte(`{
+		"source_account": "` + validAccount + `",
+		"fee": 100,
+		"sequence": 1,
+		"operations": [
+			{"type": "payment", "destination": "` + validAccount + `", "amount": -5.0}
+		]
+	}`)
+	err := ValidateJSON(badAmount, StrictTxSpecSchema())
+	if err == nil {
+		t.Fatal("expected negative payment amount to fail validation")
+	}
+	if !errors.Is(err, ErrValidationFailed) {
+		t.Fatalf("expected ErrValidationFailed, got %v", err)
+	}
+	var fieldErr *FieldValidationError
+	if !errors.As(err, &fieldErr) {
+		t.Fatalf("expected errors.As to expose FieldValidationError, got %v", err)
+	}
+	if fieldErr.Path != "operations[0].amount" {
+		t.Fatalf("expected path operations[0].amount, got %q", fieldErr.Path)
+	}
+	want := "at operations[0].amount: expected positive decimal string, got -5.0"
+	if !strings.Contains(err.Error(), want) {
+		t.Fatalf("expected %q in error %q", want, err.Error())
+	}
+
+	// Type mismatches name the schema type and the offending value.
+	badFee := []byte(`{
+		"source_account": "` + validAccount + `",
+		"fee": "abc",
+		"sequence": 1,
+		"operations": []
+	}`)
+	err = ValidateJSON(badFee, StrictTxSpecSchema())
+	if err == nil {
+		t.Fatal("expected non-numeric fee to fail validation")
+	}
+	var feeErr *FieldValidationError
+	if !errors.As(err, &feeErr) {
+		t.Fatalf("expected errors.As to expose FieldValidationError, got %v", err)
+	}
+	if feeErr.Path != "fee" {
+		t.Fatalf("expected path fee, got %q", feeErr.Path)
+	}
+	if !strings.Contains(err.Error(), `at fee: expected number, got "abc"`) {
+		t.Fatalf("unexpected fee error: %q", err.Error())
+	}
+
+	// Nested array paths are reported for element type failures.
+	badOps := []byte(`{
+		"source_account": "` + validAccount + `",
+		"fee": 100,
+		"sequence": 1,
+		"operations": ["not-an-object"]
+	}`)
+	err = ValidateJSON(badOps, StrictTxSpecSchema())
+	if err == nil {
+		t.Fatal("expected scalar operation to fail validation")
+	}
+	if !strings.Contains(err.Error(), "at operations[0]: expected object, got \"not-an-object\"") {
+		t.Fatalf("unexpected operations error: %q", err.Error())
+	}
+
+	// Missing fields report their exact path.
+	missing := []byte(`{
+		"source_account": "` + validAccount + `",
+		"sequence": 1,
+		"operations": []
+	}`)
+	err = ValidateJSON(missing, StrictTxSpecSchema())
+	if err == nil {
+		t.Fatal("expected missing fee to fail validation")
+	}
+	if !strings.Contains(err.Error(), "at fee: missing required field \"fee\"") {
+		t.Fatalf("unexpected missing field error: %q", err.Error())
+	}
+}
+
 func TestJSONPositionString(t *testing.T) {
 	p1 := JSONPosition{Line: 5, Column: 12, Offset: 80}
 	if p1.String() != "line 5, column 12" {
