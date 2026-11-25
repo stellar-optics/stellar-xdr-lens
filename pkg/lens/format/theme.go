@@ -117,9 +117,9 @@ func hyperlinkAddress(p Palette, base, text string) string {
 // ThemeFromEnv returns the palette selected and customized by environment
 // variables. LENS_THEME accepts "dark" (the default) or "light". Individual
 // styles can be overridden with LENS_THEME_<THEME>_<STYLE>, where STYLE is
-// KEY, TYPE, STR, NUM, NOTE, DIM, ADD, REMOVE, or CHANGE. Values are ANSI SGR
-// parameters without the escape prefix (for example, "38;5;208"); an empty
-// value disables that style.
+// KEY, TYPE, STR, NUM, NOTE, DIM, ADD, REMOVE, ADD_INLINE, REMOVE_INLINE, or
+// CHANGE. Values are ANSI SGR parameters without the escape prefix (for
+// example, "38;5;208"); an empty value disables that style.
 func ThemeFromEnv() (Palette, error) {
 	theme := strings.ToLower(strings.TrimSpace(os.Getenv("LENS_THEME")))
 	if theme == "" {
@@ -132,16 +132,18 @@ func ThemeFromEnv() (Palette, error) {
 		palette = ColorPalette
 	case "light":
 		palette = Palette{
-			Key:    "\x1b[34m",
-			Type:   "\x1b[35m",
-			Str:    "\x1b[32m",
-			Num:    "\x1b[31m",
-			Note:   "\x1b[30m",
-			Dim:    "\x1b[30m",
-			Add:    "\x1b[32m",
-			Remove: "\x1b[31m",
-			Change: "\x1b[35m",
-			Reset:  "\x1b[0m",
+			Key:          "\x1b[34m",
+			Type:         "\x1b[35m",
+			Str:          "\x1b[32m",
+			Num:          "\x1b[31m",
+			Note:         "\x1b[30m",
+			Dim:          "\x1b[30m",
+			Add:          "\x1b[32m",
+			Remove:       "\x1b[31m",
+			AddInline:    "\x1b[4;32m",
+			RemoveInline: "\x1b[4;31m",
+			Change:       "\x1b[35m",
+			Reset:        "\x1b[0m",
 		}
 	default:
 		return Palette{}, fmt.Errorf("%w: LENS_THEME=%q (want dark or light)", ErrInvalidTheme, theme)
@@ -160,6 +162,8 @@ func ThemeFromEnv() (Palette, error) {
 		{"DIM", &palette.Dim},
 		{"ADD", &palette.Add},
 		{"REMOVE", &palette.Remove},
+		{"ADD_INLINE", &palette.AddInline},
+		{"REMOVE_INLINE", &palette.RemoveInline},
 		{"CHANGE", &palette.Change},
 	}
 	for _, override := range overrides {
