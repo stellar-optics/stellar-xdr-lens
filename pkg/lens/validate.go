@@ -8,10 +8,14 @@ import (
 	"strings"
 
 	"github.com/stellar/go-stellar-sdk/strkey"
+	"github.com/stellar/go-stellar-sdk/xdr"
 )
 
 // ErrValidationFailed indicates that input JSON does not conform to the expected schema.
 var ErrValidationFailed = errors.New("validation failed")
+
+// ErrInvalidPrecondition indicates transaction preconditions that can never be satisfied.
+var ErrInvalidPrecondition = errors.New("invalid precondition")
 
 // ValidationError records a schema violation at a specific path.
 type ValidationError struct {
@@ -21,6 +25,10 @@ type ValidationError struct {
 }
 
 func (e ValidationError) Error() string {
+	var fieldErr *FieldValidationError
+	if errors.As(e.Err, &fieldErr) {
+		return fieldErr.Error()
+	}
 	if e.Path != "" {
 		return fmt.Sprintf("validation error at %q: %s", e.Path, e.Message)
 	}
@@ -56,6 +64,29 @@ func (ve ValidationErrors) Error() string {
 
 func (ve ValidationErrors) Is(target error) bool {
 	return errors.Is(target, ErrValidationFailed)
+}
+
+// Unwrap exposes each violation so errors.As can reach the underlying FieldValidationError.
+func (ve ValidationErrors) Unwrap() []error {
+	errs := make([]error, len(ve))
+	for i, e := range ve {
+		errs[i] = e
+	}
+	return errs
+}
+
+// newValidationFieldError builds a ValidationError that carries a FieldValidationError
+// naming the offending path, expected schema type, and actual value.
+func newValidationFieldError(path, expected string, actual any, message string) ValidationError {
+	fieldErr := &FieldValidationError{
+		Path:     path,
+		Expected: expected,
+		Message:  message,
+	}
+	if actual != nil {
+		fieldErr.Actual = FormatActualValue(actual)
+	}
+	return ValidationError{Path: path, Message: fieldErr.Detail(), Err: fieldErr}
 }
 
 // SchemaRule defines validation constraints on a JSON property or element.
@@ -104,7 +135,7 @@ func ValidateValue(val any, rule *SchemaRule, path string) error {
 
 	if val == nil {
 		if rule.Required {
-			return ValidationError{Path: path, Message: "required field is missing or null", Err: ErrValidationFailed}
+			return newValidationFieldError(path, "", nil, "required field is missing or null")
 		}
 		return nil
 	}
@@ -114,15 +145,16 @@ func ValidateValue(val any, rule *SchemaRule, path string) error {
 	case "string":
 		strVal, ok := val.(string)
 		if !ok {
-			errs = append(errs, ValidationError{Path: path, Message: fmt.Sprintf("expected string, got %T", val), Err: ErrValidationFailed})
+			errs = append(errs, newValidationFieldError(path, "string", val, ""))
 			return errs
 		}
 		if rule.Pattern != nil && !rule.Pattern.MatchString(strVal) {
-			errs = append(errs, ValidationError{Path: path, Message: fmt.Sprintf("string %q does not match pattern %s", strVal, rule.Pattern.String()), Err: ErrValidationFailed})
+			errs = append(errs, newValidationFieldError(path, "string matching "+rule.Pattern.String(), val,
+				fmt.Sprintf("string %q does not match pattern %s", strVal, rule.Pattern.String())))
 		}
 	case "integer":
 		if _, err := CoerceInt64(val); err != nil {
-			errs = append(errs, ValidationError{Path: path, Message: fmt.Sprintf("expected integer: %v", err), Err: ErrValidationFailed})
+			errs = append(errs, newValidationFieldError(path, "integer", val, ""))
 			return errs
 		}
 	case "number":
@@ -131,24 +163,24 @@ func ValidateValue(val any, rule *SchemaRule, path string) error {
 			// ok
 		case string:
 			if _, err := CoerceInt64(v); err != nil {
-				errs = append(errs, ValidationError{Path: path, Message: fmt.Sprintf("expected number: %v", err), Err: ErrValidationFailed})
+				errs = append(errs, newValidationFieldError(path, "number", val, ""))
 				return errs
 			}
 		default:
-			errs = append(errs, ValidationError{Path: path, Message: fmt.Sprintf("expected number, got %T", val), Err: ErrValidationFailed})
+			errs = append(errs, newValidationFieldError(path, "number", val, ""))
 			return errs
 		}
 	case "boolean":
 		if _, ok := val.(bool); !ok {
 			if _, err := CoerceBool(val); err != nil {
-				errs = append(errs, ValidationError{Path: path, Message: fmt.Sprintf("expected boolean, got %T", val), Err: ErrValidationFailed})
+				errs = append(errs, newValidationFieldError(path, "boolean", val, ""))
 				return errs
 			}
 		}
 	case "array":
 		slice, ok := val.([]any)
 		if !ok {
-			errs = append(errs, ValidationError{Path: path, Message: fmt.Sprintf("expected array, got %T", val), Err: ErrValidationFailed})
+			errs = append(errs, newValidationFieldError(path, "array", val, ""))
 			return errs
 		}
 		if rule.Items != nil {
@@ -168,7 +200,7 @@ func ValidateValue(val any, rule *SchemaRule, path string) error {
 	case "object":
 		m, ok := val.(map[string]any)
 		if !ok {
-			errs = append(errs, ValidationError{Path: path, Message: fmt.Sprintf("expected object, got %T", val), Err: ErrValidationFailed})
+			errs = append(errs, newValidationFieldError(path, "object", val, ""))
 			return errs
 		}
 
@@ -195,7 +227,7 @@ func ValidateValue(val any, rule *SchemaRule, path string) error {
 				}
 				if _, allowed := rule.Properties[targetKey]; !allowed {
 					childPath := joinPath(path, origKey)
-					errs = append(errs, ValidationError{Path: childPath, Message: fmt.Sprintf("unexpected field %q", origKey), Err: ErrValidationFailed})
+					errs = append(errs, newValidationFieldError(childPath, "", nil, fmt.Sprintf("unexpected field %q", origKey)))
 				}
 			}
 		}
@@ -207,7 +239,7 @@ func ValidateValue(val any, rule *SchemaRule, path string) error {
 				propVal, exists := canonical[propKey]
 				if !exists || propVal == nil {
 					if propRule.Required {
-						errs = append(errs, ValidationError{Path: childPath, Message: fmt.Sprintf("missing required field %q", propKey), Err: ErrValidationFailed})
+						errs = append(errs, newValidationFieldError(childPath, "", nil, fmt.Sprintf("missing required field %q", propKey)))
 					}
 					continue
 				}
@@ -234,14 +266,19 @@ func ValidateValue(val any, rule *SchemaRule, path string) error {
 			}
 		}
 		if !matched {
-			errs = append(errs, ValidationError{Path: path, Message: fmt.Sprintf("value %v is not one of allowed enum values %v", val, rule.Enum), Err: ErrValidationFailed})
+			errs = append(errs, newValidationFieldError(path, "", nil, fmt.Sprintf("value %v is not one of allowed enum values %v", val, rule.Enum)))
 		}
 	}
 
 	// Custom validation hook
 	if rule.Custom != nil {
 		if err := rule.Custom(val, path); err != nil {
-			errs = append(errs, ValidationError{Path: path, Message: err.Error(), Err: ErrValidationFailed})
+			var fieldErr *FieldValidationError
+			if errors.As(err, &fieldErr) {
+				errs = append(errs, ValidationError{Path: fieldErr.Path, Message: fieldErr.Detail(), Err: fieldErr})
+			} else {
+				errs = append(errs, newValidationFieldError(path, "", nil, err.Error()))
+			}
 		}
 	}
 
@@ -316,6 +353,59 @@ func ValidatePositiveAmount(v any, path string) error {
 	}
 	if n <= 0 {
 		return fmt.Errorf("amount %d must be positive (> 0)", n)
+	}
+	return nil
+}
+
+// ValidatePreconditions checks that transaction preconditions are internally consistent
+// and can be satisfied. It rejects reversed time or ledger bounds, where the minimum
+// lies beyond an explicit maximum, with an error wrapping ErrInvalidPrecondition.
+func ValidatePreconditions(preconds *xdr.Preconditions) error {
+	if preconds == nil {
+		return nil
+	}
+
+	switch preconds.Type {
+	case xdr.PreconditionTypePrecondNone:
+		return nil
+	case xdr.PreconditionTypePrecondTime:
+		if preconds.TimeBounds == nil {
+			return fmt.Errorf("%w: PRECOND_TIME requires time bounds", ErrInvalidPrecondition)
+		}
+		return ValidateTimeBounds(preconds.TimeBounds)
+	case xdr.PreconditionTypePrecondV2:
+		if preconds.V2 == nil {
+			return fmt.Errorf("%w: PRECOND_V2 requires a v2 precondition body", ErrInvalidPrecondition)
+		}
+		if err := ValidateTimeBounds(preconds.V2.TimeBounds); err != nil {
+			return err
+		}
+		return ValidateLedgerBounds(preconds.V2.LedgerBounds)
+	default:
+		return fmt.Errorf("%w: unrecognized precondition type %d", ErrInvalidPrecondition, int32(preconds.Type))
+	}
+}
+
+// ValidateTimeBounds checks that min_time does not exceed an explicit max_time.
+// A max_time of 0 means the bounds have no upper limit.
+func ValidateTimeBounds(tb *xdr.TimeBounds) error {
+	if tb == nil {
+		return nil
+	}
+	if tb.MaxTime > 0 && tb.MinTime > tb.MaxTime {
+		return fmt.Errorf("%w: time bounds min_time %d exceeds max_time %d", ErrInvalidPrecondition, int64(tb.MinTime), int64(tb.MaxTime))
+	}
+	return nil
+}
+
+// ValidateLedgerBounds checks that min_ledger does not exceed an explicit max_ledger.
+// A max_ledger of 0 means the bounds have no upper limit.
+func ValidateLedgerBounds(lb *xdr.LedgerBounds) error {
+	if lb == nil {
+		return nil
+	}
+	if lb.MaxLedger > 0 && lb.MinLedger > lb.MaxLedger {
+		return fmt.Errorf("%w: ledger bounds min_ledger %d exceeds max_ledger %d", ErrInvalidPrecondition, uint32(lb.MinLedger), uint32(lb.MaxLedger))
 	}
 	return nil
 }
@@ -478,117 +568,130 @@ func validateOperationDetails(val any, path string) error {
 	}
 	typ = strings.ToLower(strings.TrimSpace(typ))
 
+	requireField := func(field string, aliases ...string) error {
+		if _, ok := m[field]; ok {
+			return nil
+		}
+		for _, alias := range aliases {
+			if _, ok := m[alias]; ok {
+				return nil
+			}
+		}
+		return newValidationFieldError(joinPath(path, field), "", nil, "required field is missing or null")
+	}
+
 	switch typ {
 	case "payment":
-		if _, ok := m["destination"]; !ok {
-			return fmt.Errorf("payment operation requires 'destination'")
+		if err := requireField("destination"); err != nil {
+			return err
 		}
-		if _, ok := m["amount"]; !ok {
-			return fmt.Errorf("payment operation requires 'amount'")
+		if err := requireField("amount"); err != nil {
+			return err
+		}
+		amtVal := m["amount"]
+		if n, err := CoerceAmount(amtVal); err != nil || n <= 0 {
+			return newValidationFieldError(joinPath(path, "amount"), "positive decimal string", amtVal, "")
 		}
 	case "create_account":
-		if _, ok := m["destination"]; !ok {
-			return fmt.Errorf("create_account operation requires 'destination'")
+		if err := requireField("destination"); err != nil {
+			return err
 		}
-		if _, ok := m["starting_balance"]; !ok {
-			if _, ok := m["startingBalance"]; !ok {
-				return fmt.Errorf("create_account operation requires 'starting_balance'")
-			}
+		if err := requireField("starting_balance", "startingBalance"); err != nil {
+			return err
 		}
 	case "change_trust":
-		if _, ok := m["line"]; !ok {
-			if _, ok := m["asset"]; !ok {
-				return fmt.Errorf("change_trust operation requires 'line' or 'asset'")
-			}
+		if err := requireField("line", "asset"); err != nil {
+			return err
 		}
 	case "manage_data":
-		if _, ok := m["data_name"]; !ok {
-			if _, ok := m["dataName"]; !ok {
-				if _, ok := m["name"]; !ok {
-					return fmt.Errorf("manage_data operation requires 'data_name'")
-				}
-			}
+		if err := requireField("data_name", "dataName", "name"); err != nil {
+			return err
 		}
 	case "bump_sequence":
-		if _, ok := m["bump_to"]; !ok {
-			if _, ok := m["bumpTo"]; !ok {
-				return fmt.Errorf("bump_sequence operation requires 'bump_to'")
-			}
+		if err := requireField("bump_to", "bumpTo"); err != nil {
+			return err
 		}
 	case "account_merge":
-		if _, ok := m["destination"]; !ok {
-			return fmt.Errorf("account_merge operation requires 'destination'")
+		if err := requireField("destination"); err != nil {
+			return err
 		}
 	case "manage_buy_offer":
-		if _, ok := m["selling"]; !ok {
-			return fmt.Errorf("manage_buy_offer operation requires 'selling'")
+		if err := requireField("selling"); err != nil {
+			return err
 		}
-		if _, ok := m["buying"]; !ok {
-			return fmt.Errorf("manage_buy_offer operation requires 'buying'")
+		if err := requireField("buying"); err != nil {
+			return err
 		}
-		if _, ok := m["buy_amount"]; !ok && m["buyAmount"] == nil {
-			return fmt.Errorf("manage_buy_offer operation requires 'buy_amount'")
+		if err := requireField("buy_amount", "buyAmount"); err != nil {
+			return err
 		}
-		if _, ok := m["price"]; !ok {
-			return fmt.Errorf("manage_buy_offer operation requires 'price'")
+		if err := requireField("price"); err != nil {
+			return err
 		}
 	case "manage_sell_offer":
-		if _, ok := m["selling"]; !ok {
-			return fmt.Errorf("manage_sell_offer operation requires 'selling'")
+		if err := requireField("selling"); err != nil {
+			return err
 		}
-		if _, ok := m["buying"]; !ok {
-			return fmt.Errorf("manage_sell_offer operation requires 'buying'")
+		if err := requireField("buying"); err != nil {
+			return err
 		}
-		if _, ok := m["amount"]; !ok {
-			return fmt.Errorf("manage_sell_offer operation requires 'amount'")
+		if err := requireField("amount"); err != nil {
+			return err
 		}
-		if _, ok := m["price"]; !ok {
-			return fmt.Errorf("manage_sell_offer operation requires 'price'")
+		if err := requireField("price"); err != nil {
+			return err
 		}
 	case "create_passive_sell_offer":
-		if _, ok := m["selling"]; !ok {
-			return fmt.Errorf("create_passive_sell_offer operation requires 'selling'")
+		if err := requireField("selling"); err != nil {
+			return err
 		}
-		if _, ok := m["buying"]; !ok {
-			return fmt.Errorf("create_passive_sell_offer operation requires 'buying'")
+		if err := requireField("buying"); err != nil {
+			return err
 		}
-		if _, ok := m["amount"]; !ok {
-			return fmt.Errorf("create_passive_sell_offer operation requires 'amount'")
+		if err := requireField("amount"); err != nil {
+			return err
 		}
-		if _, ok := m["price"]; !ok {
-			return fmt.Errorf("create_passive_sell_offer operation requires 'price'")
+		if err := requireField("price"); err != nil {
+			return err
 		}
 	case "path_payment_strict_receive":
-		if _, ok := m["destination"]; !ok {
-			return fmt.Errorf("path_payment_strict_receive operation requires 'destination'")
+		if err := requireField("destination"); err != nil {
+			return err
 		}
-		if _, ok := m["send_max"]; !ok && m["sendMax"] == nil {
-			return fmt.Errorf("path_payment_strict_receive operation requires 'send_max'")
+		if err := requireField("send_max", "sendMax"); err != nil {
+			return err
 		}
-		if _, ok := m["dest_amount"]; !ok && m["destAmount"] == nil {
-			return fmt.Errorf("path_payment_strict_receive operation requires 'dest_amount'")
+		if err := requireField("dest_amount", "destAmount"); err != nil {
+			return err
 		}
 	case "path_payment_strict_send":
-		if _, ok := m["destination"]; !ok {
-			return fmt.Errorf("path_payment_strict_send operation requires 'destination'")
+		if err := requireField("destination"); err != nil {
+			return err
 		}
-		if _, ok := m["send_amount"]; !ok && m["sendAmount"] == nil {
-			return fmt.Errorf("path_payment_strict_send operation requires 'send_amount'")
+		if err := requireField("send_amount", "sendAmount"); err != nil {
+			return err
 		}
-		if _, ok := m["dest_min"]; !ok && m["destMin"] == nil {
-			return fmt.Errorf("path_payment_strict_send operation requires 'dest_min'")
+		if err := requireField("dest_min", "destMin"); err != nil {
+			return err
 		}
 	case "set_options":
 		// All fields are optional in set_options
 	case "set_trust_line_flags":
-		if _, ok := m["trustor"]; !ok {
-			return fmt.Errorf("set_trust_line_flags operation requires 'trustor'")
+		if err := requireField("trustor"); err != nil {
+			return err
 		}
-		if _, ok := m["asset"]; !ok {
-			return fmt.Errorf("set_trust_line_flags operation requires 'asset'")
+		if err := requireField("asset"); err != nil {
+			return err
 		}
 	case "invoke_host_function":
 		// Can have invoke_contract, create_contract, or upload_wasm
+	case "invoke_contract":
+		if err := requireField("contract", "contract_id"); err != nil {
+			return err
+		}
+		if err := requireField("function", "function_name"); err != nil {
+			return err
+		}
 	}
 	return nil
 }

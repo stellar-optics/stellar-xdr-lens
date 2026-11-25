@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"math/big"
 	"regexp"
 	"sort"
@@ -58,6 +59,12 @@ func EncodeScValBase64(input any) (string, error) {
 	return base64.StdEncoding.EncodeToString(bytes), nil
 }
 
+// BuildScVal converts intuitive Go literals, maps, or tagged specs into an xdr.ScVal.
+// It is the constructor used by the transaction builders and is equivalent to ParseScVal.
+func BuildScVal(input any) (xdr.ScVal, error) {
+	return ParseScVal(input)
+}
+
 // ParseScVal converts intuitive Go literals, maps, or tagged specs into an xdr.ScVal.
 func ParseScVal(input any) (xdr.ScVal, error) {
 	var zero xdr.ScVal
@@ -91,6 +98,10 @@ func ParseScVal(input any) (xdr.ScVal, error) {
 		}
 		x := xdr.Uint64(n)
 		return xdr.ScVal{Type: xdr.ScValTypeScvU64, U64: &x}, nil
+	case float32:
+		return parseFloatScVal(float64(v))
+	case float64:
+		return parseFloatScVal(v)
 	case json.Number:
 		if i, err := v.Int64(); err == nil {
 			x := xdr.Int64(i)
@@ -108,32 +119,23 @@ func ParseScVal(input any) (xdr.ScVal, error) {
 	}
 }
 
+// parseFloatScVal maps a whole JSON number to an i64 ScVal. Soroban has no floating
+// point type, so fractional values must be supplied as tagged integer literals.
+func parseFloatScVal(f float64) (xdr.ScVal, error) {
+	if math.IsNaN(f) || math.IsInf(f, 0) || math.Trunc(f) != f || f < math.MinInt64 || f > math.MaxInt64 {
+		return xdr.ScVal{}, fmt.Errorf("%w: number %v is not a whole i64; use a tagged i128/u128 literal for fractions", ErrInvalidScVal, f)
+	}
+	x := xdr.Int64(f)
+	return xdr.ScVal{Type: xdr.ScValTypeScvI64, I64: &x}, nil
+}
+
 func parseStringScVal(s string) (xdr.ScVal, error) {
 	trimmed := strings.TrimSpace(s)
 
-	// StrKey Account ID (G...)
-	if strings.HasPrefix(trimmed, "G") && len(trimmed) == 56 {
-		acc, err := CoerceAccountID(trimmed)
-		if err == nil {
-			scAddr := xdr.ScAddress{
-				Type:      xdr.ScAddressTypeScAddressTypeAccount,
-				AccountId: &acc,
-			}
-			return xdr.ScVal{Type: xdr.ScValTypeScvAddress, Address: &scAddr}, nil
-		}
-	}
-
-	// StrKey Contract ID (C...)
-	if strings.HasPrefix(trimmed, "C") && len(trimmed) == 56 {
-		raw, err := strkey.Decode(strkey.VersionByteContract, trimmed)
-		if err == nil && len(raw) == 32 {
-			var h xdr.Hash
-			copy(h[:], raw)
-			scAddr := xdr.ScAddress{
-				Type:       xdr.ScAddressTypeScAddressTypeContract,
-				ContractId: (*xdr.ContractId)(&h),
-			}
-			return xdr.ScVal{Type: xdr.ScValTypeScvAddress, Address: &scAddr}, nil
+	// StrKey Account ID (G...) or Contract ID (C...)
+	if (strings.HasPrefix(trimmed, "G") || strings.HasPrefix(trimmed, "C")) && len(trimmed) == 56 {
+		if addr, err := parseScAddressString(trimmed); err == nil {
+			return xdr.ScVal{Type: xdr.ScValTypeScvAddress, Address: &addr}, nil
 		}
 	}
 
@@ -146,6 +148,185 @@ func parseStringScVal(s string) (xdr.ScVal, error) {
 	// Fallback to ScvString
 	str := xdr.ScString(s)
 	return xdr.ScVal{Type: xdr.ScValTypeScvString, Str: &str}, nil
+}
+
+// ParseScAddress converts a strkey address or tagged address object into an xdr.ScAddress.
+// Accepted forms are "C..." contract IDs, "G..." account IDs, {"type":"contract","contract_id":"C..."},
+// {"type":"account","account_id":"G..."} and {"address":"G..."|"C..."}.
+func ParseScAddress(input any) (xdr.ScAddress, error) {
+	var zero xdr.ScAddress
+
+	switch v := input.(type) {
+	case xdr.ScAddress:
+		return v, nil
+	case *xdr.ScAddress:
+		if v == nil {
+			return zero, fmt.Errorf("%w: nil *xdr.ScAddress", ErrInvalidScVal)
+		}
+		return *v, nil
+	case string:
+		return parseScAddressString(v)
+	case map[string]any:
+		typ := ""
+		if rawType, ok := v["type"]; ok {
+			s, ok := rawType.(string)
+			if !ok {
+				return zero, fmt.Errorf("%w: address 'type' must be string, got %T", ErrInvalidScVal, rawType)
+			}
+			typ = strings.ToLower(strings.TrimSpace(s))
+		}
+		payload := firstPresent(v, "address", "account_id", "contract_id", "account", "contract")
+		if payload == nil {
+			return zero, fmt.Errorf("%w: address object requires 'address', 'account_id' or 'contract_id'", ErrInvalidScVal)
+		}
+		addr, err := ParseScAddress(payload)
+		if err != nil {
+			return zero, err
+		}
+		switch typ {
+		case "account", "account_id":
+			if addr.Type != xdr.ScAddressTypeScAddressTypeAccount {
+				return zero, fmt.Errorf("%w: address type %q requires a G... account ID", ErrInvalidScVal, typ)
+			}
+		case "contract", "contract_id":
+			if addr.Type != xdr.ScAddressTypeScAddressTypeContract {
+				return zero, fmt.Errorf("%w: address type %q requires a C... contract ID", ErrInvalidScVal, typ)
+			}
+		case "", "address":
+			// Any supported address kind is fine.
+		default:
+			return zero, fmt.Errorf("%w: unsupported address type %q", ErrInvalidScVal, typ)
+		}
+		return addr, nil
+	default:
+		return zero, fmt.Errorf("%w: unsupported address representation %T", ErrInvalidScVal, input)
+	}
+}
+
+func parseScAddressString(s string) (xdr.ScAddress, error) {
+	var zero xdr.ScAddress
+	trimmed := strings.TrimSpace(s)
+
+	if strings.HasPrefix(trimmed, "C") && len(trimmed) == 56 {
+		raw, err := strkey.Decode(strkey.VersionByteContract, trimmed)
+		if err != nil {
+			return zero, fmt.Errorf("%w: invalid contract address %q: %w", ErrInvalidScVal, trimmed, err)
+		}
+		if len(raw) != 32 {
+			return zero, fmt.Errorf("%w: contract address %q carries %d bytes, want 32", ErrInvalidScVal, trimmed, len(raw))
+		}
+		var h xdr.Hash
+		copy(h[:], raw)
+		return xdr.ScAddress{
+			Type:       xdr.ScAddressTypeScAddressTypeContract,
+			ContractId: (*xdr.ContractId)(&h),
+		}, nil
+	}
+
+	if strings.HasPrefix(trimmed, "G") && len(trimmed) == 56 {
+		acc, err := CoerceAccountID(trimmed)
+		if err != nil {
+			return zero, fmt.Errorf("%w: invalid account address %q: %w", ErrInvalidScVal, trimmed, err)
+		}
+		return xdr.ScAddress{Type: xdr.ScAddressTypeScAddressTypeAccount, AccountId: &acc}, nil
+	}
+
+	return zero, fmt.Errorf("%w: address %q must be a C... contract ID or a G... account ID", ErrInvalidScVal, trimmed)
+}
+
+// BuildSorobanCredentials constructs SorobanCredentials from a simplified map.
+// Supported forms are {"type":"source_account"} and
+// {"type":"address","address":"C..."|"G...","nonce":1,"signature_expiration_ledger":100,"signature":{...}}.
+func BuildSorobanCredentials(spec map[string]any) (*xdr.SorobanCredentials, error) {
+	if spec == nil {
+		return nil, fmt.Errorf("%w: credentials must be an object", ErrInvalidScVal)
+	}
+
+	typ := "source_account"
+	if rawType := firstPresent(spec, "type", "Type"); rawType != nil {
+		s, ok := rawType.(string)
+		if !ok {
+			return nil, fmt.Errorf("%w: credentials 'type' must be string, got %T", ErrInvalidScVal, rawType)
+		}
+		typ = strings.ToLower(strings.TrimSpace(s))
+	}
+
+	switch typ {
+	case "", "source_account", "sourceaccount", "source":
+		return &xdr.SorobanCredentials{
+			Type: xdr.SorobanCredentialsTypeSorobanCredentialsSourceAccount,
+		}, nil
+
+	case "address", "address_credentials", "addresscredentials":
+		addrInput := firstPresent(spec, "address", "address_id", "account", "contract")
+		if addrInput == nil {
+			return nil, fmt.Errorf("%w: address credentials require an 'address'", ErrInvalidScVal)
+		}
+		addr, err := ParseScAddress(addrInput)
+		if err != nil {
+			return nil, fmt.Errorf("address credentials: %w", err)
+		}
+
+		var nonce int64
+		if rawNonce := firstPresent(spec, "nonce"); rawNonce != nil {
+			n, err := CoerceInt64(rawNonce)
+			if err != nil {
+				return nil, fmt.Errorf("%w: address credentials nonce: %w", ErrInvalidScVal, err)
+			}
+			nonce = n
+		}
+
+		var expiration uint32
+		if rawExp := firstPresent(spec, "signature_expiration_ledger", "signatureExpirationLedger", "expiration_ledger"); rawExp != nil {
+			e, err := CoerceUint32(rawExp)
+			if err != nil {
+				return nil, fmt.Errorf("%w: address credentials signature_expiration_ledger: %w", ErrInvalidScVal, err)
+			}
+			expiration = e
+		}
+
+		signature := xdr.ScVal{Type: xdr.ScValTypeScvVoid}
+		if rawSig := firstPresent(spec, "signature"); rawSig != nil {
+			sig, err := BuildScVal(rawSig)
+			if err != nil {
+				return nil, fmt.Errorf("%w: address credentials signature: %w", ErrInvalidScVal, err)
+			}
+			signature = sig
+		}
+
+		return &xdr.SorobanCredentials{
+			Type: xdr.SorobanCredentialsTypeSorobanCredentialsAddress,
+			Address: &xdr.SorobanAddressCredentials{
+				Address:                   addr,
+				Nonce:                     xdr.Int64(nonce),
+				SignatureExpirationLedger: xdr.Uint32(expiration),
+				Signature:                 signature,
+			},
+		}, nil
+
+	default:
+		return nil, fmt.Errorf("%w: unsupported credentials type %q (supported: source_account, address)", ErrInvalidScVal, typ)
+	}
+}
+
+// firstPresent returns the first non-nil value for keys, or nil when none is set.
+func firstPresent(m map[string]any, keys ...string) any {
+	for _, key := range keys {
+		if v, ok := m[key]; ok && v != nil {
+			return v
+		}
+	}
+	return nil
+}
+
+// firstStringValue returns the first non-blank string value for keys.
+func firstStringValue(m map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if v, ok := m[key].(string); ok && strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 func parseVecScVal(items []any) (xdr.ScVal, error) {

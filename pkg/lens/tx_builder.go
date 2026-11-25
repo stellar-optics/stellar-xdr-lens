@@ -101,6 +101,7 @@ type OperationSpec struct {
 	Signer          any    `json:"signer,omitempty"`
 	Function        string `json:"function,omitempty"`
 	ContractID      string `json:"contract_id,omitempty"`
+	Contract        string `json:"contract,omitempty"`
 	FunctionName    string `json:"function_name,omitempty"`
 	Args            []any  `json:"args,omitempty"`
 	Wasm            any    `json:"wasm,omitempty"`
@@ -301,6 +302,9 @@ func BuildTransactionV0(spec *TxSpec) (xdr.TransactionV0, error) {
 			}
 		}
 	}
+	if err := ValidateTimeBounds(tb); err != nil {
+		return tx, err
+	}
 
 	memo, err := buildMemo(spec.Memo)
 	if err != nil {
@@ -441,7 +445,7 @@ func buildPreconditions(spec *TxSpec) (xdr.Preconditions, error) {
 			}
 		}
 
-		return xdr.Preconditions{
+		preconds := xdr.Preconditions{
 			Type: xdr.PreconditionTypePrecondV2,
 			V2: &xdr.PreconditionsV2{
 				TimeBounds:      tb,
@@ -451,7 +455,11 @@ func buildPreconditions(spec *TxSpec) (xdr.Preconditions, error) {
 				MinSeqLedgerGap: minSeqLedgerGap,
 				ExtraSigners:    extraSigners,
 			},
-		}, nil
+		}
+		if err := ValidatePreconditions(&preconds); err != nil {
+			return xdr.Preconditions{}, err
+		}
+		return preconds, nil
 	}
 
 	if spec.TimeBounds != nil {
@@ -460,13 +468,17 @@ func buildPreconditions(spec *TxSpec) (xdr.Preconditions, error) {
 		if err1 != nil || err2 != nil {
 			return xdr.Preconditions{}, fmt.Errorf("timebounds: %w", errors.Join(err1, err2))
 		}
-		return xdr.Preconditions{
+		preconds := xdr.Preconditions{
 			Type: xdr.PreconditionTypePrecondTime,
 			TimeBounds: &xdr.TimeBounds{
 				MinTime: xdr.TimePoint(minTime),
 				MaxTime: xdr.TimePoint(maxTime),
 			},
-		}, nil
+		}
+		if err := ValidatePreconditions(&preconds); err != nil {
+			return xdr.Preconditions{}, err
+		}
+		return preconds, nil
 	}
 
 	return xdr.Preconditions{Type: xdr.PreconditionTypePrecondNone}, nil
@@ -756,44 +768,278 @@ func buildOperation(op OperationSpec) (xdr.Operation, error) {
 		}
 		return operation, nil
 
-	case "invoke_host_function":
-		var hostFn xdr.HostFunction
-		fnType := strings.ToLower(strings.TrimSpace(op.Function))
-		if fnType == "" || fnType == "invoke_contract" {
-			addrScVal, err := ParseScVal(op.ContractID)
-			if err != nil {
-				return operation, fmt.Errorf("invoke_contract contract_id: %w", err)
-			}
-			scAddress := *addrScVal.Address
-			sym := xdr.ScSymbol(op.FunctionName)
-			args := make([]xdr.ScVal, len(op.Args))
-			for idx, arg := range op.Args {
-				scArg, err := ParseScVal(arg)
-				if err != nil {
-					return operation, fmt.Errorf("invoke_contract arg [%d]: %w", idx, err)
-				}
-				args[idx] = scArg
-			}
-			hostFn = xdr.HostFunction{
-				Type: xdr.HostFunctionTypeHostFunctionTypeInvokeContract,
-				InvokeContract: &xdr.InvokeContractArgs{
-					ContractAddress: scAddress,
-					FunctionName:    sym,
-					Args:            args,
-				},
-			}
+	case "invoke_host_function", "invoke_contract":
+		hostOp, err := buildInvokeHostFunctionOp(op.invokeHostFunctionSpec(typ))
+		if err != nil {
+			return operation, err
 		}
 		operation.Body = xdr.OperationBody{
-			Type: xdr.OperationTypeInvokeHostFunction,
-			InvokeHostFunctionOp: &xdr.InvokeHostFunctionOp{
-				HostFunction: hostFn,
-			},
+			Type:                 xdr.OperationTypeInvokeHostFunction,
+			InvokeHostFunctionOp: hostOp,
 		}
 		return operation, nil
 
 	default:
 		return operation, fmt.Errorf("%w: unsupported operation type %q", ErrInvalidTxSpec, op.Type)
 	}
+}
+
+// invokeHostFunctionSpec normalises an OperationSpec into the map shape accepted by
+// buildInvokeHostFunctionOp. The "invoke_contract" operation type treats 'function' as the
+// contract function name, while "invoke_host_function" treats it as the host function discriminant.
+func (op OperationSpec) invokeHostFunctionSpec(typ string) map[string]any {
+	spec := make(map[string]any)
+	if typ == "invoke_contract" {
+		spec["contract"] = firstNonEmpty(op.Contract, op.ContractID)
+		spec["function_name"] = firstNonEmpty(op.FunctionName, op.Function)
+	} else {
+		if op.Function != "" {
+			spec["host_function_type"] = op.Function
+		}
+		spec["contract"] = firstNonEmpty(op.ContractID, op.Contract)
+		spec["function_name"] = op.FunctionName
+	}
+	if len(op.Args) > 0 {
+		spec["args"] = op.Args
+	}
+	if len(op.Auth) > 0 {
+		spec["auth"] = op.Auth
+	}
+	return spec
+}
+
+// buildInvokeHostFunctionOp assembles an InvokeHostFunctionOp from a simplified operation map.
+//
+// Accepted keys:
+//   - function / host_function_type: host function discriminant (defaults to invoke_contract)
+//   - contract / contract_id: C... contract address to invoke
+//   - function_name / function: contract function symbol
+//   - args: array of ScVal literals
+//   - auth: array of SorobanAuthorizationEntry specifications
+func buildInvokeHostFunctionOp(spec map[string]any) (*xdr.InvokeHostFunctionOp, error) {
+	if spec == nil {
+		return nil, fmt.Errorf("%w: invoke_host_function requires an operation object", ErrInvalidTxSpec)
+	}
+
+	hostType := strings.ToLower(strings.TrimSpace(firstStringValue(spec, "host_function_type", "function_type")))
+	if hostType == "" {
+		if candidate := strings.ToLower(strings.TrimSpace(firstStringValue(spec, "function"))); isHostFunctionType(candidate) {
+			hostType = candidate
+		} else {
+			hostType = "invoke_contract"
+		}
+	}
+
+	var hostFn xdr.HostFunction
+	switch hostType {
+	case "invoke_contract":
+		args, err := buildInvokeContractArgs(spec)
+		if err != nil {
+			return nil, err
+		}
+		hostFn = xdr.HostFunction{
+			Type:           xdr.HostFunctionTypeHostFunctionTypeInvokeContract,
+			InvokeContract: args,
+		}
+	default:
+		return nil, fmt.Errorf("%w: unsupported host function type %q (supported: invoke_contract)", ErrInvalidTxSpec, hostType)
+	}
+
+	auth, err := buildSorobanAuthEntries(spec["auth"])
+	if err != nil {
+		return nil, err
+	}
+
+	return &xdr.InvokeHostFunctionOp{HostFunction: hostFn, Auth: auth}, nil
+}
+
+func isHostFunctionType(s string) bool {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "invoke_contract", "create_contract", "create_contract_v2", "upload_wasm":
+		return true
+	}
+	return false
+}
+
+func buildInvokeContractArgs(spec map[string]any) (*xdr.InvokeContractArgs, error) {
+	contractVal := firstPresent(spec, "contract", "contract_id", "contractId")
+	if contractVal == nil {
+		return nil, fmt.Errorf("%w: invoke_contract requires a 'contract' or 'contract_id' address", ErrInvalidTxSpec)
+	}
+	addr, err := ParseScAddress(contractVal)
+	if err != nil {
+		return nil, fmt.Errorf("%w: invoke_contract contract: %w", ErrInvalidTxSpec, err)
+	}
+	if addr.Type != xdr.ScAddressTypeScAddressTypeContract {
+		return nil, fmt.Errorf("%w: invoke_contract 'contract' must be a C... contract address", ErrInvalidTxSpec)
+	}
+
+	name := contractFunctionName(spec)
+	if name == "" {
+		return nil, fmt.Errorf("%w: invoke_contract requires a 'function' name", ErrInvalidTxSpec)
+	}
+	if len(name) > 32 {
+		return nil, fmt.Errorf("%w: invoke_contract function %q exceeds the 32 character ScSymbol limit", ErrInvalidTxSpec, name)
+	}
+
+	args := make([]xdr.ScVal, 0)
+	if rawArgs, ok := spec["args"]; ok && rawArgs != nil {
+		items, ok := rawArgs.([]any)
+		if !ok {
+			return nil, fmt.Errorf("%w: invoke_contract 'args' must be an array, got %T", ErrInvalidTxSpec, rawArgs)
+		}
+		args = make([]xdr.ScVal, len(items))
+		for i, item := range items {
+			scVal, err := BuildScVal(item)
+			if err != nil {
+				return nil, fmt.Errorf("%w: invoke_contract arg [%d]: %w", ErrInvalidTxSpec, i, err)
+			}
+			args[i] = scVal
+		}
+	}
+
+	return &xdr.InvokeContractArgs{
+		ContractAddress: addr,
+		FunctionName:    xdr.ScSymbol(name),
+		Args:            args,
+	}, nil
+}
+
+// contractFunctionName resolves the contract function symbol, ignoring a 'function'
+// value that actually names a host function discriminant.
+func contractFunctionName(spec map[string]any) string {
+	if name := strings.TrimSpace(firstStringValue(spec, "function_name", "functionName")); name != "" {
+		return name
+	}
+	name := strings.TrimSpace(firstStringValue(spec, "function", "name"))
+	if isHostFunctionType(name) {
+		return ""
+	}
+	return name
+}
+
+func buildSorobanAuthEntries(raw any) ([]xdr.SorobanAuthorizationEntry, error) {
+	if raw == nil {
+		return nil, nil
+	}
+	items, ok := raw.([]any)
+	if !ok {
+		return nil, fmt.Errorf("%w: invoke_host_function 'auth' must be an array, got %T", ErrInvalidTxSpec, raw)
+	}
+	entries := make([]xdr.SorobanAuthorizationEntry, len(items))
+	for i, item := range items {
+		switch v := item.(type) {
+		case xdr.SorobanAuthorizationEntry:
+			entries[i] = v
+		case *xdr.SorobanAuthorizationEntry:
+			if v == nil {
+				return nil, fmt.Errorf("%w: auth entry [%d] is nil", ErrInvalidTxSpec, i)
+			}
+			entries[i] = *v
+		case map[string]any:
+			entry, err := BuildSorobanAuthorizationEntry(v)
+			if err != nil {
+				return nil, fmt.Errorf("auth entry [%d]: %w", i, err)
+			}
+			entries[i] = *entry
+		default:
+			return nil, fmt.Errorf("%w: auth entry [%d] must be an object, got %T", ErrInvalidTxSpec, i, item)
+		}
+	}
+	return entries, nil
+}
+
+// BuildSorobanAuthorizationEntry constructs a SorobanAuthorizationEntry from a simplified map.
+// The map holds "credentials" (see BuildSorobanCredentials) and "root_invocation"; omitted
+// credentials default to source-account credentials.
+func BuildSorobanAuthorizationEntry(spec map[string]any) (*xdr.SorobanAuthorizationEntry, error) {
+	if spec == nil {
+		return nil, fmt.Errorf("%w: authorization entry must be an object", ErrInvalidTxSpec)
+	}
+
+	creds, err := buildEntryCredentials(firstPresent(spec, "credentials", "Credentials"))
+	if err != nil {
+		return nil, fmt.Errorf("%w: credentials: %w", ErrInvalidTxSpec, err)
+	}
+
+	invocation := firstPresent(spec, "root_invocation", "rootInvocation", "invocation")
+	if invocation == nil {
+		return nil, fmt.Errorf("%w: authorization entry requires 'root_invocation'", ErrInvalidTxSpec)
+	}
+	root, err := buildSorobanAuthorizedInvocation(invocation)
+	if err != nil {
+		return nil, fmt.Errorf("root_invocation: %w", err)
+	}
+
+	return &xdr.SorobanAuthorizationEntry{Credentials: *creds, RootInvocation: *root}, nil
+}
+
+func buildEntryCredentials(raw any) (*xdr.SorobanCredentials, error) {
+	switch v := raw.(type) {
+	case nil:
+		return &xdr.SorobanCredentials{Type: xdr.SorobanCredentialsTypeSorobanCredentialsSourceAccount}, nil
+	case string:
+		return BuildSorobanCredentials(map[string]any{"type": v})
+	case map[string]any:
+		return BuildSorobanCredentials(v)
+	case xdr.SorobanCredentials:
+		return &v, nil
+	case *xdr.SorobanCredentials:
+		if v == nil {
+			return nil, fmt.Errorf("%w: nil *xdr.SorobanCredentials", ErrInvalidTxSpec)
+		}
+		return v, nil
+	default:
+		return nil, fmt.Errorf("%w: unsupported credentials representation %T", ErrInvalidTxSpec, raw)
+	}
+}
+
+func buildSorobanAuthorizedInvocation(raw any) (*xdr.SorobanAuthorizedInvocation, error) {
+	spec, ok := raw.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("%w: invocation must be an object, got %T", ErrInvalidTxSpec, raw)
+	}
+
+	args, err := buildInvokeContractArgs(spec)
+	if err != nil {
+		return nil, err
+	}
+
+	var subSpecs []any
+	if rawSubs := firstPresent(spec, "sub_invocations", "subInvocations"); rawSubs != nil {
+		items, ok := rawSubs.([]any)
+		if !ok {
+			return nil, fmt.Errorf("%w: 'sub_invocations' must be an array, got %T", ErrInvalidTxSpec, rawSubs)
+		}
+		subSpecs = items
+	}
+
+	subs := make([]xdr.SorobanAuthorizedInvocation, len(subSpecs))
+	for i, sub := range subSpecs {
+		built, err := buildSorobanAuthorizedInvocation(sub)
+		if err != nil {
+			return nil, fmt.Errorf("sub_invocation [%d]: %w", i, err)
+		}
+		subs[i] = *built
+	}
+
+	return &xdr.SorobanAuthorizedInvocation{
+		Function: xdr.SorobanAuthorizedFunction{
+			Type:       xdr.SorobanAuthorizedFunctionTypeSorobanAuthorizedFunctionTypeContractFn,
+			ContractFn: args,
+		},
+		SubInvocations: subs,
+	}, nil
+}
+
+// firstNonEmpty returns the first value that is not blank.
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 func buildSignatures(specs []SignatureSpec) ([]xdr.DecoratedSignature, error) {
