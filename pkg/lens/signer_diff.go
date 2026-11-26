@@ -388,7 +388,7 @@ func writeCanonicalNode(b *strings.Builder, n *Node) {
 		return
 	}
 	fmt.Fprintf(b, "%d:%d:%s:", n.Kind, len(n.TypeName), n.TypeName)
-	if n.Kind == KindScalar {
+	if n.Kind == KindScalar || n.Kind == KindBytes {
 		fmt.Fprintf(b, "%T=%v", n.Value, n.Value)
 	} else {
 		for _, child := range n.Children {
@@ -406,7 +406,7 @@ func renderNodeLabel(n *Node) string {
 	if n == nil {
 		return "(none)"
 	}
-	if n.Kind == KindScalar {
+	if n.Kind == KindScalar || n.Kind == KindBytes {
 		return n.String()
 	}
 	parts := make([]string, 0, len(n.Children))
@@ -414,7 +414,7 @@ func renderNodeLabel(n *Node) string {
 		if child == nil {
 			continue
 		}
-		if child.Kind != KindScalar {
+		if child.Kind != KindScalar && child.Kind != KindBytes {
 			continue
 		}
 		if child.Name == "" {

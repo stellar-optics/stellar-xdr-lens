@@ -88,7 +88,7 @@ func NodeToGeneric(n *Node, annotate bool) any {
 		}
 		return out
 
-	case KindScalar:
+	case KindScalar, KindBytes:
 		if annotate && n.Note != "" {
 			return map[string]any{
 				"value":   n.Value,
