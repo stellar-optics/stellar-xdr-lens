@@ -37,6 +37,9 @@ func fixtureValue(t *testing.T, name string) string {
 func lensBinary(t *testing.T) string {
 	t.Helper()
 	bin := filepath.Join(t.TempDir(), "lens")
+	if runtime.GOOS == "windows" {
+		bin += ".exe"
+	}
 	cmd := exec.Command("go", "build", "-o", bin, "./cmd/lens")
 	cmd.Dir = repoRoot(t)
 	output, err := cmd.CombinedOutput()

@@ -163,3 +163,108 @@ func claimableBalanceFlagNote(rv reflect.Value) (string, bool) {
 	}
 	return "", false
 }
+
+// ValidateClaimPredicate verifies that a ClaimPredicate has valid discriminants,
+// non-nil inner fields for active arms, non-negative relative offsets, and does
+// not exceed the Stellar protocol maximum recursion depth of 4.
+func ValidateClaimPredicate(p xdr.ClaimPredicate) error {
+	return validateClaimPredicateDepth(p, 0)
+}
+
+func validateClaimPredicateDepth(p xdr.ClaimPredicate, depth int) error {
+	if depth > maxClaimPredicateDepth {
+		return fmt.Errorf("%w: claim predicate exceeds maximum depth %d", ErrInvalidXDR, maxClaimPredicateDepth)
+	}
+
+	switch p.Type {
+	case xdr.ClaimPredicateTypeClaimPredicateUnconditional:
+		return nil
+
+	case xdr.ClaimPredicateTypeClaimPredicateBeforeAbsoluteTime:
+		if p.AbsBefore == nil {
+			return fmt.Errorf("%w: absolute-time claim predicate has no threshold", ErrInvalidXDR)
+		}
+		if *p.AbsBefore < 0 {
+			return fmt.Errorf("%w: absolute-time claim predicate cannot be negative: %d", ErrInvalidXDR, *p.AbsBefore)
+		}
+		return nil
+
+	case xdr.ClaimPredicateTypeClaimPredicateBeforeRelativeTime:
+		if p.RelBefore == nil {
+			return fmt.Errorf("%w: relative-time claim predicate has no duration", ErrInvalidXDR)
+		}
+		if *p.RelBefore < 0 {
+			return fmt.Errorf("%w: relative-time claim predicate duration cannot be negative: %d", ErrInvalidXDR, *p.RelBefore)
+		}
+		return nil
+
+	case xdr.ClaimPredicateTypeClaimPredicateNot:
+		if p.NotPredicate == nil || *p.NotPredicate == nil {
+			return fmt.Errorf("%w: NOT claim predicate has no child", ErrInvalidXDR)
+		}
+		return validateClaimPredicateDepth(**p.NotPredicate, depth+1)
+
+	case xdr.ClaimPredicateTypeClaimPredicateAnd:
+		if p.AndPredicates == nil || len(*p.AndPredicates) == 0 {
+			return fmt.Errorf("%w: AND claim predicate has no children", ErrInvalidXDR)
+		}
+		if len(*p.AndPredicates) > 2 {
+			return fmt.Errorf("%w: AND claim predicate exceeds maximum children of 2", ErrInvalidXDR)
+		}
+		for i, child := range *p.AndPredicates {
+			if err := validateClaimPredicateDepth(child, depth+1); err != nil {
+				return fmt.Errorf("and child [%d]: %w", i, err)
+			}
+		}
+		return nil
+
+	case xdr.ClaimPredicateTypeClaimPredicateOr:
+		if p.OrPredicates == nil || len(*p.OrPredicates) == 0 {
+			return fmt.Errorf("%w: OR claim predicate has no children", ErrInvalidXDR)
+		}
+		if len(*p.OrPredicates) > 2 {
+			return fmt.Errorf("%w: OR claim predicate exceeds maximum children of 2", ErrInvalidXDR)
+		}
+		for i, child := range *p.OrPredicates {
+			if err := validateClaimPredicateDepth(child, depth+1); err != nil {
+				return fmt.Errorf("or child [%d]: %w", i, err)
+			}
+		}
+		return nil
+
+	default:
+		return fmt.Errorf("%w: unknown claim predicate type (%d)", ErrInvalidXDR, p.Type)
+	}
+}
+
+// ValidateClaimant verifies that a Claimant union has a valid discriminant and
+// a structurally sound predicate.
+func ValidateClaimant(c xdr.Claimant) error {
+	switch c.Type {
+	case xdr.ClaimantTypeClaimantTypeV0:
+		if c.V0 == nil {
+			return fmt.Errorf("%w: claimant V0 struct is nil", ErrInvalidXDR)
+		}
+		return ValidateClaimPredicate(c.V0.Predicate)
+	default:
+		return fmt.Errorf("%w: unknown claimant type %v", ErrInvalidXDR, c.Type)
+	}
+}
+
+// NewClaimantV0 constructs a validated xdr.Claimant with destination account and predicate.
+func NewClaimantV0(destination string, predicate xdr.ClaimPredicate) (xdr.Claimant, error) {
+	acc, err := CoerceAccountID(destination)
+	if err != nil {
+		return xdr.Claimant{}, fmt.Errorf("claimant destination: %w", err)
+	}
+	if err := ValidateClaimPredicate(predicate); err != nil {
+		return xdr.Claimant{}, fmt.Errorf("claimant predicate: %w", err)
+	}
+	return xdr.Claimant{
+		Type: xdr.ClaimantTypeClaimantTypeV0,
+		V0: &xdr.ClaimantV0{
+			Destination: acc,
+			Predicate:   predicate,
+		},
+	}, nil
+}

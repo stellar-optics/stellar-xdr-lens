@@ -236,6 +236,17 @@ Use --interactive (or 'lens explore') for an interactive terminal tree viewer.`,
 					return err
 				}
 
+				if formatName == "html" {
+					if asSummary {
+						s, err := lens.Explain(value)
+						if err != nil {
+							return fmt.Errorf("explaining value: %w", err)
+						}
+						return format.NewHTMLFormatter().FormatSummary(w, s)
+					}
+					return format.NewHTMLFormatter().Format(w, value)
+				}
+
 				if asSummary || formatName == "summary" {
 					palette, err := paletteForOutput(w, g.color)
 					if err != nil {
@@ -261,10 +272,6 @@ Use --interactive (or 'lens explore') for an interactive terminal tree viewer.`,
 
 				if asCSV || formatName == "csv" {
 					return format.NewCSVFormatter().Format(w, value)
-				}
-
-				if formatName == "html" {
-					return format.NewHTMLFormatter().Format(w, value)
 				}
 
 				if formatName == "mermaid" {
