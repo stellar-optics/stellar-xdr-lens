@@ -1,6 +1,7 @@
 package lens
 
 import (
+	"fmt"
 	"reflect"
 	"strconv"
 
@@ -25,6 +26,12 @@ func init() {
 	// A statement's slot index is the ledger sequence it votes on, not an
 	// opaque counter; naming it saves a lookup.
 	fieldNotes["SlotIndex"] = slotIndexNote
+
+	// ScpBallot: label the Counter as the ballot round so the number's role
+	// is clear at a glance.  Counter only appears in this struct, so the
+	// field-name registry is sufficient; the type-scoped registry would add
+	// no extra precision here.
+	registerFieldNote(reflect.TypeOf(xdr.ScpBallot{}), "Counter", scpBallotCounterNote)
 }
 
 // enrichPublicKey renders a consensus public key as its strkey address, the
@@ -91,4 +98,14 @@ func slotIndexNote(rv reflect.Value) (string, bool) {
 		return "", false
 	}
 	return "ledger slot " + strconv.FormatUint(uint64(v), 10), true
+}
+
+// scpBallotCounterNote labels a ballot's Counter field as a ballot round
+// number so the reader does not have to look up what the integer means.
+func scpBallotCounterNote(rv reflect.Value) (string, bool) {
+	switch rv.Kind() {
+	case reflect.Uint32, reflect.Uint64, reflect.Uint:
+		return fmt.Sprintf("ballot round %d", rv.Uint()), true
+	}
+	return "", false
 }

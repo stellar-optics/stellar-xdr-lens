@@ -168,6 +168,75 @@ func TestDiffSemanticNormalizesAllWideIntegerVariants(t *testing.T) {
 	}
 }
 
+// TestDiffContractDataDetectsDurabilityChange verifies issue #281: DiffContractData
+// reports a change when the Durability field differs between two entries.
+func TestDiffContractDataDetectsDurabilityChange(t *testing.T) {
+	t.Parallel()
+
+	key := xdr.ScVal{Type: xdr.ScValTypeScvU32, U32: &[]xdr.Uint32{1}[0]}
+	left := &xdr.ContractDataEntry{
+		Contract:   xdr.ScAddress{Type: xdr.ScAddressTypeScAddressTypeContract},
+		Key:        key,
+		Durability: xdr.ContractDataDurabilityPersistent,
+		Val:        symbol("before"),
+	}
+	right := &xdr.ContractDataEntry{
+		Contract:   xdr.ScAddress{Type: xdr.ScAddressTypeScAddressTypeContract},
+		Key:        key,
+		Durability: xdr.ContractDataDurabilityTemporary,
+		Val:        symbol("before"),
+	}
+
+	got, err := lens.DiffContractData(left, right, lens.DiffOptions{})
+	if err != nil {
+		t.Fatalf("DiffContractData() error = %v", err)
+	}
+	if len(got.Changes) != 1 {
+		t.Fatalf("DiffContractData() changes = %+v, want one Durability change", got.Changes)
+	}
+	if got.Changes[0].Path != "Durability" {
+		t.Errorf("path = %q, want Durability", got.Changes[0].Path)
+	}
+}
+
+// TestDiffContractDataMatchesMapEntriesByKey verifies issue #281: DiffContractData
+// uses key-based matching for ScVal map entries in the Val field.
+func TestDiffContractDataMatchesMapEntriesByKey(t *testing.T) {
+	t.Parallel()
+
+	key := xdr.ScVal{Type: xdr.ScValTypeScvU32, U32: &[]xdr.Uint32{1}[0]}
+	leftVal := scMap(
+		xdr.ScMapEntry{Key: symbol("a"), Val: symbol("one")},
+		xdr.ScMapEntry{Key: symbol("b"), Val: symbol("two")},
+	)
+	rightVal := scMap(
+		xdr.ScMapEntry{Key: symbol("new"), Val: symbol("added")},
+		xdr.ScMapEntry{Key: symbol("a"), Val: symbol("one")},
+		xdr.ScMapEntry{Key: symbol("b"), Val: symbol("two")},
+	)
+
+	left := &xdr.ContractDataEntry{
+		Contract:   xdr.ScAddress{Type: xdr.ScAddressTypeScAddressTypeContract},
+		Key:        key,
+		Durability: xdr.ContractDataDurabilityPersistent,
+		Val:        leftVal,
+	}
+	right := &xdr.ContractDataEntry{
+		Contract:   xdr.ScAddress{Type: xdr.ScAddressTypeScAddressTypeContract},
+		Key:        key,
+		Durability: xdr.ContractDataDurabilityPersistent,
+		Val:        rightVal,
+	}
+
+	got, err := lens.DiffContractData(left, right, lens.DiffOptions{})
+	if err != nil {
+		t.Fatalf("DiffContractData() error = %v", err)
+	}
+	if len(got.Changes) != 1 || got.Changes[0].Op != lens.ChangeAdded {
+		t.Fatalf("DiffContractData() changes = %+v, want one added map entry", got.Changes)
+	}
+}
+
 func TestDiffSemanticFallsBackForNonScVal(t *testing.T) {
 	t.Parallel()
 

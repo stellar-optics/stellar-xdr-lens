@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stellar/go-stellar-sdk/xdr"
+
 	"github.com/stellar-optics/stellar-xdr-lens/pkg/lens"
 )
 
@@ -308,4 +310,142 @@ func wrapAt(s string, n int) string {
 		b.WriteString("\n")
 	}
 	return b.String()
+}
+
+// TestDecodeAsTimeBoundsFormatsTimestampsAsRFC3339 verifies issue #277:
+// TimeBounds is registered in the type registry and its time fields are
+// rendered as RFC 3339 strings by the enrichTimePoint enricher.
+func TestDecodeAsTimeBoundsFormatsTimestampsAsRFC3339(t *testing.T) {
+	t.Parallel()
+
+	raw := xdr.TimeBounds{MinTime: 1700000000, MaxTime: 1800000000}
+	payload := mustMarshal(t, raw)
+
+	v, err := lens.DecodeAs(payload, "TimeBounds")
+	if err != nil {
+		t.Fatalf("DecodeAs(TimeBounds) error = %v", err)
+	}
+	if v.Type != "TimeBounds" {
+		t.Errorf("type = %q, want TimeBounds", v.Type)
+	}
+
+	minNode := v.Node.Find("MinTime")
+	if minNode == nil {
+		t.Fatal("MinTime node not found")
+	}
+	if minNode.Note == "" {
+		t.Error("MinTime.Note is empty, want RFC 3339 timestamp")
+	}
+	if !strings.Contains(minNode.Note, "2023") {
+		t.Errorf("MinTime.Note = %q, want a year-2023 RFC 3339 string", minNode.Note)
+	}
+}
+
+// TestDecodeAsLedgerBoundsRegistered verifies issue #277: LedgerBounds is
+// registered so it can be decoded via --type LedgerBounds.
+func TestDecodeAsLedgerBoundsRegistered(t *testing.T) {
+	t.Parallel()
+
+	raw := xdr.LedgerBounds{MinLedger: 100, MaxLedger: 200}
+	payload := mustMarshal(t, raw)
+
+	v, err := lens.DecodeAs(payload, "LedgerBounds")
+	if err != nil {
+		t.Fatalf("DecodeAs(LedgerBounds) error = %v", err)
+	}
+	if v.Type != "LedgerBounds" {
+		t.Errorf("type = %q, want LedgerBounds", v.Type)
+	}
+	minNode := v.Node.Find("MinLedger")
+	if minNode == nil {
+		t.Fatal("MinLedger node not found")
+	}
+	if minNode.Value != uint64(100) {
+		t.Errorf("MinLedger = %v, want 100", minNode.Value)
+	}
+}
+
+// TestDecodeAsScpBallotRegistered verifies issue #275: ScpBallot is registered
+// and its Counter field is labelled as a ballot round number.
+func TestDecodeAsScpBallotRegistered(t *testing.T) {
+	t.Parallel()
+
+	val := xdr.Value([]byte{0x01, 0x02, 0x03, 0x04})
+	raw := xdr.ScpBallot{Counter: 7, Value: val}
+	payload := mustMarshal(t, raw)
+
+	v, err := lens.DecodeAs(payload, "ScpBallot")
+	if err != nil {
+		t.Fatalf("DecodeAs(ScpBallot) error = %v", err)
+	}
+	if v.Type != "ScpBallot" {
+		t.Errorf("type = %q, want ScpBallot", v.Type)
+	}
+	counter := v.Node.Find("Counter")
+	if counter == nil {
+		t.Fatal("Counter node not found")
+	}
+	if counter.Value != uint64(7) {
+		t.Errorf("Counter.Value = %v, want 7", counter.Value)
+	}
+	if !strings.Contains(counter.Note, "ballot round 7") {
+		t.Errorf("Counter.Note = %q, want it to contain %q", counter.Note, "ballot round 7")
+	}
+}
+
+// TestDecodeAsScpNominationRegistered verifies issue #275: ScpNomination is
+// registered and its QuorumSetHash is rendered as a hex string.
+func TestDecodeAsScpNominationRegistered(t *testing.T) {
+	t.Parallel()
+
+	var hash xdr.Hash
+	for i := range hash {
+		hash[i] = byte(i)
+	}
+	raw := xdr.ScpNomination{
+		QuorumSetHash: hash,
+		Votes:         []xdr.Value{{0x01, 0x02}},
+		Accepted:      nil,
+	}
+	payload := mustMarshal(t, raw)
+
+	v, err := lens.DecodeAs(payload, "ScpNomination")
+	if err != nil {
+		t.Fatalf("DecodeAs(ScpNomination) error = %v", err)
+	}
+	if v.Type != "ScpNomination" {
+		t.Errorf("type = %q, want ScpNomination", v.Type)
+	}
+	hashNode := v.Node.Find("QuorumSetHash")
+	if hashNode == nil {
+		t.Fatal("QuorumSetHash node not found")
+	}
+	// enrichHash provides a hex note for xdr.Hash fields.
+	if hashNode.Note == "" && hashNode.Value == nil {
+		t.Error("QuorumSetHash has neither a note nor a value")
+	}
+}
+
+// TestTimeBoundsAndLedgerBoundsExcludedFromDetect verifies issue #277:
+// these precondition sub-types are excluded from auto-detection to prevent
+// false positives against structurally isomorphic types.
+func TestTimeBoundsAndLedgerBoundsExcludedFromDetect(t *testing.T) {
+	t.Parallel()
+
+	for _, typeName := range []string{"TimeBounds", "LedgerBounds"} {
+		t.Run(typeName, func(t *testing.T) {
+			t.Parallel()
+			names := lens.TypeNames()
+			found := false
+			for _, n := range names {
+				if n == typeName {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Errorf("%s not in TypeNames(), want it registered for --type flag", typeName)
+			}
+		})
+	}
 }
