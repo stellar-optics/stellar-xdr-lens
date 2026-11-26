@@ -1739,6 +1739,12 @@ func analyzeAccountQuorum(left, right *Value, leftNode, rightNode *Node, changes
 	if len(analysis.Warnings) > 0 {
 		*warnings = append(*warnings, analysis.Warnings...)
 	}
+	if leftEntry != nil && rightEntry != nil {
+		flagDiff := DiffAccountFlags(xdr.AccountFlags(leftEntry.Flags), xdr.AccountFlags(rightEntry.Flags))
+		if !flagDiff.Equal() {
+			*warnings = append(*warnings, flagDiff.Warnings...)
+		}
+	}
 }
 
 func extractAccountEntry(v *Value, n *Node) *xdr.AccountEntry {
