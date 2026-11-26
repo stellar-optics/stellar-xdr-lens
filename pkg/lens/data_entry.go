@@ -1,9 +1,11 @@
 package lens
 
 import (
+	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"reflect"
+	"strings"
 	"unicode"
 	"unicode/utf8"
 
@@ -64,4 +66,107 @@ func enrichDataValue(rv reflect.Value) (string, any, bool) {
 	default:
 		return fmt.Sprintf("binary, %d byte(s)", len(v)), display, true
 	}
+}
+
+// ValidateDataName validates that a ManageData key name is non-empty and at most 64 bytes.
+func ValidateDataName(name string) error {
+	if name == "" {
+		return fmt.Errorf("%w: manage_data name is required", ErrInvalidTxSpec)
+	}
+	if len(name) > 64 {
+		return fmt.Errorf("%w: manage_data name exceeds 64 bytes (%d)", ErrInvalidTxSpec, len(name))
+	}
+	return nil
+}
+
+// EncodeDataValue encodes a ManageData value into *xdr.DataValue.
+// A nil value returns nil (entry deletion). Plain strings (except 0x-prefixed hex)
+// are validated as UTF-8 and encoded directly; objects with a "base64" field are
+// base64-decoded. All encoded values must be at most 64 bytes.
+func EncodeDataValue(v any) (*xdr.DataValue, error) {
+	if v == nil {
+		return nil, nil
+	}
+
+	var raw []byte
+	switch val := v.(type) {
+	case xdr.DataValue:
+		raw = append([]byte(nil), val...)
+	case *xdr.DataValue:
+		if val == nil {
+			return nil, nil
+		}
+		raw = append([]byte(nil), (*val)...)
+	case []byte:
+		raw = append([]byte(nil), val...)
+	case string:
+		if strings.HasPrefix(val, "0x") || strings.HasPrefix(val, "0X") {
+			b, err := CoerceBytes(val)
+			if err != nil {
+				return nil, fmt.Errorf("%w: manage_data hex value: %w", ErrInvalidTxSpec, err)
+			}
+			raw = b
+		} else {
+			if !utf8.ValidString(val) {
+				return nil, fmt.Errorf("%w: manage_data string value is not valid UTF-8", ErrInvalidTxSpec)
+			}
+			raw = []byte(val)
+		}
+	case map[string]any:
+		switch {
+		case val["base64"] != nil:
+			s, ok := val["base64"].(string)
+			if !ok {
+				return nil, fmt.Errorf("%w: manage_data 'base64' value must be a string, got %T", ErrInvalidTxSpec, val["base64"])
+			}
+			b, err := base64.StdEncoding.DecodeString(strings.TrimSpace(s))
+			if err != nil {
+				return nil, fmt.Errorf("%w: invalid base64 manage_data value: %w", ErrInvalidTxSpec, err)
+			}
+			raw = b
+		case val["hex"] != nil:
+			s, ok := val["hex"].(string)
+			if !ok {
+				return nil, fmt.Errorf("%w: manage_data 'hex' value must be a string, got %T", ErrInvalidTxSpec, val["hex"])
+			}
+			trimmed := strings.TrimSpace(s)
+			if !strings.HasPrefix(trimmed, "0x") && !strings.HasPrefix(trimmed, "0X") {
+				trimmed = "0x" + trimmed
+			}
+			b, err := CoerceBytes(trimmed)
+			if err != nil {
+				return nil, fmt.Errorf("%w: invalid hex manage_data value: %w", ErrInvalidTxSpec, err)
+			}
+			raw = b
+		case val["text"] != nil || val["utf8"] != nil:
+			txtVal := val["text"]
+			if txtVal == nil {
+				txtVal = val["utf8"]
+			}
+			s, ok := txtVal.(string)
+			if !ok {
+				return nil, fmt.Errorf("%w: manage_data text value must be a string, got %T", ErrInvalidTxSpec, txtVal)
+			}
+			if !utf8.ValidString(s) {
+				return nil, fmt.Errorf("%w: manage_data text value is not valid UTF-8", ErrInvalidTxSpec)
+			}
+			raw = []byte(s)
+		default:
+			return nil, fmt.Errorf("%w: manage_data object value requires 'base64', 'hex', or 'text' field", ErrInvalidTxSpec)
+		}
+	case []any:
+		b, err := CoerceBytes(val)
+		if err != nil {
+			return nil, fmt.Errorf("%w: manage_data byte array: %w", ErrInvalidTxSpec, err)
+		}
+		raw = b
+	default:
+		return nil, fmt.Errorf("%w: unsupported manage_data value type %T", ErrInvalidTxSpec, v)
+	}
+
+	if len(raw) > 64 {
+		return nil, fmt.Errorf("%w: manage_data value exceeds 64 bytes (%d)", ErrInvalidTxSpec, len(raw))
+	}
+	dv := xdr.DataValue(raw)
+	return &dv, nil
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 
 	"github.com/stellar/go-stellar-sdk/xdr"
@@ -87,6 +88,8 @@ type OperationSpec struct {
 	DestMin         any    `json:"dest_min,omitempty"`
 	DestAmount      any    `json:"dest_amount,omitempty"`
 	Path            []any  `json:"path,omitempty"`
+	Name            string `json:"name,omitempty"`
+	Value           any    `json:"value,omitempty"`
 	DataName        string `json:"data_name,omitempty"`
 	DataValue       any    `json:"data_value,omitempty"`
 	BumpTo          any    `json:"bump_to,omitempty"`
@@ -604,49 +607,44 @@ func buildOperation(op OperationSpec) (xdr.Operation, error) {
 		return operation, nil
 
 	case "change_trust":
-		lineVal := op.Line
-		if lineVal == nil {
-			lineVal = op.Asset
+		opMap := map[string]any{}
+		if op.Line != nil {
+			opMap["line"] = op.Line
+		} else if op.Asset != nil {
+			opMap["asset"] = op.Asset
 		}
-		cta, err := CoerceChangeTrustAsset(lineVal)
-		if err != nil {
-			return operation, fmt.Errorf("change_trust line: %w", err)
-		}
-		limit := int64(xdr.Int64(0x7fffffffffffffff))
 		if op.Limit != nil {
-			lim, err := CoerceAmount(op.Limit)
-			if err == nil {
-				limit = lim
-			}
+			opMap["limit"] = op.Limit
+		}
+		ctOp, err := buildChangeTrustOp(opMap)
+		if err != nil {
+			return operation, err
 		}
 		operation.Body = xdr.OperationBody{
-			Type: xdr.OperationTypeChangeTrust,
-			ChangeTrustOp: &xdr.ChangeTrustOp{
-				Line:  cta,
-				Limit: xdr.Int64(limit),
-			},
+			Type:          xdr.OperationTypeChangeTrust,
+			ChangeTrustOp: ctOp,
 		}
 		return operation, nil
 
 	case "manage_data":
-		if len(op.DataName) > 64 {
-			return operation, fmt.Errorf("%w: data name exceeds 64 characters", ErrInvalidTxSpec)
+		name := op.DataName
+		if name == "" {
+			name = op.Name
 		}
-		var valPtr *xdr.DataValue
-		if op.DataValue != nil {
-			b, err := CoerceBytes(op.DataValue)
-			if err != nil {
-				return operation, fmt.Errorf("manage_data value: %w", err)
-			}
-			dv := xdr.DataValue(b)
-			valPtr = &dv
+		val := op.DataValue
+		if val == nil {
+			val = op.Value
+		}
+		mdOp, err := buildManageDataOp(map[string]any{
+			"name":  name,
+			"value": val,
+		})
+		if err != nil {
+			return operation, err
 		}
 		operation.Body = xdr.OperationBody{
-			Type: xdr.OperationTypeManageData,
-			ManageDataOp: &xdr.ManageDataOp{
-				DataName:  xdr.String64(op.DataName),
-				DataValue: valPtr,
-			},
+			Type:         xdr.OperationTypeManageData,
+			ManageDataOp: mdOp,
 		}
 		return operation, nil
 
@@ -675,76 +673,79 @@ func buildOperation(op OperationSpec) (xdr.Operation, error) {
 		return operation, nil
 
 	case "manage_buy_offer":
-		selling, err := CoerceAsset(op.Selling)
-		if err != nil {
-			return operation, fmt.Errorf("manage_buy_offer selling: %w", err)
+		buyAmt := op.BuyAmount
+		if buyAmt == nil {
+			buyAmt = op.Amount
 		}
-		buying, err := CoerceAsset(op.Buying)
+		mboOp, err := buildManageBuyOfferOp(map[string]any{
+			"selling":    op.Selling,
+			"buying":     op.Buying,
+			"buy_amount": buyAmt,
+			"price":      op.Price,
+			"offer_id":   op.OfferID,
+		})
 		if err != nil {
-			return operation, fmt.Errorf("manage_buy_offer buying: %w", err)
-		}
-		buyAmt, err := CoerceAmount(op.BuyAmount)
-		if err != nil {
-			return operation, fmt.Errorf("manage_buy_offer buy_amount: %w", err)
-		}
-		price, err := CoercePrice(op.Price)
-		if err != nil {
-			return operation, fmt.Errorf("manage_buy_offer price: %w", err)
-		}
-		var offerID int64
-		if op.OfferID != nil {
-			id, err := CoerceInt64(op.OfferID)
-			if err != nil {
-				return operation, fmt.Errorf("manage_buy_offer offer_id: %w", err)
-			}
-			offerID = id
+			return operation, err
 		}
 		operation.Body = xdr.OperationBody{
-			Type: xdr.OperationTypeManageBuyOffer,
-			ManageBuyOfferOp: &xdr.ManageBuyOfferOp{
-				Selling:   selling,
-				Buying:    buying,
-				BuyAmount: xdr.Int64(buyAmt),
-				Price:     price,
-				OfferId:   xdr.Int64(offerID),
-			},
+			Type:             xdr.OperationTypeManageBuyOffer,
+			ManageBuyOfferOp: mboOp,
 		}
 		return operation, nil
 
 	case "manage_sell_offer":
-		selling, err := CoerceAsset(op.Selling)
+		msoOp, err := buildManageSellOfferOp(map[string]any{
+			"selling":  op.Selling,
+			"buying":   op.Buying,
+			"amount":   op.Amount,
+			"price":    op.Price,
+			"offer_id": op.OfferID,
+		})
 		if err != nil {
-			return operation, fmt.Errorf("manage_sell_offer selling: %w", err)
-		}
-		buying, err := CoerceAsset(op.Buying)
-		if err != nil {
-			return operation, fmt.Errorf("manage_sell_offer buying: %w", err)
-		}
-		amt, err := CoerceAmount(op.Amount)
-		if err != nil {
-			return operation, fmt.Errorf("manage_sell_offer amount: %w", err)
-		}
-		price, err := CoercePrice(op.Price)
-		if err != nil {
-			return operation, fmt.Errorf("manage_sell_offer price: %w", err)
-		}
-		var offerID int64
-		if op.OfferID != nil {
-			id, err := CoerceInt64(op.OfferID)
-			if err != nil {
-				return operation, fmt.Errorf("manage_sell_offer offer_id: %w", err)
-			}
-			offerID = id
+			return operation, err
 		}
 		operation.Body = xdr.OperationBody{
-			Type: xdr.OperationTypeManageSellOffer,
-			ManageSellOfferOp: &xdr.ManageSellOfferOp{
-				Selling: selling,
-				Buying:  buying,
-				Amount:  xdr.Int64(amt),
-				Price:   price,
-				OfferId: xdr.Int64(offerID),
-			},
+			Type:              xdr.OperationTypeManageSellOffer,
+			ManageSellOfferOp: msoOp,
+		}
+		return operation, nil
+
+	case "set_options":
+		soMap := map[string]any{}
+		if op.InflationDest != "" {
+			soMap["inflation_dest"] = op.InflationDest
+		}
+		if op.ClearFlags != nil {
+			soMap["clear_flags"] = op.ClearFlags
+		}
+		if op.SetFlags != nil {
+			soMap["set_flags"] = op.SetFlags
+		}
+		if op.MasterWeight != nil {
+			soMap["master_weight"] = op.MasterWeight
+		}
+		if op.LowThreshold != nil {
+			soMap["low_threshold"] = op.LowThreshold
+		}
+		if op.MedThreshold != nil {
+			soMap["med_threshold"] = op.MedThreshold
+		}
+		if op.HighThreshold != nil {
+			soMap["high_threshold"] = op.HighThreshold
+		}
+		if op.HomeDomain != "" {
+			soMap["home_domain"] = op.HomeDomain
+		}
+		if op.Signer != nil {
+			soMap["signer"] = op.Signer
+		}
+		soOp, err := buildSetOptionsOp(soMap)
+		if err != nil {
+			return operation, err
+		}
+		operation.Body = xdr.OperationBody{
+			Type:         xdr.OperationTypeSetOptions,
+			SetOptionsOp: soOp,
 		}
 		return operation, nil
 
@@ -788,57 +789,308 @@ func buildOperation(op OperationSpec) (xdr.Operation, error) {
 	}
 }
 
-// buildPaymentOp builds an xdr.PaymentOp from the intuitive JSON template
-// `lens encode` accepts:
-//
-//	{"type": "payment", "destination": "G...", "amount": "10.5",
-//	 "asset": {"code": "USDC", "issuer": "G..."}}
-//
-// The destination is a G... account or an M... muxed address. The amount
-// accepts a human decimal ("10.5" becomes 105000000 stroops) as well as an
-// integer stroop count. The asset is "native" or a code/issuer object and
-// defaults to native when omitted. An asset that cannot be parsed is an error
-// rather than a silent fall back to native, so a typo in an issuer cannot
-// change the meaning of the operation.
-func buildPaymentOp(spec map[string]any) (*xdr.PaymentOp, error) {
+// BuildOperation builds an xdr.Operation from a generic JSON-like operation map.
+func BuildOperation(spec map[string]any) (xdr.Operation, error) {
+	var operation xdr.Operation
 	if spec == nil {
-		return nil, fmt.Errorf("%w: payment operation requires 'destination'", ErrInvalidTxSpec)
+		return operation, fmt.Errorf("%w: nil operation specification", ErrInvalidTxSpec)
 	}
 
-	destination := spec["destination"]
-	if destination == nil {
-		return nil, fmt.Errorf("%w: payment operation requires 'destination'", ErrInvalidTxSpec)
-	}
-	if text, ok := destination.(string); ok && strings.TrimSpace(text) == "" {
-		return nil, fmt.Errorf("%w: payment operation requires 'destination'", ErrInvalidTxSpec)
-	}
-	dest, err := CoerceMuxedAccount(destination)
-	if err != nil {
-		return nil, fmt.Errorf("payment destination: %w", err)
-	}
-
-	amount := spec["amount"]
-	if amount == nil {
-		return nil, fmt.Errorf("%w: payment operation requires 'amount'", ErrInvalidTxSpec)
-	}
-	stroops, err := CoerceAmount(amount)
-	if err != nil {
-		return nil, fmt.Errorf("payment amount: %w", err)
-	}
-
-	asset := xdr.Asset{Type: xdr.AssetTypeAssetTypeNative}
-	if raw, ok := spec["asset"]; ok && raw != nil {
-		parsed, err := CoerceAsset(raw)
+	if src := firstPresent(spec, "source_account", "sourceAccount", "source"); src != nil {
+		mux, err := CoerceMuxedAccount(src)
 		if err != nil {
-			return nil, fmt.Errorf("payment asset: %w", err)
+			return operation, fmt.Errorf("operation source account: %w", err)
 		}
-		asset = parsed
+		operation.SourceAccount = &mux
 	}
 
-	return &xdr.PaymentOp{
-		Destination: dest,
-		Asset:       asset,
-		Amount:      xdr.Int64(stroops),
+	typRaw, _ := spec["type"].(string)
+	typ := strings.ToLower(strings.TrimSpace(typRaw))
+	switch typ {
+	case "manage_data":
+		mdOp, err := buildManageDataOp(spec)
+		if err != nil {
+			return operation, err
+		}
+		operation.Body = xdr.OperationBody{
+			Type:         xdr.OperationTypeManageData,
+			ManageDataOp: mdOp,
+		}
+		return operation, nil
+	case "manage_sell_offer":
+		msoOp, err := buildManageSellOfferOp(spec)
+		if err != nil {
+			return operation, err
+		}
+		operation.Body = xdr.OperationBody{
+			Type:              xdr.OperationTypeManageSellOffer,
+			ManageSellOfferOp: msoOp,
+		}
+		return operation, nil
+	case "manage_buy_offer":
+		mboOp, err := buildManageBuyOfferOp(spec)
+		if err != nil {
+			return operation, err
+		}
+		operation.Body = xdr.OperationBody{
+			Type:             xdr.OperationTypeManageBuyOffer,
+			ManageBuyOfferOp: mboOp,
+		}
+		return operation, nil
+	case "set_options":
+		soOp, err := buildSetOptionsOp(spec)
+		if err != nil {
+			return operation, err
+		}
+		operation.Body = xdr.OperationBody{
+			Type:         xdr.OperationTypeSetOptions,
+			SetOptionsOp: soOp,
+		}
+		return operation, nil
+	case "change_trust":
+		ctOp, err := buildChangeTrustOp(spec)
+		if err != nil {
+			return operation, err
+		}
+		operation.Body = xdr.OperationBody{
+			Type:          xdr.OperationTypeChangeTrust,
+			ChangeTrustOp: ctOp,
+		}
+		return operation, nil
+	default:
+		norm := normalizeOperationMap(spec)
+		raw, err := json.Marshal(norm)
+		if err != nil {
+			return operation, err
+		}
+		var opSpec OperationSpec
+		if err := json.Unmarshal(raw, &opSpec); err != nil {
+			return operation, err
+		}
+		return buildOperation(opSpec)
+	}
+}
+
+func buildManageDataOp(spec map[string]any) (*xdr.ManageDataOp, error) {
+	if spec == nil {
+		return nil, fmt.Errorf("%w: nil manage_data spec", ErrInvalidTxSpec)
+	}
+	nameRaw := firstPresent(spec, "name", "data_name", "dataName")
+	name, _ := nameRaw.(string)
+	if err := ValidateDataName(name); err != nil {
+		return nil, err
+	}
+
+	valRaw, _ := hasAnyKey(spec, "value", "data_value", "dataValue")
+	dataVal, err := EncodeDataValue(valRaw)
+	if err != nil {
+		return nil, err
+	}
+
+	return &xdr.ManageDataOp{
+		DataName:  xdr.String64(name),
+		DataValue: dataVal,
+	}, nil
+}
+
+func buildManageSellOfferOp(spec map[string]any) (*xdr.ManageSellOfferOp, error) {
+	if spec == nil {
+		return nil, fmt.Errorf("%w: nil manage_sell_offer spec", ErrInvalidTxSpec)
+	}
+	selling, err := CoerceAsset(spec["selling"])
+	if err != nil {
+		return nil, fmt.Errorf("manage_sell_offer selling: %w", err)
+	}
+	buying, err := CoerceAsset(spec["buying"])
+	if err != nil {
+		return nil, fmt.Errorf("manage_sell_offer buying: %w", err)
+	}
+	amt, err := CoerceAmount(spec["amount"])
+	if err != nil {
+		return nil, fmt.Errorf("manage_sell_offer amount: %w", err)
+	}
+	if amt < 0 {
+		return nil, fmt.Errorf("%w: manage_sell_offer amount %d must be non-negative", ErrInvalidTxSpec, amt)
+	}
+	price, err := ParsePriceFraction(spec["price"])
+	if err != nil {
+		return nil, fmt.Errorf("manage_sell_offer price: %w", err)
+	}
+	var offerID int64
+	if rawID := firstPresent(spec, "offer_id", "offerId"); rawID != nil {
+		id, err := CoerceInt64(rawID)
+		if err != nil {
+			return nil, fmt.Errorf("manage_sell_offer offer_id: %w", err)
+		}
+		if id < 0 {
+			return nil, fmt.Errorf("%w: manage_sell_offer offer_id %d must be non-negative", ErrInvalidTxSpec, id)
+		}
+		offerID = id
+	}
+	return &xdr.ManageSellOfferOp{
+		Selling: selling,
+		Buying:  buying,
+		Amount:  xdr.Int64(amt),
+		Price:   price,
+		OfferId: xdr.Int64(offerID),
+	}, nil
+}
+
+func buildManageBuyOfferOp(spec map[string]any) (*xdr.ManageBuyOfferOp, error) {
+	if spec == nil {
+		return nil, fmt.Errorf("%w: nil manage_buy_offer spec", ErrInvalidTxSpec)
+	}
+	selling, err := CoerceAsset(spec["selling"])
+	if err != nil {
+		return nil, fmt.Errorf("manage_buy_offer selling: %w", err)
+	}
+	buying, err := CoerceAsset(spec["buying"])
+	if err != nil {
+		return nil, fmt.Errorf("manage_buy_offer buying: %w", err)
+	}
+	amtRaw := firstPresent(spec, "buy_amount", "buyAmount", "amount")
+	buyAmt, err := CoerceAmount(amtRaw)
+	if err != nil {
+		return nil, fmt.Errorf("manage_buy_offer buy_amount: %w", err)
+	}
+	if buyAmt < 0 {
+		return nil, fmt.Errorf("%w: manage_buy_offer buy_amount %d must be non-negative", ErrInvalidTxSpec, buyAmt)
+	}
+	price, err := ParsePriceFraction(spec["price"])
+	if err != nil {
+		return nil, fmt.Errorf("manage_buy_offer price: %w", err)
+	}
+	var offerID int64
+	if rawID := firstPresent(spec, "offer_id", "offerId"); rawID != nil {
+		id, err := CoerceInt64(rawID)
+		if err != nil {
+			return nil, fmt.Errorf("manage_buy_offer offer_id: %w", err)
+		}
+		if id < 0 {
+			return nil, fmt.Errorf("%w: manage_buy_offer offer_id %d must be non-negative", ErrInvalidTxSpec, id)
+		}
+		offerID = id
+	}
+	return &xdr.ManageBuyOfferOp{
+		Selling:   selling,
+		Buying:    buying,
+		BuyAmount: xdr.Int64(buyAmt),
+		Price:     price,
+		OfferId:   xdr.Int64(offerID),
+	}, nil
+}
+
+func buildSetOptionsOp(spec map[string]any) (*xdr.SetOptionsOp, error) {
+	if spec == nil {
+		return nil, fmt.Errorf("%w: nil set_options spec", ErrInvalidTxSpec)
+	}
+	op := &xdr.SetOptionsOp{}
+
+	if infRaw := firstPresent(spec, "inflation_dest", "inflationDest"); infRaw != nil {
+		acc, err := CoerceAccountID(infRaw)
+		if err != nil {
+			return nil, fmt.Errorf("set_options inflation_dest: %w", err)
+		}
+		op.InflationDest = &acc
+	}
+
+	if cfRaw := firstPresent(spec, "clear_flags", "clearFlags"); cfRaw != nil {
+		flags, err := ParseAccountFlags(cfRaw)
+		if err != nil {
+			return nil, fmt.Errorf("set_options clear_flags: %w", err)
+		}
+		op.ClearFlags = &flags
+	}
+
+	if sfRaw := firstPresent(spec, "set_flags", "setFlags"); sfRaw != nil {
+		flags, err := ParseAccountFlags(sfRaw)
+		if err != nil {
+			return nil, fmt.Errorf("set_options set_flags: %w", err)
+		}
+		op.SetFlags = &flags
+	}
+
+	if mwRaw := firstPresent(spec, "master_weight", "masterWeight"); mwRaw != nil {
+		w, err := ValidateThresholdWeight(mwRaw, "master_weight")
+		if err != nil {
+			return nil, err
+		}
+		op.MasterWeight = &w
+	}
+
+	if lwRaw := firstPresent(spec, "low_threshold", "lowThreshold"); lwRaw != nil {
+		w, err := ValidateThresholdWeight(lwRaw, "low_threshold")
+		if err != nil {
+			return nil, err
+		}
+		op.LowThreshold = &w
+	}
+
+	if mtRaw := firstPresent(spec, "med_threshold", "medThreshold"); mtRaw != nil {
+		w, err := ValidateThresholdWeight(mtRaw, "med_threshold")
+		if err != nil {
+			return nil, err
+		}
+		op.MedThreshold = &w
+	}
+
+	if htRaw := firstPresent(spec, "high_threshold", "highThreshold"); htRaw != nil {
+		w, err := ValidateThresholdWeight(htRaw, "high_threshold")
+		if err != nil {
+			return nil, err
+		}
+		op.HighThreshold = &w
+	}
+
+	if hdRaw, ok := hasAnyKey(spec, "home_domain", "homeDomain"); ok && hdRaw != nil {
+		hd, err := CoerceString(hdRaw)
+		if err != nil {
+			return nil, fmt.Errorf("set_options home_domain: %w", err)
+		}
+		if len(hd) > 32 {
+			return nil, fmt.Errorf("%w: home_domain exceeds 32 bytes (%d)", ErrInvalidTxSpec, len(hd))
+		}
+		s32 := xdr.String32(hd)
+		op.HomeDomain = &s32
+	}
+
+	if sigRaw, ok := spec["signer"]; ok && sigRaw != nil {
+		signer, err := ParseSigner(sigRaw)
+		if err != nil {
+			return nil, err
+		}
+		op.Signer = signer
+	}
+
+	return op, nil
+}
+
+func buildChangeTrustOp(spec map[string]any) (*xdr.ChangeTrustOp, error) {
+	if spec == nil {
+		return nil, fmt.Errorf("%w: nil change_trust spec", ErrInvalidTxSpec)
+	}
+	lineVal := firstPresent(spec, "line", "asset")
+	if lineVal == nil {
+		return nil, fmt.Errorf("%w: change_trust requires 'line' or 'asset'", ErrInvalidTxSpec)
+	}
+	cta, err := CoerceChangeTrustAsset(lineVal)
+	if err != nil {
+		return nil, fmt.Errorf("change_trust line: %w", err)
+	}
+	limit := int64(math.MaxInt64)
+	if limVal, ok := spec["limit"]; ok && limVal != nil {
+		lim, err := CoerceAmount(limVal)
+		if err != nil {
+			return nil, fmt.Errorf("change_trust limit: %w", err)
+		}
+		if lim < 0 {
+			return nil, fmt.Errorf("%w: change_trust limit %d must be non-negative", ErrInvalidTxSpec, lim)
+		}
+		limit = lim
+	}
+	return &xdr.ChangeTrustOp{
+		Line:  cta,
+		Limit: xdr.Int64(limit),
 	}, nil
 }
 
@@ -908,7 +1160,39 @@ func buildTransactionExt(spec *SorobanDataSpec) (xdr.TransactionExt, error) {
 	}, nil
 }
 
+func normalizeOperationMap(m map[string]any) map[string]any {
+	aliases := OperationSpecSchema().Aliases
+	out := make(map[string]any, len(m))
+	for k, v := range m {
+		target := k
+		if mapped, ok := aliases[k]; ok {
+			target = mapped
+		}
+		if _, exists := out[target]; !exists || v != nil {
+			out[target] = v
+		}
+	}
+	return out
+}
+
 func unmarshalTxSpecFromMap(m map[string]any) (*TxSpec, error) {
+	if opsRaw, ok := m["operations"].([]any); ok {
+		normalized := make([]any, len(opsRaw))
+		for i, item := range opsRaw {
+			if opMap, ok := item.(map[string]any); ok {
+				normalized[i] = normalizeOperationMap(opMap)
+			} else {
+				normalized[i] = item
+			}
+		}
+		mCopy := make(map[string]any, len(m))
+		for k, v := range m {
+			mCopy[k] = v
+		}
+		mCopy["operations"] = normalized
+		m = mCopy
+	}
+
 	bytes, err := json.Marshal(m)
 	if err != nil {
 		return nil, err
