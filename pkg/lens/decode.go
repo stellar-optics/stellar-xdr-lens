@@ -142,6 +142,19 @@ var registry = []xdrType{
 	{"ContractCodeEntry", func() any { return new(xdr.ContractCodeEntry) }, 5},
 	{"ContractDataEntry", func() any { return new(xdr.ContractDataEntry) }, 5},
 	{"ConfigSettingEntry", func() any { return new(xdr.ConfigSettingEntry) }, 5},
+
+	// DEX trade execution records. ClaimOfferAtom appears inside operation
+	// results when offers cross; V0 is the legacy form with a raw ed25519 key.
+	{"ClaimOfferAtom", func() any { return new(xdr.ClaimOfferAtom) }, 16},
+	{"ClaimOfferAtomV0", func() any { return new(xdr.ClaimOfferAtomV0) }, 15},
+
+	// A single ledger-state transition emitted in transaction meta.
+	{"LedgerEntryChange", func() any { return new(xdr.LedgerEntryChange) }, 17},
+
+	// Enum and union building blocks. Both decode from exactly 4 bytes,
+	// so they must rank below Auth (priority 2) to keep pipe detection stable.
+	{"ConfigSettingId", func() any { return new(xdr.ConfigSettingId) }, 1},
+	{"OperationBody", func() any { return new(xdr.OperationBody) }, 1},
 }
 
 // TypeNames returns every registered XDR type name, sorted, for use in help

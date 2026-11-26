@@ -40,6 +40,7 @@ func init() {
 	fieldNotes["TxMaxContractEventsSizeBytes"] = contractMaxSizeBytesNote
 
 	nodeHooks[reflect.TypeOf(xdr.ConfigSettingEntry{})] = decorateConfigSettingEntry
+	enricherFor[reflect.TypeOf(xdr.ConfigSettingId(0))] = enrichConfigSettingId
 }
 
 func contractMaxSizeBytesNote(rv reflect.Value) (string, bool) {
@@ -481,6 +482,17 @@ func configSettingShortName(id xdr.ConfigSettingId) string {
 	default:
 		return fmt.Sprintf("unknown(%d)", id)
 	}
+}
+
+// enrichConfigSettingId renders a ConfigSettingId enum as its constant name
+// plus a short human-friendly label, e.g.
+// "ConfigSettingIdConfigSettingContractMaxSizeBytes (contract max size bytes)".
+func enrichConfigSettingId(rv reflect.Value) (string, any, bool) {
+	id, ok := rv.Interface().(xdr.ConfigSettingId)
+	if !ok {
+		return "", nil, false
+	}
+	return "", fmt.Sprintf("%s (%s)", id.String(), configSettingShortName(id)), true
 }
 
 // ledgerCountNote renders a ledger-count field (Uint32) as an approximate
