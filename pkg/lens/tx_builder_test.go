@@ -860,10 +860,10 @@ func TestBuildLiquidityPoolDepositOp(t *testing.T) {
 	if depositOp.MaxAmountB != 20 {
 		t.Errorf("MaxAmountB = %d, want 20", depositOp.MaxAmountB)
 	}
-	if !depositOp.MinPrice.Equal(xdr.Price{N: 1, D: 2}) {
+	if eq, err := depositOp.MinPrice.TryEqual(xdr.Price{N: 1, D: 2}); err != nil || !eq {
 		t.Errorf("MinPrice = %v, want 0.5000000 (1/2)", depositOp.MinPrice)
 	}
-	if !depositOp.MaxPrice.Equal(xdr.Price{N: 2, D: 1}) {
+	if eq, err := depositOp.MaxPrice.TryEqual(xdr.Price{N: 2, D: 1}); err != nil || !eq {
 		t.Errorf("MaxPrice = %v, want 2.0000000 (2/1)", depositOp.MaxPrice)
 	}
 }

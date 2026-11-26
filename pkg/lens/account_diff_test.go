@@ -11,7 +11,7 @@ import (
 func TestDiffAccountFlagsNoChange(t *testing.T) {
 	t.Parallel()
 
-	flags := xdr.AccountFlags(xdr.AccountFlagsAuthRequiredFlag | xdr.AccountFlagsAuthRevocableFlag)
+	flags := xdr.AccountFlagsAuthRequiredFlag | xdr.AccountFlagsAuthRevocableFlag
 	diff := lens.DiffAccountFlags(flags, flags)
 	if !diff.Equal() {
 		t.Errorf("expected Equal() = true when flags unchanged, got Granted=%v Revoked=%v", diff.Granted, diff.Revoked)
@@ -24,8 +24,8 @@ func TestDiffAccountFlagsNoChange(t *testing.T) {
 func TestDiffAccountFlagsGrantRevoke(t *testing.T) {
 	t.Parallel()
 
-	before := xdr.AccountFlags(xdr.AccountFlagsAuthRequiredFlag | xdr.AccountFlagsAuthRevocableFlag)
-	after := xdr.AccountFlags(xdr.AccountFlagsAuthRequiredFlag | xdr.AccountFlagsAuthImmutableFlag)
+	before := xdr.AccountFlagsAuthRequiredFlag | xdr.AccountFlagsAuthRevocableFlag
+	after := xdr.AccountFlagsAuthRequiredFlag | xdr.AccountFlagsAuthImmutableFlag
 
 	diff := lens.DiffAccountFlags(before, after)
 	if diff.Equal() {
@@ -44,7 +44,7 @@ func TestDiffAccountFlagsImmutableWarning(t *testing.T) {
 	t.Parallel()
 
 	before := xdr.AccountFlags(0)
-	after := xdr.AccountFlags(xdr.AccountFlagsAuthImmutableFlag)
+	after := xdr.AccountFlagsAuthImmutableFlag
 
 	diff := lens.DiffAccountFlags(before, after)
 	if len(diff.Warnings) == 0 {
@@ -65,7 +65,7 @@ func TestDiffAccountFlagsClawbackWarning(t *testing.T) {
 	t.Parallel()
 
 	before := xdr.AccountFlags(0)
-	after := xdr.AccountFlags(xdr.AccountFlagsAuthClawbackEnabledFlag)
+	after := xdr.AccountFlagsAuthClawbackEnabledFlag
 
 	diff := lens.DiffAccountFlags(before, after)
 	if len(diff.Warnings) == 0 {
@@ -86,12 +86,10 @@ func TestDiffAccountFlagsAllGranted(t *testing.T) {
 	t.Parallel()
 
 	before := xdr.AccountFlags(0)
-	after := xdr.AccountFlags(
-		xdr.AccountFlagsAuthRequiredFlag |
-			xdr.AccountFlagsAuthRevocableFlag |
-			xdr.AccountFlagsAuthImmutableFlag |
-			xdr.AccountFlagsAuthClawbackEnabledFlag,
-	)
+	after := xdr.AccountFlagsAuthRequiredFlag |
+		xdr.AccountFlagsAuthRevocableFlag |
+		xdr.AccountFlagsAuthImmutableFlag |
+		xdr.AccountFlagsAuthClawbackEnabledFlag
 
 	diff := lens.DiffAccountFlags(before, after)
 	if len(diff.Granted) != 4 {
@@ -108,12 +106,10 @@ func TestDiffAccountFlagsAllGranted(t *testing.T) {
 func TestDiffAccountFlagsAllRevoked(t *testing.T) {
 	t.Parallel()
 
-	before := xdr.AccountFlags(
-		xdr.AccountFlagsAuthRequiredFlag |
-			xdr.AccountFlagsAuthRevocableFlag |
-			xdr.AccountFlagsAuthImmutableFlag |
-			xdr.AccountFlagsAuthClawbackEnabledFlag,
-	)
+	before := xdr.AccountFlagsAuthRequiredFlag |
+		xdr.AccountFlagsAuthRevocableFlag |
+		xdr.AccountFlagsAuthImmutableFlag |
+		xdr.AccountFlagsAuthClawbackEnabledFlag
 	after := xdr.AccountFlags(0)
 
 	diff := lens.DiffAccountFlags(before, after)
