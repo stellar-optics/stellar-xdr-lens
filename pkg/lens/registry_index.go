@@ -221,6 +221,8 @@ var typeDocs = map[string]typeDoc{
 		"A Soroban network configuration parameter identifier, naming one of the protocol's tunable settings."},
 	"LedgerEntryChange": {CategoryLedger,
 		"A single ledger-state transition emitted in transaction meta: created, updated, removed or restored."},
+	"LedgerEntryExtensionV1": {CategoryLedger,
+		"The protocol-14 ledger entry extension carrying the sponsor's account ID."},
 	"OperationBody": {CategoryTransaction,
 		"The type-discriminated body of an operation, without its source account wrapper."},
 }
