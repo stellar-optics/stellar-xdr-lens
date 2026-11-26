@@ -29,14 +29,31 @@ func (f *MarkdownFormatter) Format(w io.Writer, v *lens.Value) error {
 	return f.FormatSummary(w, summary)
 }
 
-// FormatSummary writes a summary as a transaction details table and an
-// operations table.
+// FormatSummary writes transaction badges, a details table, an operations
+// review table, and any available collapsible diagnostic trace.
 func (f *MarkdownFormatter) FormatSummary(w io.Writer, s *lens.Summary) error {
 	if s == nil {
 		return fmt.Errorf("format: nil summary")
 	}
 
 	var b strings.Builder
+	status := "NOT REPORTED"
+	if s.Outcome != nil {
+		status = "FAILED"
+		if s.Outcome.Success {
+			status = "SUCCESS"
+		}
+	}
+	fmt.Fprintf(&b, "[STATUS: %s]", status)
+	fee := s.FeeCharged
+	if fee == 0 {
+		fee = s.Fee
+	}
+	if fee > 0 {
+		fmt.Fprintf(&b, " [FEE: %d stroops]", fee)
+	}
+	b.WriteString("\n\n")
+
 	b.WriteString("| Transaction | Details |\n")
 	b.WriteString("| --- | --- |\n")
 	markdownRow(&b, "Summary", s.Headline)
@@ -76,36 +93,41 @@ func (f *MarkdownFormatter) FormatSummary(w io.Writer, s *lens.Summary) error {
 		markdownRow(&b, "Precondition", precondition)
 	}
 
-	b.WriteString("\n| # | Operation | Source | Description | Result | Status | Hint |\n")
-	b.WriteString("| ---: | --- | --- | --- | --- | --- | --- |\n")
+	b.WriteString("\n| # | Operation | Source | Status | Details |\n")
+	b.WriteString("| ---: | --- | --- | --- | --- |\n")
 	if len(s.Operations) == 0 {
-		b.WriteString("| - | No operations | - | - | - | - | - |\n")
+		b.WriteString("| - | No operations | - | - | - |\n")
 	} else {
 		for _, op := range s.Operations {
-			result, status, hint := "-", "Not reported", "-"
+			status := "Not reported"
+			var details []string
+			if op.Detail != "" {
+				details = append(details, op.Detail)
+			}
 			if op.Result != nil {
-				result = op.Result.Code + ": " + op.Result.Summary
+				result := op.Result.Summary
+				if op.Result.Code != "" {
+					result = op.Result.Code + ": " + result
+				}
 				if op.Result.Context != "" {
 					result += " — " + op.Result.Context
 				}
+				details = appendMarkdownDetail(details, result)
 				status = "Failed"
 				if op.Result.Success {
 					status = "Succeeded"
 				}
 				if op.Result.Hint != "" {
-					hint = op.Result.Hint
+					details = appendMarkdownDetail(details, "Hint: "+op.Result.Hint)
 				}
 			}
-			description := op.Detail
 			if len(op.Warnings) > 0 {
-				if description != "" {
-					description += " <br> " + strings.Join(op.Warnings, "<br>")
-				} else {
-					description = strings.Join(op.Warnings, "<br>")
+				for _, warning := range op.Warnings {
+					details = appendMarkdownDetail(details, "Warning: "+warning)
 				}
 			}
-			if description == "" {
-				description = "-"
+			if len(details) == 0 {
+				details = append(details, "-")
 			}
 			source := op.Source
 			if source == "" {
@@ -115,18 +137,73 @@ func (f *MarkdownFormatter) FormatSummary(w io.Writer, s *lens.Summary) error {
 				fmt.Sprintf("%d", op.Index),
 				op.Type,
 				source,
-				description,
-				result,
 				status,
-				hint,
+				strings.Join(details, "<br>"),
 			)
 		}
+	}
+
+	if len(s.DiagnosticTrace) > 0 {
+		b.WriteString("\n<details>\n<summary>Diagnostic Trace</summary>\n\n")
+		lines := make([]string, 0, len(s.DiagnosticTrace))
+		for _, event := range s.DiagnosticTrace {
+			lines = append(lines, formatDiagnosticDetail(event))
+		}
+		fence := markdownFence(lines)
+		b.WriteString(fence + "text\n")
+		for _, line := range lines {
+			b.WriteString(line + "\n")
+		}
+		b.WriteString(fence + "\n</details>\n")
 	}
 
 	if _, err := io.WriteString(w, b.String()); err != nil {
 		return fmt.Errorf("format: write markdown summary: %w", err)
 	}
 	return nil
+}
+
+func appendMarkdownDetail(details []string, value string) []string {
+	if value == "" {
+		return details
+	}
+	return append(details, value)
+}
+
+func formatDiagnosticDetail(event lens.DiagnosticDetail) string {
+	status := "successful"
+	if !event.InSuccessfulCall {
+		status = "failed"
+	}
+	line := fmt.Sprintf("[%s] %s event", status, event.Type)
+	if event.ContractID != "" {
+		line += " from " + event.ContractID
+	}
+	if len(event.Topics) > 0 {
+		line += " topics=[" + strings.Join(event.Topics, ", ") + "]"
+	}
+	if event.Data != "" {
+		line += fmt.Sprintf(" data=%q", event.Data)
+	}
+	return line
+}
+
+func markdownFence(lines []string) string {
+	longest := 2
+	for _, line := range lines {
+		current := 0
+		for _, r := range line {
+			if r == '`' {
+				current++
+				if current > longest {
+					longest = current
+				}
+			} else {
+				current = 0
+			}
+		}
+	}
+	return strings.Repeat("`", longest+1)
 }
 
 func markdownRow(b *strings.Builder, label, value string) {

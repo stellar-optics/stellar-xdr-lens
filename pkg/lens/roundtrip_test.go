@@ -1,7 +1,11 @@
 package lens_test
 
 import (
+	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 
@@ -183,6 +187,128 @@ func TestRoundTripFixturesJSON(t *testing.T) {
 		!strings.Contains(report.SkipReason, "claim predicate") {
 		t.Errorf("skip reason = %q, want it to name the claim predicate", report.SkipReason)
 	}
+}
+
+func TestRoundtripAll(t *testing.T) {
+	t.Parallel()
+
+	cases := manifestRoundTripFixtures(t)
+	suite := lens.RunRoundTripSuite(lens.RoundTripJSON, cases)
+	t.Log(suite.Summary())
+
+	knownLossy := map[string]string{
+		"claimable_balance_entry":        "claim predicate renders as an expression",
+		"claimable_balance_entry_simple": "claim predicate renders as an expression",
+		"overlay_peer_address_v6":        "peer failure counters are carried as notes",
+		"overlay_peers":                  "peer failure counters are carried as notes",
+	}
+	for _, report := range suite.Reports {
+		if reason, lossy := knownLossy[report.Name]; lossy {
+			if report.OK() {
+				t.Errorf("%s: expected the documented JSON loss (%s) but the trip passed", report, reason)
+			}
+			if report.Err != nil && !report.Skipped {
+				t.Errorf("%s: unexpected round-trip error for documented JSON loss", report)
+			}
+			continue
+		}
+		if !report.OK() {
+			t.Errorf("%s", report)
+			for _, change := range report.Changes {
+				t.Errorf("  %s", change)
+			}
+		}
+	}
+}
+
+func manifestRoundTripFixtures(t *testing.T) []lens.RoundTripCase {
+	t.Helper()
+
+	type fixtureInfo struct {
+		Type         string `json:"type"`
+		ResultType   string `json:"result_type"`
+		EnvelopeFile string `json:"envelope_file"`
+		ResultFile   string `json:"result_file"`
+	}
+	var manifest struct {
+		Fixtures map[string]fixtureInfo `json:"fixtures"`
+		SyntheticFixtures struct {
+			Fixtures map[string]struct {
+				Type string `json:"type"`
+			} `json:"fixtures"`
+		} `json:"synthetic_fixtures"`
+	}
+	data, err := os.ReadFile(filepath.Join(fixtureDir, "manifest.json"))
+	if err != nil {
+		t.Fatalf("reading fixture manifest: %v", err)
+	}
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		t.Fatalf("decoding fixture manifest: %v", err)
+	}
+
+	byFile := make(map[string]lens.RoundTripCase)
+	add := func(file, typeName string) {
+		t.Helper()
+		if file == "" {
+			return
+		}
+		if filepath.Base(file) != file || filepath.Ext(file) != ".txt" {
+			t.Fatalf("manifest fixture path %q must be a .txt file in testdata", file)
+		}
+		if typeName == "" {
+			t.Fatalf("manifest fixture %q has no registered XDR type", file)
+		}
+		if previous, exists := byFile[file]; exists {
+			if previous.Type != typeName {
+				t.Fatalf("manifest fixture %q has conflicting types %q and %q", file, previous.Type, typeName)
+			}
+			return
+		}
+		name := strings.TrimSuffix(file, ".txt")
+		payload, err := readFixture(name)
+		if err != nil {
+			t.Fatalf("loading manifest fixture %q: %v", file, err)
+		}
+		byFile[file] = lens.RoundTripCase{Name: name, Type: typeName, Payload: payload}
+	}
+
+	for name, fixture := range manifest.SyntheticFixtures.Fixtures {
+		add(name+".txt", fixture.Type)
+	}
+	fixtureNames := make([]string, 0, len(manifest.Fixtures))
+	for name := range manifest.Fixtures {
+		fixtureNames = append(fixtureNames, name)
+	}
+	sort.Strings(fixtureNames)
+	for _, name := range fixtureNames {
+		fixture := manifest.Fixtures[name]
+		add(fixture.EnvelopeFile, fixture.Type)
+		add(fixture.ResultFile, fixture.ResultType)
+	}
+
+	entries, err := os.ReadDir(fixtureDir)
+	if err != nil {
+		t.Fatalf("reading testdata directory: %v", err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".txt" {
+			continue
+		}
+		if _, ok := byFile[entry.Name()]; !ok {
+			t.Errorf("testdata fixture %q is missing from manifest type registration", entry.Name())
+		}
+	}
+
+	files := make([]string, 0, len(byFile))
+	for file := range byFile {
+		files = append(files, file)
+	}
+	sort.Strings(files)
+	cases := make([]lens.RoundTripCase, 0, len(files))
+	for _, file := range files {
+		cases = append(cases, byFile[file])
+	}
+	return cases
 }
 
 func TestRoundTripBase64ReproducesFixture(t *testing.T) {

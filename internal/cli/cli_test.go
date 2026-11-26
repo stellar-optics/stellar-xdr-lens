@@ -244,9 +244,10 @@ func TestExplainCommand(t *testing.T) {
 				"--result", fixture(t, "tx_failed.res"), "--markdown",
 			},
 			wantContain: []string{
+				"[STATUS: FAILED]",
 				"| Transaction | Details |",
 				"| Status | Failed |",
-				"| Operation | Source | Description | Result | Status | Hint |",
+				"| # | Operation | Source | Status | Details |",
 				"invoke_host_function_trapped",
 			},
 		},
@@ -304,6 +305,58 @@ func TestExplainCommand(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestExplainMarkdownRendersDiagnosticTrace(t *testing.T) {
+	t.Parallel()
+
+	panicTopic := xdr.ScSymbol("panic")
+	panicMessage := xdr.ScString("assertion failed: balance >= amount")
+	meta := xdr.TransactionMeta{
+		V: 3,
+		V3: &xdr.TransactionMetaV3{
+			SorobanMeta: &xdr.SorobanTransactionMeta{
+				DiagnosticEvents: []xdr.DiagnosticEvent{{
+					InSuccessfulContractCall: false,
+					Event: xdr.ContractEvent{
+						Type: xdr.ContractEventTypeDiagnostic,
+						Body: xdr.ContractEventBody{
+							V: 0,
+							V0: &xdr.ContractEventV0{
+								Topics: []xdr.ScVal{{
+									Type: xdr.ScValTypeScvSymbol,
+									Sym:  &panicTopic,
+								}},
+								Data: xdr.ScVal{
+									Type: xdr.ScValTypeScvString,
+									Str:  &panicMessage,
+								},
+							},
+						},
+					},
+				}},
+			},
+		},
+	}
+	metaPayload, err := lens.SafeMarshalBase64(&meta)
+	if err != nil {
+		t.Fatalf("marshalling diagnostic metadata: %v", err)
+	}
+
+	stdout, _, err := run(t, "", "explain", fixture(t, "tx_failed.env"),
+		"--result", fixture(t, "tx_failed.res"), "--meta", metaPayload, "--markdown")
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	for _, want := range []string{
+		"<details>\n<summary>Diagnostic Trace</summary>",
+		"[failed] diagnostic event topics=[panic] data=\"assertion failed: balance >= amount\"",
+		"</details>",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("Markdown output does not contain %q:\n%s", want, stdout)
+		}
 	}
 }
 
