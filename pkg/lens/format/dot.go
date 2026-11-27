@@ -89,7 +89,6 @@ func (f *DOTFormatter) Format(w io.Writer, v *lens.Value) error {
 type dotGraph struct {
 	b        strings.Builder
 	declared map[string]bool
-	extra    int
 }
 
 func (g *dotGraph) writeHeader(name, rankdir string) {
