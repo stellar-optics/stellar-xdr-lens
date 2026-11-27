@@ -110,6 +110,14 @@ type OperationSpec struct {
 	Auth            []any  `json:"auth,omitempty"`
 	LedgerKey       any    `json:"ledger_key,omitempty"`
 	ExtendTo        any    `json:"extend_to,omitempty"`
+	PoolID          string `json:"pool_id,omitempty"`
+	MaxAmountA      any    `json:"max_amount_a,omitempty"`
+	MaxAmountB      any    `json:"max_amount_b,omitempty"`
+	MinPrice        any    `json:"min_price,omitempty"`
+	MaxPrice        any    `json:"max_price,omitempty"`
+	Shares          any    `json:"shares,omitempty"`
+	MinAmountA      any    `json:"min_amount_a,omitempty"`
+	MinAmountB      any    `json:"min_amount_b,omitempty"`
 }
 
 // BuildTransactionEnvelopeFromJSON parses JSON bytes and constructs a TransactionEnvelope.
@@ -779,6 +787,69 @@ func buildOperation(op OperationSpec) (xdr.Operation, error) {
 			Type: xdr.OperationTypeInvokeHostFunction,
 			InvokeHostFunctionOp: &xdr.InvokeHostFunctionOp{
 				HostFunction: hostFn,
+			},
+		}
+		return operation, nil
+
+	case "liquidity_pool_deposit":
+		poolHash, err := CoerceHash(op.PoolID)
+		if err != nil {
+			return operation, fmt.Errorf("liquidity_pool_deposit pool_id: %w", err)
+		}
+		poolID := xdr.PoolId(poolHash)
+		maxAmtA, err := CoerceAmount(op.MaxAmountA)
+		if err != nil {
+			return operation, fmt.Errorf("liquidity_pool_deposit max_amount_a: %w", err)
+		}
+		maxAmtB, err := CoerceAmount(op.MaxAmountB)
+		if err != nil {
+			return operation, fmt.Errorf("liquidity_pool_deposit max_amount_b: %w", err)
+		}
+		minPrice, err := CoercePrice(op.MinPrice)
+		if err != nil {
+			return operation, fmt.Errorf("liquidity_pool_deposit min_price: %w", err)
+		}
+		maxPrice, err := CoercePrice(op.MaxPrice)
+		if err != nil {
+			return operation, fmt.Errorf("liquidity_pool_deposit max_price: %w", err)
+		}
+		operation.Body = xdr.OperationBody{
+			Type: xdr.OperationTypeLiquidityPoolDeposit,
+			LiquidityPoolDepositOp: &xdr.LiquidityPoolDepositOp{
+				LiquidityPoolId: poolID,
+				MaxAmountA:      xdr.Int64(maxAmtA),
+				MaxAmountB:      xdr.Int64(maxAmtB),
+				MinPrice:        minPrice,
+				MaxPrice:        maxPrice,
+			},
+		}
+		return operation, nil
+
+	case "liquidity_pool_withdraw":
+		poolHash, err := CoerceHash(op.PoolID)
+		if err != nil {
+			return operation, fmt.Errorf("liquidity_pool_withdraw pool_id: %w", err)
+		}
+		poolID := xdr.PoolId(poolHash)
+		shares, err := CoerceAmount(op.Shares)
+		if err != nil {
+			return operation, fmt.Errorf("liquidity_pool_withdraw shares: %w", err)
+		}
+		minAmtA, err := CoerceAmount(op.MinAmountA)
+		if err != nil {
+			return operation, fmt.Errorf("liquidity_pool_withdraw min_amount_a: %w", err)
+		}
+		minAmtB, err := CoerceAmount(op.MinAmountB)
+		if err != nil {
+			return operation, fmt.Errorf("liquidity_pool_withdraw min_amount_b: %w", err)
+		}
+		operation.Body = xdr.OperationBody{
+			Type: xdr.OperationTypeLiquidityPoolWithdraw,
+			LiquidityPoolWithdrawOp: &xdr.LiquidityPoolWithdrawOp{
+				LiquidityPoolId: poolID,
+				Amount:          xdr.Int64(shares),
+				MinAmountA:      xdr.Int64(minAmtA),
+				MinAmountB:      xdr.Int64(minAmtB),
 			},
 		}
 		return operation, nil

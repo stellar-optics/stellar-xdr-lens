@@ -818,3 +818,116 @@ func TestBuildTransactionV0AndFeeBumpErrors(t *testing.T) {
 		t.Errorf("expected error on invalid signature hex")
 	}
 }
+
+func TestBuildLiquidityPoolDepositOp(t *testing.T) {
+	validAccount := "GA2JRQOF6EA3HQWDCEDBPPMLYPJCFLDDGYZLEQGMS5SOBQIB3BAFHVAW"
+	poolID := "a3d4b8c1e2f5a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6"
+
+	spec := &TxSpec{
+		SourceAccount: validAccount,
+		Sequence:      1,
+		Fee:           100,
+		Operations: []OperationSpec{
+			{
+				Type:       "liquidity_pool_deposit",
+				PoolID:     poolID,
+				MaxAmountA: "10",
+				MaxAmountB: "20",
+				MinPrice:   "0.5",
+				MaxPrice:   "2",
+			},
+		},
+	}
+
+	env, err := BuildTransactionEnvelope(spec)
+	if err != nil {
+		t.Fatalf("BuildTransactionEnvelope liquidity_pool_deposit: %v", err)
+	}
+	if env.Type != xdr.EnvelopeTypeEnvelopeTypeTx {
+		t.Fatalf("expected V1 envelope")
+	}
+	op := env.V1.Tx.Operations[0]
+	if op.Body.Type != xdr.OperationTypeLiquidityPoolDeposit {
+		t.Fatalf("expected LiquidityPoolDeposit, got %v", op.Body.Type)
+	}
+	depositOp := op.Body.LiquidityPoolDepositOp
+	if depositOp == nil {
+		t.Fatal("LiquidityPoolDepositOp is nil")
+	}
+	if depositOp.MaxAmountA != 10 {
+		t.Errorf("MaxAmountA = %d, want 10", depositOp.MaxAmountA)
+	}
+	if depositOp.MaxAmountB != 20 {
+		t.Errorf("MaxAmountB = %d, want 20", depositOp.MaxAmountB)
+	}
+	if eq, err := depositOp.MinPrice.TryEqual(xdr.Price{N: 1, D: 2}); err != nil || !eq {
+		t.Errorf("MinPrice = %v, want 0.5000000 (1/2)", depositOp.MinPrice)
+	}
+	if eq, err := depositOp.MaxPrice.TryEqual(xdr.Price{N: 2, D: 1}); err != nil || !eq {
+		t.Errorf("MaxPrice = %v, want 2.0000000 (2/1)", depositOp.MaxPrice)
+	}
+}
+
+func TestBuildLiquidityPoolWithdrawOp(t *testing.T) {
+	validAccount := "GA2JRQOF6EA3HQWDCEDBPPMLYPJCFLDDGYZLEQGMS5SOBQIB3BAFHVAW"
+	poolID := "a3d4b8c1e2f5a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6"
+
+	spec := &TxSpec{
+		SourceAccount: validAccount,
+		Sequence:      1,
+		Fee:           100,
+		Operations: []OperationSpec{
+			{
+				Type:       "liquidity_pool_withdraw",
+				PoolID:     poolID,
+				Shares:     "5",
+				MinAmountA: "1",
+				MinAmountB: "2",
+			},
+		},
+	}
+
+	env, err := BuildTransactionEnvelope(spec)
+	if err != nil {
+		t.Fatalf("BuildTransactionEnvelope liquidity_pool_withdraw: %v", err)
+	}
+	op := env.V1.Tx.Operations[0]
+	if op.Body.Type != xdr.OperationTypeLiquidityPoolWithdraw {
+		t.Fatalf("expected LiquidityPoolWithdraw, got %v", op.Body.Type)
+	}
+	withdrawOp := op.Body.LiquidityPoolWithdrawOp
+	if withdrawOp == nil {
+		t.Fatal("LiquidityPoolWithdrawOp is nil")
+	}
+	if withdrawOp.Amount != 5 {
+		t.Errorf("Amount (shares) = %d, want 5", withdrawOp.Amount)
+	}
+	if withdrawOp.MinAmountA != 1 {
+		t.Errorf("MinAmountA = %d, want 1", withdrawOp.MinAmountA)
+	}
+	if withdrawOp.MinAmountB != 2 {
+		t.Errorf("MinAmountB = %d, want 2", withdrawOp.MinAmountB)
+	}
+}
+
+func TestBuildLiquidityPoolDepositInvalidPoolID(t *testing.T) {
+	validAccount := "GA2JRQOF6EA3HQWDCEDBPPMLYPJCFLDDGYZLEQGMS5SOBQIB3BAFHVAW"
+	spec := &TxSpec{
+		SourceAccount: validAccount,
+		Sequence:      1,
+		Fee:           100,
+		Operations: []OperationSpec{
+			{
+				Type:       "liquidity_pool_deposit",
+				PoolID:     "not-a-valid-pool-id",
+				MaxAmountA: "10",
+				MaxAmountB: "20",
+				MinPrice:   "1",
+				MaxPrice:   "2",
+			},
+		},
+	}
+	if _, err := BuildTransactionEnvelope(spec); err == nil {
+		t.Error("expected error for invalid pool_id")
+	}
+}
