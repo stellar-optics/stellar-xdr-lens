@@ -446,6 +446,8 @@ func TestHTMLFormatterFailedTx(t *testing.T) {
 func TestMermaidFormatter(t *testing.T) {
 	t.Parallel()
 
+	// Soroban transactions are conversations between accounts and
+	// contracts, so they render as a sequence diagram.
 	v := loadValue(t, "tx_success.env")
 
 	var buf bytes.Buffer
@@ -455,20 +457,35 @@ func TestMermaidFormatter(t *testing.T) {
 	}
 	out := buf.String()
 
-	if !strings.HasPrefix(out, "graph TD\n") {
-		t.Errorf("Mermaid output does not start with 'graph TD', got:\n%s", out)
+	if !strings.HasPrefix(out, "sequenceDiagram\n") {
+		t.Errorf("Soroban Mermaid output does not start with 'sequenceDiagram', got:\n%s", out)
 	}
-	if !strings.Contains(out, "Source") {
-		t.Errorf("Mermaid output does not contain source account:\n%s", out)
+	if !strings.Contains(out, "participant") {
+		t.Errorf("Mermaid output does not declare participants:\n%s", out)
 	}
-	if !strings.Contains(out, "-->|") {
-		t.Errorf("Mermaid output does not contain operation arrow:\n%s", out)
+	if !strings.Contains(out, "->>") {
+		t.Errorf("Mermaid output does not contain an invocation arrow:\n%s", out)
+	}
+
+	// A transaction result has no invocation data, so it keeps the
+	// flowchart and honours the configured direction.
+	resVal := loadValue(t, "tx_failed.res")
+	var resBuf bytes.Buffer
+	fTD := format.NewMermaidFormatter(format.WithMermaidDirection("TD"))
+	if err := fTD.Format(&resBuf, resVal); err != nil {
+		t.Fatalf("MermaidFormatter.Format(res) error = %v", err)
+	}
+	if !strings.HasPrefix(resBuf.String(), "graph TD\n") {
+		t.Errorf("Mermaid result output does not start with 'graph TD':\n%s", resBuf.String())
+	}
+	if !strings.Contains(resBuf.String(), "op_0") {
+		t.Errorf("Mermaid output missing op_0:\n%s", resBuf.String())
 	}
 
 	// Test custom direction
 	var lrBuf bytes.Buffer
 	fLR := format.NewMermaidFormatter(format.WithMermaidDirection("LR"))
-	if err := fLR.Format(&lrBuf, v); err != nil {
+	if err := fLR.Format(&lrBuf, resVal); err != nil {
 		t.Fatalf("MermaidFormatter.Format(LR) error = %v", err)
 	}
 	if !strings.HasPrefix(lrBuf.String(), "graph LR\n") {
@@ -483,16 +500,6 @@ func TestMermaidFormatter(t *testing.T) {
 	}
 	if !strings.Contains(assetBuf.String(), "Asset") || !strings.Contains(assetBuf.String(), "USDC") {
 		t.Errorf("Mermaid fallback does not render node structure:\n%s", assetBuf.String())
-	}
-
-	// Test transaction result with operations
-	resVal := loadValue(t, "tx_failed.res")
-	var resBuf bytes.Buffer
-	if err := f.Format(&resBuf, resVal); err != nil {
-		t.Fatalf("MermaidFormatter.Format(res) error = %v", err)
-	}
-	if !strings.Contains(resBuf.String(), "op_0") {
-		t.Errorf("Mermaid output missing op_0:\n%s", resBuf.String())
 	}
 
 	// Test fallback for non-transaction struct with children

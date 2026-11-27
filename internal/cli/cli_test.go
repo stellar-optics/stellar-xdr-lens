@@ -1062,8 +1062,42 @@ func TestDecodeNewFormatsAndCommands(t *testing.T) {
 		if err != nil {
 			t.Fatalf("decode --format mermaid: %v", err)
 		}
-		if !strings.Contains(stdout, "graph TD") {
+		// fixturePayload is an invoke-host-function envelope, which renders
+		// as a sequence diagram; flowcharts are covered for non-Soroban XDR.
+		if !strings.HasPrefix(stdout, "sequenceDiagram") {
 			t.Errorf("unexpected mermaid output: %s", stdout)
+		}
+	})
+
+	t.Run("decode --format latex", func(t *testing.T) {
+		stdout, _, err := run(t, "", "decode", "--format", "latex", fixturePayload)
+		if err != nil {
+			t.Fatalf("decode --format latex: %v", err)
+		}
+		if !strings.Contains(stdout, `\begin{table}`) || !strings.Contains(stdout, `\toprule`) {
+			t.Errorf("unexpected latex output: %s", stdout)
+		}
+	})
+
+	t.Run("decode --format dot", func(t *testing.T) {
+		stdout, _, err := run(t, "", "decode", "--format", "dot", fixturePayload)
+		if err != nil {
+			t.Fatalf("decode --format dot: %v", err)
+		}
+		if !strings.HasPrefix(stdout, "digraph ") {
+			t.Errorf("unexpected dot output: %s", stdout)
+		}
+	})
+
+	t.Run("explain --format sarif", func(t *testing.T) {
+		stdout, _, err := run(t, "", "explain", fixture(t, "tx_failed.env"),
+			"--result", fixture(t, "tx_failed.res"), "--format", "sarif")
+		if err != nil {
+			t.Fatalf("explain --format sarif: %v", err)
+		}
+		if !strings.Contains(stdout, `"version": "2.1.0"`) ||
+			!strings.Contains(stdout, "invoke_host_function_trapped") {
+			t.Errorf("unexpected sarif output: %s", stdout)
 		}
 	})
 

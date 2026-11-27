@@ -73,6 +73,8 @@ Use --interactive (or 'lens explore') for an interactive terminal tree viewer.`,
   lens decode --summary "$XDR"
   lens decode --txrep "$XDR"
   lens decode --csv "$XDR" >> envelopes.csv
+  lens decode --format latex "$XDR" > table.tex
+  lens decode --format dot "$XDR" | dot -Tsvg > graph.svg
   lens decode --spec contract.wasm "$XDR"
   lens decode --interactive "$XDR"
   lens decode --type TransactionResult "$XDR"
@@ -120,7 +122,7 @@ Use --interactive (or 'lens explore') for an interactive terminal tree viewer.`,
 			}
 
 			// Helper to check if output format is tree (default)
-			isTreeFormat := !asJSON && formatName != "json" && !asYAML && !asCSV && formatName != "csv" && !asTxRep && formatName != "txrep" && !asSummary && formatName != "summary" && formatName != "html" && formatName != "mermaid"
+			isTreeFormat := !asJSON && formatName != "json" && !asYAML && !asCSV && formatName != "csv" && !asTxRep && formatName != "txrep" && !asSummary && formatName != "summary" && formatName != "html" && formatName != "mermaid" && formatName != "latex" && formatName != "dot"
 
 			render := func(w io.Writer, payload string) error {
 				if isHex || strings.HasPrefix(payload, "0x") || strings.HasPrefix(payload, "0X") {
@@ -275,6 +277,14 @@ Use --interactive (or 'lens explore') for an interactive terminal tree viewer.`,
 					return format.NewJUnitFormatter().Format(w, value)
 				}
 
+				if formatName == "latex" {
+					return format.NewLaTeXFormatter().Format(w, value)
+				}
+
+				if formatName == "dot" {
+					return format.NewDOTFormatter().Format(w, value)
+				}
+
 				if asJSON || formatName == "json" {
 					indent := "  "
 					if compactOut {
@@ -323,7 +333,7 @@ Use --interactive (or 'lens explore') for an interactive terminal tree viewer.`,
 	cmd.Flags().BoolVar(&asCSV, "csv", false, "emit a flat CSV row of the high-level transaction fields")
 	cmd.Flags().BoolVarP(&interactive, "interactive", "i", false, "explore the decoded tree interactively")
 	cmd.Flags().StringVar(&specPath, "spec", "", "path to contract WASM or ScSpecEntry file for spec-aware decoding")
-	cmd.Flags().StringVar(&formatName, "format", "", `output format: "tree", "json", "summary", "txrep", "csv", "html", "mermaid", or "junit"`)
+	cmd.Flags().StringVar(&formatName, "format", "", `output format: "tree", "json", "summary", "txrep", "csv", "html", "mermaid", "junit", "latex", or "dot"`)
 	cmd.Flags().StringVar(&network, "network", "",
 		`network passphrase for txrep formatting, or "public"/"testnet" to link addresses to Stellar Expert`)
 	cmd.Flags().StringVarP(&typeName, "type", "t", "",
