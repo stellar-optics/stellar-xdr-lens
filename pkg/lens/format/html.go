@@ -244,7 +244,7 @@ func (f *HTMLFormatter) renderNode(b *strings.Builder, n *lens.Node, depth int) 
 		fmt.Fprintf(b, "<span class=\"node-type\">&lt;%s&gt;</span> ", html.EscapeString(n.TypeName))
 	}
 
-	if n.Kind == lens.KindScalar {
+	if n.Kind == lens.KindScalar || n.Kind == lens.KindBytes {
 		valStr := fmt.Sprintf("%v", n.Value)
 		fmt.Fprintf(b, "<span class=\"node-val\">%s</span>", html.EscapeString(valStr))
 		if n.Note != "" {

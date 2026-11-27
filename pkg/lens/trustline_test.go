@@ -312,3 +312,44 @@ func TestTrustLineFlagsRendering(t *testing.T) {
 		})
 	}
 }
+
+// TestClassifyFlagTransition covers issue #289: detect and classify trustline
+// flag revocations and other authorization state changes.
+func TestClassifyFlagTransition(t *testing.T) {
+	t.Parallel()
+
+	const (
+		auth     = uint32(xdr.TrustLineFlagsAuthorizedFlag)
+		maintain = uint32(xdr.TrustLineFlagsAuthorizedToMaintainLiabilitiesFlag)
+		claw     = uint32(xdr.TrustLineFlagsTrustlineClawbackEnabledFlag)
+	)
+
+	tests := []struct {
+		name     string
+		old      uint32
+		new      uint32
+		contains string // substring that must appear in the result
+	}{
+		{"unchanged", auth, auth, "unchanged"},
+		{"freeze full revocation", auth | maintain, 0, "freeze"},
+		{"freeze authorized only", auth, 0, "freeze"},
+		{"restricted downgrade", auth | maintain, maintain, "restricted"},
+		{"grant authorization", 0, auth, "granted"},
+		{"grant from maintain", maintain, auth | maintain, "granted"},
+		{"clawback enabled", auth, auth | claw, "clawback_enabled"},
+		{"clawback disabled", auth | claw, auth, "clawback_disabled"},
+		{"maintain liabilities granted without full auth", 0, maintain, "restricted"},
+		{"maintain liabilities removed without auth", maintain, 0, "freeze"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := lens.ClassifyFlagTransition(tc.old, tc.new)
+			if !strings.Contains(got, tc.contains) {
+				t.Errorf("ClassifyFlagTransition(%d, %d) = %q, want it to contain %q",
+					tc.old, tc.new, got, tc.contains)
+			}
+		})
+	}
+}

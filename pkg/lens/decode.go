@@ -149,11 +149,13 @@ var registry = []xdrType{
 	{"Asset", func() any { return new(xdr.Asset) }, 9},
 	{"Price", func() any { return new(xdr.Price) }, 8},
 	{"SignerKey", func() any { return new(xdr.SignerKey) }, 7},
+	{"Signer", func() any { return new(xdr.Signer) }, 6},
 	{"ClaimableBalanceId", func() any { return new(xdr.ClaimableBalanceId) }, 6},
 	{"ClaimableBalanceEntry", func() any { return new(xdr.ClaimableBalanceEntry) }, 5},
 	{"Claimant", func() any { return new(xdr.Claimant) }, 5},
 	{"ClaimPredicate", func() any { return new(xdr.ClaimPredicate) }, 5},
 	{"AccountEntry", func() any { return new(xdr.AccountEntry) }, 5},
+	{"LedgerEntryExtensionV1", func() any { return new(xdr.LedgerEntryExtensionV1) }, 5},
 	{"TrustLineEntry", func() any { return new(xdr.TrustLineEntry) }, 5},
 	{"TrustLineEntryExtensionV2", func() any { return new(xdr.TrustLineEntryExtensionV2) }, 5},
 	{"OfferEntry", func() any { return new(xdr.OfferEntry) }, 5},
@@ -163,6 +165,19 @@ var registry = []xdrType{
 	{"ContractCodeEntry", func() any { return new(xdr.ContractCodeEntry) }, 5},
 	{"ContractDataEntry", func() any { return new(xdr.ContractDataEntry) }, 5},
 	{"ConfigSettingEntry", func() any { return new(xdr.ConfigSettingEntry) }, 5},
+
+	// DEX trade execution records. ClaimOfferAtom appears inside operation
+	// results when offers cross; V0 is the legacy form with a raw ed25519 key.
+	{"ClaimOfferAtom", func() any { return new(xdr.ClaimOfferAtom) }, 16},
+	{"ClaimOfferAtomV0", func() any { return new(xdr.ClaimOfferAtomV0) }, 15},
+
+	// A single ledger-state transition emitted in transaction meta.
+	{"LedgerEntryChange", func() any { return new(xdr.LedgerEntryChange) }, 17},
+
+	// Enum and union building blocks. Both decode from exactly 4 bytes,
+	// so they must rank below Auth (priority 2) to keep pipe detection stable.
+	{"ConfigSettingId", func() any { return new(xdr.ConfigSettingId) }, 1},
+	{"OperationBody", func() any { return new(xdr.OperationBody) }, 1},
 }
 
 // TypeNames returns every registered XDR type name, sorted, for use in help
@@ -304,7 +319,11 @@ func Detect(payload string) ([]Candidate, error) {
 //
 //   - the registry priority dominates, so common types win ties;
 //   - trees with more decoded content score higher, since a type that
-//     explains many bytes is a better fit than one that explains few.
+//     explains many bytes is a better fit than one that explains few;
+//   - for exactly 32-byte (256-bit) payloads, an additional disambiguation
+//     pass boosts AccountID when the first scalar looks like a G-address and
+//     boosts Hash when the value renders as 64 lowercase hex characters,
+//     reducing false positives when users paste raw keys or hashes.
 func scoreCandidate(t xdrType, v *Value, rawLen int) int {
 	score := t.priority * 1000
 	score += countNodes(v.Node)
@@ -313,7 +332,56 @@ func scoreCandidate(t xdrType, v *Value, rawLen int) int {
 	if rawLen <= 8 {
 		score = t.priority * 1000
 	}
+	// 32-byte disambiguation: a G-address first scalar favours AccountID/
+	// SignerKey; a 64-char lowercase hex scalar favours Hash types.
+	if rawLen == 32 {
+		if firstScalar := firstScalarValue(v.Node); firstScalar != "" {
+			switch {
+			case strings.HasPrefix(firstScalar, "G") && len(firstScalar) == 56:
+				// Looks like a Stellar account address.
+				if t.name == "SignerKey" {
+					score += 500
+				}
+			case isLowercaseHex64(firstScalar):
+				// Looks like a raw hash rendered as hex.
+				if t.name == "Hash" {
+					score += 500
+				}
+			}
+		}
+	}
 	return score
+}
+
+// firstScalarValue returns the string representation of the first scalar node
+// in the tree, or "" when there is none.
+func firstScalarValue(n *Node) string {
+	if n == nil {
+		return ""
+	}
+	if n.Kind == KindScalar {
+		return fmt.Sprintf("%v", n.Value)
+	}
+	for _, child := range n.Children {
+		if s := firstScalarValue(child); s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+// isLowercaseHex64 reports whether s is exactly 64 lowercase hexadecimal
+// characters, which is the canonical rendering of a 32-byte hash.
+func isLowercaseHex64(s string) bool {
+	if len(s) != 64 {
+		return false
+	}
+	for _, c := range s {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			return false
+		}
+	}
+	return true
 }
 
 func countNodes(n *Node) int {

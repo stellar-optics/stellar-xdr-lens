@@ -114,6 +114,230 @@ func TestClaimablePredicateBooleanAndTimeEdges(t *testing.T) {
 	}
 }
 
+const (
+	clawbackTestFrom   = "GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H"
+	clawbackTestIssuer = "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN"
+)
+
+func TestClawbackExplainDiagnosesClawbackCodes(t *testing.T) {
+	t.Parallel()
+
+	asset := xdr.MustNewCreditAsset("USDC", clawbackTestIssuer)
+
+	tests := []struct {
+		name    string
+		codes   []string
+		want    []string
+		notWant []string
+	}{
+		{
+			name:  "not clawback enabled points at the issuer flag",
+			codes: []string{"ClawbackResultCodeClawbackNotClawbackEnabled", "clawback_not_clawback_enabled"},
+			want:  []string{clawbackTestFrom, "USDC", "issuer " + clawbackTestIssuer, "AUTH_CLAWBACK_ENABLED_FLAG", "AUTH_REVOCABLE_FLAG", "before funds are issued", "12.5000000"},
+		},
+		{
+			name:  "no trust names the account and the flag",
+			codes: []string{"ClawbackResultCodeClawbackNoTrust", "clawback_no_trust"},
+			want:  []string{clawbackTestFrom, "no trustline for USDC", "AUTH_CLAWBACK_ENABLED_FLAG", clawbackTestIssuer},
+		},
+		{
+			name:    "underfunded names the amount",
+			codes:   []string{"ClawbackResultCodeClawbackUnderfunded", "clawback_underfunded"},
+			want:    []string{clawbackTestFrom, "12.5000000 USDC", "selling liabilities"},
+			notWant: []string{"AUTH_CLAWBACK_ENABLED_FLAG"},
+		},
+		{
+			name:  "malformed states the structural rules",
+			codes: []string{"ClawbackResultCodeClawbackMalformed", "clawback_malformed"},
+			want:  []string{clawbackTestFrom, "12.5000000 USDC", "issuer " + clawbackTestIssuer, "positive"},
+		},
+	}
+
+	for _, tc := range tests {
+		for _, code := range tc.codes {
+			t.Run(tc.name+"/"+code, func(t *testing.T) {
+				t.Parallel()
+
+				got := lens.DiagnoseClawbackFailure(clawbackTestFrom, asset, 125_000_000, code)
+				for _, want := range tc.want {
+					if !strings.Contains(got, want) {
+						t.Errorf("diagnosis = %q, want it to contain %q", got, want)
+					}
+				}
+				for _, notWant := range tc.notWant {
+					if strings.Contains(got, notWant) {
+						t.Errorf("diagnosis = %q, must not mention %q", got, notWant)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestClawbackExplainDiagnosesClaimableBalanceCodes(t *testing.T) {
+	t.Parallel()
+
+	const balanceID = "BAAQEAYEAUDAOCAJBIFQYDIOB4IBCEQTCQKRMFYYDENBWHA5DYPSAJCI"
+
+	tests := []struct {
+		name  string
+		codes []string
+		want  []string
+	}{
+		{
+			name: "not enabled must be set at creation",
+			codes: []string{
+				"ClawbackClaimableBalanceResultCodeClawbackClaimableBalanceNotClawbackEnabled",
+				"clawback_claimable_balance_not_clawback_enabled",
+			},
+			want: []string{"claimable balance " + balanceID, "upon creation", "CLAIMABLE_BALANCE_CLAWBACK_ENABLED_FLAG", "AUTH_CLAWBACK_ENABLED_FLAG"},
+		},
+		{
+			name: "not issuer names the issuer rule",
+			codes: []string{
+				"ClawbackClaimableBalanceResultCodeClawbackClaimableBalanceNotIssuer",
+				"clawback_claimable_balance_not_issuer",
+			},
+			want: []string{"claimable balance " + balanceID, "Only the asset issuer"},
+		},
+		{
+			name: "missing balance names the id",
+			codes: []string{
+				"ClawbackClaimableBalanceResultCodeClawbackClaimableBalanceDoesNotExist",
+				"clawback_claimable_balance_does_not_exist",
+			},
+			want: []string{"claimable balance " + balanceID, "does not exist"},
+		},
+	}
+
+	for _, tc := range tests {
+		for _, code := range tc.codes {
+			t.Run(tc.name+"/"+code, func(t *testing.T) {
+				t.Parallel()
+
+				got := lens.DiagnoseClawbackFailure(balanceID, xdr.Asset{}, 0, code)
+				for _, want := range tc.want {
+					if !strings.Contains(got, want) {
+						t.Errorf("diagnosis = %q, want it to contain %q", got, want)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestClawbackExplainDegradesWithoutDetails(t *testing.T) {
+	t.Parallel()
+
+	got := lens.DiagnoseClawbackFailure("", xdr.Asset{Type: xdr.AssetTypeAssetTypeNative}, 0, "clawback_not_clawback_enabled")
+	for _, want := range []string{"the from account", "the asset", "the asset issuer", "AUTH_CLAWBACK_ENABLED_FLAG"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("diagnosis = %q, want it to contain %q", got, want)
+		}
+	}
+
+	got = lens.DiagnoseClawbackFailure("", xdr.Asset{}, 0, "clawback_claimable_balance_does_not_exist")
+	if !strings.HasPrefix(got, "the claimable balance does not exist") {
+		t.Errorf("diagnosis = %q, want generic balance wording", got)
+	}
+
+	for _, code := range []string{"", "ClawbackResultCodeClawbackSuccess", "payment_no_trust"} {
+		if got := lens.DiagnoseClawbackFailure(clawbackTestFrom, xdr.Asset{}, 1, code); got != "" {
+			t.Errorf("code %q diagnosis = %q, want empty", code, got)
+		}
+	}
+}
+
+// TestClawbackExplainPairAttachesContext checks the diagnosis reaches the paired
+// explanation, and that failures name the clawback target rather than the issuer
+// submitting the operation.
+func TestClawbackExplainPairAttachesContext(t *testing.T) {
+	t.Parallel()
+
+	asset := xdr.MustNewCreditAsset("USDC", clawbackTestIssuer)
+	from := xdr.MustMuxedAddress(clawbackTestFrom)
+	issuer := xdr.MustMuxedAddress(clawbackTestIssuer)
+	const shortFrom = "GBRPY…OX2H"
+	const shortIssuer = "GA5ZS…KZVN"
+
+	tests := []struct {
+		name string
+		code xdr.ClawbackResultCode
+		want []string
+	}{
+		{
+			name: "not clawback enabled",
+			code: xdr.ClawbackResultCodeClawbackNotClawbackEnabled,
+			want: []string{clawbackTestFrom, "AUTH_CLAWBACK_ENABLED_FLAG"},
+		},
+		{
+			name: "no trust",
+			code: xdr.ClawbackResultCodeClawbackNoTrust,
+			want: []string{clawbackTestFrom, "no trustline for USDC"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := explainPreparedOperation(t, xdr.Operation{
+				SourceAccount: &issuer,
+				Body: xdr.OperationBody{
+					Type:       xdr.OperationTypeClawback,
+					ClawbackOp: &xdr.ClawbackOp{Asset: asset, From: from, Amount: 1000},
+				},
+			}, xdr.OperationResultTr{
+				Type:           xdr.OperationTypeClawback,
+				ClawbackResult: &xdr.ClawbackResult{Code: tc.code},
+			})
+
+			for _, want := range tc.want {
+				if !strings.Contains(got.Context, want) {
+					t.Errorf("Context = %q, want it to contain %q", got.Context, want)
+				}
+			}
+			if !strings.Contains(got.Summary, shortFrom) {
+				t.Errorf("Summary = %q, want the target %s", got.Summary, shortFrom)
+			}
+			if strings.Contains(got.Summary, shortIssuer) {
+				t.Errorf("Summary = %q, must not name the issuer %s as the target", got.Summary, shortIssuer)
+			}
+		})
+	}
+}
+
+func TestClawbackExplainPairAttachesClaimableBalanceContext(t *testing.T) {
+	t.Parallel()
+
+	hash := xdr.Hash{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+		17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32}
+	id := xdr.ClaimableBalanceId{Type: xdr.ClaimableBalanceIdTypeClaimableBalanceIdTypeV0, V0: &hash}
+	wantID, err := id.EncodeToStrkey()
+	if err != nil {
+		t.Fatalf("EncodeToStrkey() error = %v", err)
+	}
+
+	got := explainSingleOperation(t,
+		xdr.OperationBody{
+			Type:                       xdr.OperationTypeClawbackClaimableBalance,
+			ClawbackClaimableBalanceOp: &xdr.ClawbackClaimableBalanceOp{BalanceId: id},
+		},
+		xdr.OperationResultTr{
+			Type: xdr.OperationTypeClawbackClaimableBalance,
+			ClawbackClaimableBalanceResult: &xdr.ClawbackClaimableBalanceResult{
+				Code: xdr.ClawbackClaimableBalanceResultCodeClawbackClaimableBalanceNotClawbackEnabled,
+			},
+		},
+	)
+
+	for _, want := range []string{wantID, "upon creation", "AUTH_CLAWBACK_ENABLED_FLAG"} {
+		if !strings.Contains(got.Context, want) {
+			t.Errorf("Context = %q, want it to contain %q", got.Context, want)
+		}
+	}
+}
+
 func TestValidateClaimPredicateContradiction(t *testing.T) {
 	t.Parallel()
 

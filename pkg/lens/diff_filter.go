@@ -3,6 +3,7 @@ package lens
 import (
 	"fmt"
 	"path"
+	"regexp"
 	"strings"
 )
 
@@ -119,8 +120,23 @@ func normalizePatterns(patterns []string) ([]string, error) {
 	return out, nil
 }
 
-// validatePattern rejects a malformed glob before it can reach the matcher.
+// isRegexPattern reports whether pattern uses the /regex/ delimited syntax.
+func isRegexPattern(pattern string) bool {
+	return len(pattern) >= 2 && pattern[0] == '/' && pattern[len(pattern)-1] == '/'
+}
+
+// validatePattern rejects a malformed glob or regex before it can reach the matcher.
+// Regex patterns use the /regex/ delimited syntax and are matched against the full
+// dot-separated path (not individual segments). Glob patterns use the standard
+// shell glob metacharacters and are matched segment-by-segment.
 func validatePattern(pattern string) error {
+	if isRegexPattern(pattern) {
+		inner := pattern[1 : len(pattern)-1]
+		if _, err := regexp.Compile(inner); err != nil {
+			return fmt.Errorf("%w: invalid regex pattern %q: %w", ErrInvalidArgument, pattern, err)
+		}
+		return nil
+	}
 	for _, segment := range pathSegments(pattern) {
 		if segment == "**" {
 			continue
@@ -134,7 +150,17 @@ func validatePattern(pattern string) error {
 
 // matchChangePattern reports whether pattern matches changePath, or matches a
 // proper prefix of it so that a field pattern also selects its subtree.
+// Regex patterns (/regex/) are matched against the full path string; glob
+// patterns are matched segment-by-segment with ** support.
 func matchChangePattern(pattern, changePath string) bool {
+	if isRegexPattern(pattern) {
+		inner := pattern[1 : len(pattern)-1]
+		re, err := regexp.Compile(inner)
+		if err != nil {
+			return false
+		}
+		return re.MatchString(changePath)
+	}
 	return matchSegments(pathSegments(pattern), pathSegments(changePath))
 }
 

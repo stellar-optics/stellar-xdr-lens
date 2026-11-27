@@ -84,6 +84,7 @@ pkg/lens/              the library; this is the reusable surface
   contract_executable.go contract executables: wasm hash, built-in token, external refs
   overlay.go           peer addresses, certificate keys, overlay message names
   tx_history.go        ledger-sequence field notes for history sets and batches
+  asset.go             strict SEP-11 asset string parsing and canonical formatting
   asset_types.go       asset details and Stellar Asset Contract id derivation
   validate.go          strict schema validation for JSON templates
   coerce.go            permissive type coercion & number parsing (stringified numbers, hex, assets)
@@ -133,8 +134,12 @@ pkg/lens/              the library; this is the reusable surface
     csv.go             flat CSV export for batch ledger envelopes
     markdown.go        GitHub-flavored Markdown transaction reports
     html.go            self-contained offline HTML reports
-    mermaid.go         Mermaid flowchart (graph TD) transaction visualization
+    mermaid.go         Mermaid flowcharts and Soroban sequence diagrams
     junit.go           JUnit XML test reports for CI gatekeeping
+    sarif.go           SARIF 2.1.0 findings for Code Scanning
+    latex.go           LaTeX booktabs tables for reports and papers
+    dot.go             Graphviz DOT graphs of accounts, ops and contracts
+    soroban_flow.go    shared Soroban invocation extraction
     linediff.go        shared line alignment for unified and side-by-side diffs
     unified.go         standard unified diff for CI review comments
     json_patch.go      RFC 6902 JSON Patch output
@@ -488,6 +493,23 @@ So the walker does three things generically:
    used to tell an enum from an ordinary number before calling `String()`.
 3. **Renders byte sequences as hex.** A 32-byte hash is a hex string, not a
    list of 32 integers.
+
+### Scratch buffers
+
+Large ledger batches build many trees, so the walker reuses its temporary
+buffers through `sync.Pool`. A struct collects its children in a pooled slice
+and then copies them into an exactly sized one; byte sequences are hex-encoded
+in a pooled buffer. Lists and maps know their size up front and allocate once.
+
+A finished `Node` never refers to pooled memory, so trees stay safe to keep,
+share and mutate. Child buffers are cleared before they are returned, so the pool
+cannot keep a tree alive, and unusually large buffers are left to the garbage
+collector. `BenchmarkBuildNode` in
+[`node_test.go`](../pkg/lens/node_test.go) reports the walker's allocations:
+
+```sh
+go test ./pkg/lens -run '^$' -bench 'BenchmarkBuildNode' -benchmem
+```
 
 ### Robustness
 
@@ -867,6 +889,12 @@ Two small APIs round out the library for tooling use:
   deterministic, offline, and different on every network. `DescribeAssetValue`
   does the same for an already-decoded `Value` and reports `ErrNotAsset` when
   the value is not an asset.
+- [`ParseAsset` and `FormatAsset`](../pkg/lens/asset.go) convert between
+  `xdr.Asset` and the SEP-11 strings `native` and `CODE:ISSUER`, with no network
+  access. Parsing is strict, so every accepted string formats back to itself,
+  and failures wrap `ErrMalformedAsset`. `FormatAsset` returns `""` for a value
+  with no canonical form rather than panicking on untrusted XDR. `CoerceAsset`
+  remains the permissive entry point for JSON templates.
 
 `ContractId` and `ScAddress` values anywhere in a decoded tree render as strkey
 addresses too, via enrichers registered in `asset_types.go` — a contract id
@@ -918,6 +946,15 @@ whose cause is provable from the operation's own parameters:
   and the permanence of `auth_immutable` behind `immutable_set`. Each mirrors
   the corresponding check in stellar-core's `MergeOpFrame::doApply`, in the
   same order core applies them.
+
+`payment` and `clawback` failures also carry a `Reason.Context` line built from
+the operation body. `DiagnosePaymentFailure` names the destination, asset, issuer
+and amount, and the step that unblocks the payment: `CreateAccount` for a missing
+destination, `ChangeTrust` for a missing trustline, `SetTrustLineFlagsOp` for an
+unauthorized one, and the trustline limit for `line_full`.
+`DiagnoseClawbackFailure` points at the issuer's `AUTH_CLAWBACK_ENABLED_FLAG`,
+which must be set before a trustline is opened, and at the rule that a claimable
+balance must have clawback enabled when it is created.
 
 It never touches `Code` or `Constant`, never invents ledger state, and a code
 it cannot pin down keeps the generic per-code text — a result explained
@@ -1331,12 +1368,35 @@ the [README](../README.md#lens-explain--why-did-this-fail) for usage.
 - Formats both transaction summaries (headline, outcome badge, operations table, preconditions) and complete hierarchical node trees.
 - Reachable from the CLI as `lens decode --format html`.
 
-## Mermaid flowchart formatter (`pkg/lens/format/mermaid.go`)
+## Mermaid formatter (`pkg/lens/format/mermaid.go`)
 
-`MermaidFormatter` converts transaction operations and participant accounts into Mermaid graph definitions (`graph TD`).
-- Renders source accounts, fee-bump wrappers, and directed arrows indicating operation details, asset transfers, or Soroban contract calls.
-- Provides fallback rendering of node hierarchies for general XDR types.
+`MermaidFormatter` renders Soroban invocation flows as sequence diagrams and everything else as a flowchart (`graph TD`).
+- A `TransactionEnvelope` with invoke-host-function operations, an `InvokeHostFunctionOp`, or a `SorobanAuthorizationEntry` becomes a `sequenceDiagram`: participants are the transaction, accounts and contracts, solid arrows are root calls and dashed arrows are authorised calls.
+- Other transactions render as a flowchart of source accounts, fee-bump wrappers, and directed operation arrows; general XDR types fall back to their node hierarchy.
 - Reachable from the CLI as `lens decode --format mermaid`.
+
+## SARIF formatter (`pkg/lens/format/sarif.go`)
+
+`SARIFFormatter` emits SARIF 2.1.0, the format GitHub Code Scanning and GitLab Security ingest.
+- Failed transactions, fee-bump inner failures and failed operations become `error` results; non-fatal lens warnings become `warning` results.
+- Each distinct result code is a rule keyed by its canonical id, so a scanner tracks the same rule across runs.
+- Output is deterministic, with rules sorted by id and results in transaction order.
+- Reachable from the CLI as `lens explain --format sarif`.
+
+## LaTeX formatter (`pkg/lens/format/latex.go`)
+
+`LaTeXFormatter` renders decoded values as a booktabs `table`/`tabular` environment for papers and reports.
+- Transactions export the high-level explain fields and one row per operation; other types flatten to dotted-path/value rows.
+- Every cell is escaped, so `_`, `$`, `&`, `%`, `#`, braces, `~` and `^` typeset literally.
+- Reachable from the CLI as `lens decode --format latex`.
+
+## Graphviz DOT formatter (`pkg/lens/format/dot.go`)
+
+`DOTFormatter` emits a `digraph` for `dot -Tsvg`.
+- Transactions show source and fee-bump accounts, operation nodes, payment destinations, and the contracts invoked by Soroban operations; edges are directed and labelled.
+- Other XDR types fall back to their decoded node tree.
+- Labels and ids are escaped and every edge endpoint is declared, so the output parses.
+- Reachable from the CLI as `lens decode --format dot`.
 
 ## JUnit XML test reports (`pkg/lens/format/junit.go`)
 

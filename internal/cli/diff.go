@@ -118,7 +118,7 @@ These are mutually exclusive with each other and with --json/--stats/--summary.`
 					// standard text diff
 				case "json":
 					asJSON = true
-				case "json-patch":
+				case "json-patch", "patch":
 					jsonPatch = true
 				case "unified":
 					unified = true
@@ -129,7 +129,7 @@ These are mutually exclusive with each other and with --json/--stats/--summary.`
 				case "summary":
 					summaryOnly = true
 				default:
-					return fmt.Errorf("%w: unknown format %q (allowed: text, json, json-patch, unified, side-by-side, stats, summary)",
+					return fmt.Errorf("%w: unknown format %q (allowed: text, json, json-patch, patch, unified, side-by-side, stats, summary)",
 						lens.ErrInvalidArgument, formatName)
 				}
 			}

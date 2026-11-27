@@ -72,6 +72,20 @@ func RegistryIndex() []TypeInfo {
 	return infos
 }
 
+// TypesByCategory returns all registered types in the given category, sorted by
+// name. An empty category returns an empty slice (not all types). Category
+// strings are the Category* constants defined in this file.
+func TypesByCategory(category string) []TypeInfo {
+	all := RegistryIndex()
+	out := make([]TypeInfo, 0, len(all))
+	for _, info := range all {
+		if info.Category == category {
+			out = append(out, info)
+		}
+	}
+	return out
+}
+
 // typeDoc is the curated documentation attached to a registered type.
 type typeDoc struct {
 	category    string
@@ -183,6 +197,8 @@ var typeDocs = map[string]typeDoc{
 		"A surveyor's signed command to start collecting time-sliced statistics."},
 	"SignedTimeSlicedSurveyStopCollectingMessage": {CategoryOverlay,
 		"A surveyor's signed command to stop collecting time-sliced statistics."},
+	"Signer": {CategoryPrimitive,
+		"An account co-signer: a key (ed25519, pre-auth or hash-x) paired with its signing weight."},
 	"SignerKey": {CategoryPrimitive,
 		"A signer: an ed25519, pre-auth transaction, hash-x or signed-payload key."},
 	"SorobanAuthorizationEntry": {CategorySoroban,
@@ -221,6 +237,18 @@ var typeDocs = map[string]typeDoc{
 		"Unix-timestamp bounds for a transaction precondition: min and max time as seconds since epoch."},
 	"TtlEntry": {CategoryStateArchival,
 		"The time-to-live record for a Soroban ledger entry."},
+	"ClaimOfferAtom": {CategoryTransaction,
+		"A DEX trade execution record: the offer filled, seller, assets exchanged, and amounts."},
+	"ClaimOfferAtomV0": {CategoryTransaction,
+		"The legacy v0 form of a DEX trade execution record, using a raw ed25519 seller key."},
+	"ConfigSettingId": {CategoryPrimitive,
+		"A Soroban network configuration parameter identifier, naming one of the protocol's tunable settings."},
+	"LedgerEntryChange": {CategoryLedger,
+		"A single ledger-state transition emitted in transaction meta: created, updated, removed or restored."},
+	"LedgerEntryExtensionV1": {CategoryLedger,
+		"The protocol-14 ledger entry extension carrying the sponsor's account ID."},
+	"OperationBody": {CategoryTransaction,
+		"The type-discriminated body of an operation, without its source account wrapper."},
 }
 
 // minWireSizeOf estimates the smallest encoded size of the type behind a

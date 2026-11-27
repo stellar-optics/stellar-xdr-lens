@@ -73,6 +73,8 @@ Use --interactive (or 'lens explore') for an interactive terminal tree viewer.`,
   lens decode --summary "$XDR"
   lens decode --txrep "$XDR"
   lens decode --csv "$XDR" >> envelopes.csv
+  lens decode --format latex "$XDR" > table.tex
+  lens decode --format dot "$XDR" | dot -Tsvg > graph.svg
   lens decode --spec contract.wasm "$XDR"
   lens decode --interactive "$XDR"
   lens decode --type TransactionResult "$XDR"
@@ -120,7 +122,7 @@ Use --interactive (or 'lens explore') for an interactive terminal tree viewer.`,
 			}
 
 			// Helper to check if output format is tree (default)
-			isTreeFormat := !asJSON && formatName != "json" && !asYAML && !asCSV && formatName != "csv" && !asTxRep && formatName != "txrep" && !asSummary && formatName != "summary" && formatName != "html" && formatName != "mermaid"
+			isTreeFormat := !asJSON && formatName != "json" && !asYAML && !asCSV && formatName != "csv" && !asTxRep && formatName != "txrep" && !asSummary && formatName != "summary" && formatName != "html" && formatName != "mermaid" && formatName != "latex" && formatName != "dot"
 
 			render := func(w io.Writer, payload string) error {
 				if isHex || strings.HasPrefix(payload, "0x") || strings.HasPrefix(payload, "0X") {
@@ -275,6 +277,14 @@ Use --interactive (or 'lens explore') for an interactive terminal tree viewer.`,
 					return format.NewJUnitFormatter().Format(w, value)
 				}
 
+				if formatName == "latex" {
+					return format.NewLaTeXFormatter().Format(w, value)
+				}
+
+				if formatName == "dot" {
+					return format.NewDOTFormatter().Format(w, value)
+				}
+
 				if asJSON || formatName == "json" {
 					indent := "  "
 					if compactOut {
@@ -323,7 +333,7 @@ Use --interactive (or 'lens explore') for an interactive terminal tree viewer.`,
 	cmd.Flags().BoolVar(&asCSV, "csv", false, "emit a flat CSV row of the high-level transaction fields")
 	cmd.Flags().BoolVarP(&interactive, "interactive", "i", false, "explore the decoded tree interactively")
 	cmd.Flags().StringVar(&specPath, "spec", "", "path to contract WASM or ScSpecEntry file for spec-aware decoding")
-	cmd.Flags().StringVar(&formatName, "format", "", `output format: "tree", "json", "summary", "txrep", "csv", "html", "mermaid", or "junit"`)
+	cmd.Flags().StringVar(&formatName, "format", "", `output format: "tree", "json", "summary", "txrep", "csv", "html", "mermaid", "junit", "latex", or "dot"`)
 	cmd.Flags().StringVar(&network, "network", "",
 		`network passphrase for txrep formatting, or "public"/"testnet" to link addresses to Stellar Expert`)
 	cmd.Flags().StringVarP(&typeName, "type", "t", "",
@@ -812,6 +822,7 @@ func writeScalarNode(w io.Writer, n *lens.Node, palette format.Palette) error {
 
 func newTypesCmd(stdout io.Writer) *cobra.Command {
 	var asJSON bool
+	var category string
 
 	cmd := &cobra.Command{
 		Use:   "types",
@@ -820,11 +831,37 @@ func newTypesCmd(stdout io.Writer) *cobra.Command {
 
 With --json the command emits the introspection index: the name, category,
 one-line description, detection priority and minimum encoded size of each type.
-The shape is stable and intended for scripts.`,
+The shape is stable and intended for scripts.
+
+Use --category to filter by one of the well-known category names:
+  transaction, ledger, history, overlay, consensus, soroban,
+  state-archival, ledger-entry, primitive`,
 		Example: `  lens types
-  lens types --json | jq '.[] | select(.category == "overlay") | .name'`,
+  lens types --json | jq '.[] | select(.category == "overlay") | .name'
+  lens types --category soroban
+  lens types --category transaction --json`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if category != "" {
+				infos := lens.TypesByCategory(category)
+				if len(infos) == 0 {
+					return fmt.Errorf("no types found for category %q (known: transaction, ledger, history, overlay, consensus, soroban, state-archival, ledger-entry, primitive)", category)
+				}
+				if asJSON {
+					enc := json.NewEncoder(stdout)
+					enc.SetIndent("", "  ")
+					if err := enc.Encode(infos); err != nil {
+						return fmt.Errorf("encoding type index: %w", err)
+					}
+					return nil
+				}
+				names := make([]string, 0, len(infos))
+				for _, info := range infos {
+					names = append(names, info.Name)
+				}
+				_, err := fmt.Fprintln(stdout, strings.Join(names, "\n"))
+				return err
+			}
 			if asJSON {
 				enc := json.NewEncoder(stdout)
 				enc.SetIndent("", "  ")
@@ -839,6 +876,7 @@ The shape is stable and intended for scripts.`,
 	}
 
 	cmd.Flags().BoolVar(&asJSON, "json", false, "emit the introspection index as JSON")
+	cmd.Flags().StringVar(&category, "category", "", "filter to types in this category (e.g. soroban, transaction, overlay)")
 
 	return cmd
 }

@@ -130,3 +130,82 @@ func TestRegistryIndexJSONShape(t *testing.T) {
 		}
 	}
 }
+
+func TestTypesByCategoryFilters(t *testing.T) {
+	t.Parallel()
+
+	soroban := lens.TypesByCategory(lens.CategorySoroban)
+	if len(soroban) == 0 {
+		t.Fatal("TypesByCategory(soroban) returned no types")
+	}
+	for _, info := range soroban {
+		if info.Category != lens.CategorySoroban {
+			t.Errorf("TypesByCategory(soroban)[%s].Category = %q, want %q",
+				info.Name, info.Category, lens.CategorySoroban)
+		}
+	}
+
+	// An unknown category returns an empty slice, not an error.
+	unknown := lens.TypesByCategory("not-a-category")
+	if len(unknown) != 0 {
+		t.Errorf("TypesByCategory(unknown) = %v, want empty", unknown)
+	}
+
+	// Every type appears in exactly one category.
+	all := lens.RegistryIndex()
+	seen := make(map[string]bool, len(all))
+	for _, info := range all {
+		types := lens.TypesByCategory(info.Category)
+		found := false
+		for _, t2 := range types {
+			if t2.Name == info.Name {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("TypesByCategory(%q) does not contain %q", info.Category, info.Name)
+		}
+		seen[info.Name] = true
+	}
+	if len(seen) != len(all) {
+		t.Errorf("coverage mismatch: %d seen vs %d total", len(seen), len(all))
+	}
+}
+
+func TestTypesByCategoryIsSorted(t *testing.T) {
+	t.Parallel()
+
+	transaction := lens.TypesByCategory(lens.CategoryTransaction)
+	for i := 1; i < len(transaction); i++ {
+		if transaction[i-1].Name > transaction[i].Name {
+			t.Errorf("TypesByCategory(transaction) not sorted: %q > %q",
+				transaction[i-1].Name, transaction[i].Name)
+		}
+	}
+}
+
+func TestSignerTypeIsRegistered(t *testing.T) {
+	t.Parallel()
+
+	names := lens.TypeNames()
+	found := false
+	for _, n := range names {
+		if n == "Signer" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("Signer is not in the registry")
+	}
+
+	// The Signer type should be in the primitive category.
+	primitives := lens.TypesByCategory(lens.CategoryPrimitive)
+	for _, info := range primitives {
+		if info.Name == "Signer" {
+			return
+		}
+	}
+	t.Fatal("Signer is not in the primitive category")
+}

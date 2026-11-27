@@ -91,7 +91,7 @@ func (p RedactionPolicy) placeholderFor(n *Node) (string, bool) {
 	if p.matchesField(n.Name) {
 		return RedactedField, true
 	}
-	if n.Kind != KindScalar {
+	if n.Kind != KindScalar && n.Kind != KindBytes {
 		return "", false
 	}
 	switch n.TypeName {

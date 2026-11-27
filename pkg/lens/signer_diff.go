@@ -191,6 +191,139 @@ func signerSetDiff(left, right []multisetItem) *SignerSetDiff {
 	return diff
 }
 
+// SignerDrift describes a quorum change detected between two decoded account
+// entries or signer lists. It is returned by SignerDriftDetector.
+type SignerDrift struct {
+	// Added holds signers present only in the right-hand value.
+	Added []string `json:"added,omitempty"`
+	// Removed holds signers present only in the left-hand value.
+	Removed []string `json:"removed,omitempty"`
+	// WeightChanged holds signers whose key is in both sides but with a
+	// different weight, rendered as "address: N→M".
+	WeightChanged []string `json:"weightChanged,omitempty"`
+	// ThresholdNote summarises the threshold change, when both sides carry
+	// AccountEntry Thresholds fields. Empty when thresholds are unchanged or
+	// unavailable.
+	ThresholdNote string `json:"thresholdNote,omitempty"`
+}
+
+// Equal reports whether no drift was detected.
+func (d SignerDrift) Equal() bool {
+	return len(d.Added) == 0 && len(d.Removed) == 0 && len(d.WeightChanged) == 0 && d.ThresholdNote == ""
+}
+
+// Summary returns a one-line description of the drift.
+func (d SignerDrift) Summary() string {
+	if d.Equal() {
+		return "no signer drift"
+	}
+	parts := make([]string, 0, 4)
+	if n := len(d.Removed); n > 0 {
+		parts = append(parts, fmt.Sprintf("%d removed", n))
+	}
+	if n := len(d.Added); n > 0 {
+		parts = append(parts, fmt.Sprintf("%d added", n))
+	}
+	if n := len(d.WeightChanged); n > 0 {
+		parts = append(parts, fmt.Sprintf("%d weight changed", n))
+	}
+	if d.ThresholdNote != "" {
+		parts = append(parts, d.ThresholdNote)
+	}
+	return strings.Join(parts, "; ")
+}
+
+// SignerDriftDetector compares two signer lists and optional threshold
+// configurations, reporting semantic drift: added/removed signers, weight
+// changes, and quorum-threshold shifts. It is intended for account-level
+// diffing where both inputs are decoded AccountEntry or raw Signer slices.
+type SignerDriftDetector struct{}
+
+// DetectFromSigners compares two Signer slices and returns the drift.
+func (SignerDriftDetector) DetectFromSigners(left, right []xdr.Signer) (SignerDrift, error) {
+	return detectSignerDrift(left, right, nil, nil)
+}
+
+// DetectFromAccounts compares two AccountEntry values, capturing both signer
+// set changes and threshold shifts.
+func (SignerDriftDetector) DetectFromAccounts(left, right *xdr.AccountEntry) (SignerDrift, error) {
+	if left == nil || right == nil {
+		return SignerDrift{}, fmt.Errorf("nil AccountEntry")
+	}
+	return detectSignerDrift(left.Signers, right.Signers, &left.Thresholds, &right.Thresholds)
+}
+
+// detectSignerDrift performs the shared comparison logic.
+func detectSignerDrift(left, right []xdr.Signer, leftTh, rightTh *xdr.Thresholds) (SignerDrift, error) {
+	// Build key → weight maps for both sides.
+	leftMap := make(map[string]uint32, len(left))
+	for i := range left {
+		b, err := left[i].Key.MarshalBinary()
+		if err != nil {
+			return SignerDrift{}, fmt.Errorf("encoding left signer %d: %w", i, err)
+		}
+		leftMap[hex.EncodeToString(b)] = uint32(left[i].Weight)
+	}
+	rightMap := make(map[string]uint32, len(right))
+	rightLabels := make(map[string]string, len(right))
+	for i := range right {
+		b, err := right[i].Key.MarshalBinary()
+		if err != nil {
+			return SignerDrift{}, fmt.Errorf("encoding right signer %d: %w", i, err)
+		}
+		k := hex.EncodeToString(b)
+		rightMap[k] = uint32(right[i].Weight)
+		label := k
+		if addr, err := right[i].Key.GetAddress(); err == nil && addr != "" {
+			label = addr
+		}
+		rightLabels[k] = label
+	}
+	// Left-side labels (for removed/changed).
+	leftLabels := make(map[string]string, len(left))
+	for i := range left {
+		b, _ := left[i].Key.MarshalBinary()
+		k := hex.EncodeToString(b)
+		label := k
+		if addr, err := left[i].Key.GetAddress(); err == nil && addr != "" {
+			label = addr
+		}
+		leftLabels[k] = label
+	}
+
+	var drift SignerDrift
+
+	// Check left signers: removed or weight-changed.
+	for k, lw := range leftMap {
+		rw, inRight := rightMap[k]
+		if !inRight {
+			drift.Removed = append(drift.Removed, leftLabels[k])
+			continue
+		}
+		if lw != rw {
+			label := leftLabels[k]
+			drift.WeightChanged = append(drift.WeightChanged,
+				fmt.Sprintf("%s: %d→%d", label, lw, rw))
+		}
+	}
+	// Check right signers: added.
+	for k := range rightMap {
+		if _, inLeft := leftMap[k]; !inLeft {
+			drift.Added = append(drift.Added, rightLabels[k])
+		}
+	}
+
+	// Threshold comparison.
+	if leftTh != nil && rightTh != nil && *leftTh != *rightTh {
+		lm, ll, lmed, lh := leftTh[0], leftTh[1], leftTh[2], leftTh[3]
+		rm, rl, rmed, rh := rightTh[0], rightTh[1], rightTh[2], rightTh[3]
+		drift.ThresholdNote = fmt.Sprintf("thresholds changed: low %d→%d med %d→%d high %d→%d master %d→%d",
+			ll, rl, lmed, rmed, lh, rh, lm, rm)
+	}
+
+	return drift, nil
+}
+
 // isSignerCollection reports whether a field name holds an unordered signer or
 // signature collection. Only the fields the protocol defines as sets are
 // listed; everything else keeps positional comparison.
@@ -255,7 +388,7 @@ func writeCanonicalNode(b *strings.Builder, n *Node) {
 		return
 	}
 	fmt.Fprintf(b, "%d:%d:%s:", n.Kind, len(n.TypeName), n.TypeName)
-	if n.Kind == KindScalar {
+	if n.Kind == KindScalar || n.Kind == KindBytes {
 		fmt.Fprintf(b, "%T=%v", n.Value, n.Value)
 	} else {
 		for _, child := range n.Children {
@@ -273,7 +406,7 @@ func renderNodeLabel(n *Node) string {
 	if n == nil {
 		return "(none)"
 	}
-	if n.Kind == KindScalar {
+	if n.Kind == KindScalar || n.Kind == KindBytes {
 		return n.String()
 	}
 	parts := make([]string, 0, len(n.Children))
@@ -281,7 +414,7 @@ func renderNodeLabel(n *Node) string {
 		if child == nil {
 			continue
 		}
-		if child.Kind != KindScalar {
+		if child.Kind != KindScalar && child.Kind != KindBytes {
 			continue
 		}
 		if child.Name == "" {

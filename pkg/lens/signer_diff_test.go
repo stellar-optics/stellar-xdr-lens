@@ -232,6 +232,104 @@ func TestDiffOptionsUnorderedSignersLeavesOtherListsPositional(t *testing.T) {
 	}
 }
 
+func makeSignerEntry(t *testing.T, addrIndex byte, weight xdr.Uint32) xdr.Signer {
+	t.Helper()
+	var key xdr.Uint256
+	for i := range key {
+		key[i] = addrIndex
+	}
+	k, err := xdr.NewSignerKey(xdr.SignerKeyTypeSignerKeyTypeEd25519, key)
+	if err != nil {
+		t.Fatalf("NewSignerKey: %v", err)
+	}
+	return xdr.Signer{Key: k, Weight: weight}
+}
+
+func TestSignerDriftDetectorNoChange(t *testing.T) {
+	t.Parallel()
+
+	s := lens.SignerDriftDetector{}
+	signerA := makeSignerEntry(t, 0xA0, 1)
+	drift, err := s.DetectFromSigners(
+		[]xdr.Signer{signerA},
+		[]xdr.Signer{signerA},
+	)
+	if err != nil {
+		t.Fatalf("DetectFromSigners error = %v", err)
+	}
+	if !drift.Equal() {
+		t.Errorf("Equal = false for identical signers: %v", drift)
+	}
+	if drift.Summary() != "no signer drift" {
+		t.Errorf("Summary() = %q", drift.Summary())
+	}
+}
+
+func TestSignerDriftDetectorAddedAndRemoved(t *testing.T) {
+	t.Parallel()
+
+	s := lens.SignerDriftDetector{}
+	signerA := makeSignerEntry(t, 0xA0, 1)
+	signerB := makeSignerEntry(t, 0xB0, 1)
+
+	drift, err := s.DetectFromSigners(
+		[]xdr.Signer{signerA},
+		[]xdr.Signer{signerB},
+	)
+	if err != nil {
+		t.Fatalf("DetectFromSigners error = %v", err)
+	}
+	if drift.Equal() {
+		t.Fatal("Equal = true, want false for replaced signer")
+	}
+	if len(drift.Removed) != 1 || len(drift.Added) != 1 {
+		t.Errorf("diff = %+v, want 1 removed 1 added", drift)
+	}
+}
+
+func TestSignerDriftDetectorWeightChange(t *testing.T) {
+	t.Parallel()
+
+	s := lens.SignerDriftDetector{}
+	var key xdr.Uint256
+	for i := range key {
+		key[i] = 0xCC
+	}
+	k, _ := xdr.NewSignerKey(xdr.SignerKeyTypeSignerKeyTypeEd25519, key)
+	left := []xdr.Signer{{Key: k, Weight: 1}}
+	right := []xdr.Signer{{Key: k, Weight: 3}}
+
+	drift, err := s.DetectFromSigners(left, right)
+	if err != nil {
+		t.Fatalf("DetectFromSigners error = %v", err)
+	}
+	if len(drift.WeightChanged) != 1 {
+		t.Fatalf("WeightChanged = %v, want 1 entry", drift.WeightChanged)
+	}
+	if len(drift.Added) != 0 || len(drift.Removed) != 0 {
+		t.Errorf("unexpected added/removed: %+v", drift)
+	}
+}
+
+func TestSignerDriftDetectorThresholdChange(t *testing.T) {
+	t.Parallel()
+
+	s := lens.SignerDriftDetector{}
+	leftEntry := &xdr.AccountEntry{
+		Thresholds: xdr.Thresholds{3, 1, 2, 3},
+	}
+	rightEntry := &xdr.AccountEntry{
+		Thresholds: xdr.Thresholds{1, 1, 2, 2},
+	}
+	drift, err := s.DetectFromAccounts(leftEntry, rightEntry)
+	if err != nil {
+		t.Fatalf("DetectFromAccounts error = %v", err)
+	}
+	if drift.ThresholdNote == "" {
+		t.Fatal("ThresholdNote is empty, want a description of the threshold change")
+	}
+}
+
 // buildSignedEnvelope constructs a minimal, valid V1 envelope carrying the
 // supplied signatures.
 func buildSignedEnvelope(t *testing.T, signatures []xdr.DecoratedSignature) string {
