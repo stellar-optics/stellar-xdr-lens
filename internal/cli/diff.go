@@ -23,6 +23,7 @@ func newDiffCmd(g *globalFlags, stdout io.Writer, stdin io.Reader) *cobra.Comman
 		sideBySide       bool
 		exitDiff         bool
 		alignLists       bool
+		alignOps         bool
 		semantic         bool
 		unorderedSigners bool
 		statsOnly        bool
@@ -185,6 +186,7 @@ These are mutually exclusive with each other and with --json/--stats/--summary.`
 
 			result, err := lens.DiffBase64WithOptions(left, right, typeName, lens.DiffOptions{
 				AlignLists:       alignLists,
+				AlignOps:         alignOps,
 				Semantic:         semantic,
 				UnorderedSigners: unorderedSigners,
 				Filter:           filter,
@@ -334,6 +336,8 @@ These are mutually exclusive with each other and with --json/--stats/--summary.`
 	cmd.Flags().IntVar(&sideWidth, "side-by-side-width", 160, "total column width for --side-by-side")
 	cmd.Flags().BoolVar(&alignLists, "align", false,
 		"align list elements with LCS to reduce insertion and removal noise")
+	cmd.Flags().BoolVar(&alignOps, "align-ops", false,
+		"detect reordered operations and report them as reorder changes instead of removal/addition pairs")
 	cmd.Flags().BoolVar(&semantic, "semantic", false,
 		"compare supported values semantically, including exact ScVal wide integers")
 	cmd.Flags().BoolVar(&unorderedSigners, "unordered-signers", false,

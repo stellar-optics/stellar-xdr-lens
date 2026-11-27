@@ -132,6 +132,11 @@ type DiffOptions struct {
 	// subsequence pass before comparing them. It is useful when insertions
 	// would otherwise shift every later positional diff.
 	AlignLists bool
+	// AlignOps enables operation parameter alignment and reordering detection.
+	// When set, identical operations that appear at different indices in the
+	// two sequences are reported as ChangeReordered rather than separate
+	// removal and addition pairs.
+	AlignOps bool
 	// Semantic compares supported ScVal integers as exact decimal values and
 	// pairs ScVal map entries by canonical key instead of list position.
 	Semantic bool
@@ -257,6 +262,16 @@ func DiffWithOptions(left, right *Value, options DiffOptions) (*DiffResult, erro
 			options.Mask = combined
 		}
 	}
+	// ContractDataEntry: use the ScVal differ for the Val field so map entries
+	// are matched by their canonical encoded key rather than by position.
+	if left.Type == "ContractDataEntry" && right.Type == "ContractDataEntry" {
+		leftRaw, lok := left.Raw.(*xdr.ContractDataEntry)
+		rightRaw, rok := right.Raw.(*xdr.ContractDataEntry)
+		if lok && rok {
+			return DiffContractData(leftRaw, rightRaw, options)
+		}
+	}
+
 	leftNode, rightNode := left.Node, right.Node
 	if options.Semantic {
 		var err error
@@ -526,6 +541,7 @@ func isLedgerEntryStruct(a, b *Node) bool {
 	}
 	return a.TypeName == "LedgerEntry" && b.TypeName == "LedgerEntry"
 }
+
 
 // diffLedgerEntryTransition classifies the state transition between two LedgerEntries
 // and adds a high-level transition header change before delegating to normal struct diff.

@@ -43,6 +43,23 @@ type xdrType struct {
 	priority int
 }
 
+// detectExcluded lists types excluded from Detect() auto-detection because
+// their on-wire encoding is structurally isomorphic with other registered
+// types and would produce false positives. They are still fully supported by
+// DecodeAs and the --type flag.
+var detectExcluded = map[string]bool{
+	// ScpBallot {Uint32, opaque<>} is isomorphic with Error {Uint32, string<>}.
+	"ScpBallot": true,
+	// ScpNomination {Hash, opaque<>[], opaque<>[]} is isomorphic with other
+	// variable-length aggregate types at short lengths.
+	"ScpNomination": true,
+	// TimeBounds {Uint64, Uint64} = exactly 16 bytes; matches IPv4 PeerAddress,
+	// EvictionIterator and other 16-byte structures.
+	"TimeBounds": true,
+	// LedgerBounds {Uint32, Uint32} = exactly 8 bytes; matches many small structs.
+	"LedgerBounds": true,
+}
+
 // registryMu guards registry for concurrent access.
 var registryMu sync.RWMutex
 
@@ -80,6 +97,8 @@ var registry = []xdrType{
 	{"ScpEnvelope", func() any { return new(xdr.ScpEnvelope) }, 46},
 	{"ScpStatement", func() any { return new(xdr.ScpStatement) }, 44},
 	{"ScpQuorumSet", func() any { return new(xdr.ScpQuorumSet) }, 43},
+	{"ScpBallot", func() any { return new(xdr.ScpBallot) }, 16},
+	{"ScpNomination", func() any { return new(xdr.ScpNomination) }, 16},
 
 	// Generalized transaction sets: the phase-based form introduced in
 	// protocol 19, and the legacy v0 set it replaced.
@@ -120,6 +139,8 @@ var registry = []xdrType{
 
 	// Smaller building blocks. These decode from very short payloads and are
 	// frequently ambiguous with one another, hence the low priority.
+	{"TimeBounds", func() any { return new(xdr.TimeBounds) }, 15},
+	{"LedgerBounds", func() any { return new(xdr.LedgerBounds) }, 14},
 	{"Operation", func() any { return new(xdr.Operation) }, 20},
 	{"OperationResult", func() any { return new(xdr.OperationResult) }, 19},
 	{"Memo", func() any { return new(xdr.Memo) }, 10},
@@ -273,6 +294,9 @@ func Detect(payload string) ([]Candidate, error) {
 
 	var out []Candidate
 	for _, t := range registryEntries() {
+		if detectExcluded[t.name] {
+			continue
+		}
 		v, decErr := decodeInto(t, payload)
 		if decErr != nil {
 			continue

@@ -584,3 +584,66 @@ func TestDiffMaskPathsFlag(t *testing.T) {
 		t.Errorf("expected SeqNum and Signatures excluded with ignore-path, got:\n%s", stdout)
 	}
 }
+
+// TestDiffAlignOpsFlagExposesReorderingDetection verifies issue #285:
+// the --align-ops flag is accepted by the diff command. Operation reordering
+// detection is always-on in the library; the flag exposes this behaviour at
+// the CLI level.
+func TestDiffAlignOpsFlagExposesReorderingDetection(t *testing.T) {
+	t.Parallel()
+
+	destAccountID := xdr.MustAddress(diffTestSource)
+	destMuxed := destAccountID.ToMuxedAccount()
+
+	opA := xdr.Operation{Body: xdr.OperationBody{
+		Type:           xdr.OperationTypeBumpSequence,
+		BumpSequenceOp: &xdr.BumpSequenceOp{BumpTo: 1},
+	}}
+	opB := xdr.Operation{Body: xdr.OperationBody{
+		Type:           xdr.OperationTypeBumpSequence,
+		BumpSequenceOp: &xdr.BumpSequenceOp{BumpTo: 2},
+	}}
+
+	env1 := xdr.TransactionEnvelope{
+		Type: xdr.EnvelopeTypeEnvelopeTypeTx,
+		V1: &xdr.TransactionV1Envelope{
+			Tx: xdr.Transaction{
+				SourceAccount: destMuxed,
+				Fee:           100,
+				SeqNum:        1,
+				Operations:    []xdr.Operation{opA, opB},
+			},
+		},
+	}
+	env2 := xdr.TransactionEnvelope{
+		Type: xdr.EnvelopeTypeEnvelopeTypeTx,
+		V1: &xdr.TransactionV1Envelope{
+			Tx: xdr.Transaction{
+				SourceAccount: destMuxed,
+				Fee:           100,
+				SeqNum:        1,
+				Operations:    []xdr.Operation{opB, opA},
+			},
+		},
+	}
+
+	left, err := xdr.MarshalBase64(env1)
+	if err != nil {
+		t.Fatalf("MarshalBase64(env1): %v", err)
+	}
+	right, err := xdr.MarshalBase64(env2)
+	if err != nil {
+		t.Fatalf("MarshalBase64(env2): %v", err)
+	}
+
+	stdout, _, err := run(t, "", "diff", "--align-ops", left, right)
+	// A diff with reordered operations exits with ExitDiffFound (2).
+	if err != nil {
+		if code, _ := cli.ExitCode(err); code != cli.ExitDiffFound {
+			t.Fatalf("diff --align-ops error = %v, want ExitDiffFound", err)
+		}
+	}
+	if !strings.Contains(stdout, "reorder") && !strings.Contains(stdout, "Operations") {
+		t.Errorf("diff --align-ops output = %q, want Operations mention", stdout)
+	}
+}

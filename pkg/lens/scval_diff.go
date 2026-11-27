@@ -111,6 +111,43 @@ func replaceChild(parent *Node, name string, replacement *Node) {
 	parent.Children = append(parent.Children, replacement)
 }
 
+// DiffContractData compares two ContractDataEntry values by durability and the
+// Val ScVal recursively.  Durability is compared as a plain string change;
+// the Val field uses the same ScVal differ so nested vectors and maps get
+// key-based matching rather than positional matching.
+func DiffContractData(left, right *xdr.ContractDataEntry, opts DiffOptions) (*DiffResult, error) {
+	if left == nil || right == nil {
+		return nil, fmt.Errorf("%w: ContractDataEntry must not be nil", ErrInvalidArgument)
+	}
+	result := &DiffResult{LeftType: "ContractDataEntry", RightType: "ContractDataEntry"}
+
+	// Durability is a plain enum; compare it directly.
+	leftDur := left.Durability.String()
+	rightDur := right.Durability.String()
+	if leftDur != rightDur {
+		result.Changes = append(result.Changes, Change{
+			Path:   "Durability",
+			Op:     ChangeModified,
+			Before: leftDur,
+			After:  rightDur,
+		})
+	}
+
+	// Val is an ScVal; recurse through it with key-based map matching.
+	semantic := opts.Semantic
+	leftNode, err := scValNode("Val", left.Val, semantic)
+	if err != nil {
+		return nil, fmt.Errorf("building left ContractDataEntry.Val: %w", err)
+	}
+	rightNode, err := scValNode("Val", right.Val, semantic)
+	if err != nil {
+		return nil, fmt.Errorf("building right ContractDataEntry.Val: %w", err)
+	}
+	diffNodesWithOptions(leftNode, rightNode, "Val", &result.Changes, opts)
+
+	return result, nil
+}
+
 func isScVal(raw any) (xdr.ScVal, bool) {
 	switch value := raw.(type) {
 	case *xdr.ScVal:
