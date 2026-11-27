@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/stellar-optics/stellar-xdr-lens/pkg/lens"
 	"github.com/stellar-optics/stellar-xdr-lens/pkg/lens/format"
@@ -22,7 +23,31 @@ type treeRow struct {
 }
 
 // TUITree is an interactive expandable terminal tree explorer for XDR structures.
+//
+// It supports keyboard navigation, expansion and an incremental search bar that
+// filters the tree to matching nodes and their ancestors.
 type TUITree struct {
+	valueType     string
+	root          *lens.Node
+	expandedState map[*lens.Node]bool
+	rows          []*treeRow
+	cursor        int
+	scrollOffset  int
+	height        int
+	width         int
+	filter        string
+	matches       []*lens.Node
+	matchSet      map[*lens.Node]bool
+	visible       map[*lens.Node]bool
+	matchIdx      int
+	searchMode    bool
+	savedExpanded map[*lens.Node]bool
+	savedCursor   *lens.Node
+	palette       format.Palette
+	in            io.Reader
+	out           io.Writer
+	quit          bool
+	statusMsg     string
 	valueType        string
 	root             *lens.Node
 	expandedState    map[*lens.Node]bool
@@ -85,6 +110,7 @@ func (t *TUITree) SetDimensions(width, height int) {
 	}
 }
 
+// rebuildRows flattens visible nodes based on expansion state and the active filter.
 // HandleResize updates dimensions on terminal resize.
 func (t *TUITree) HandleResize(width, height int) {
 	t.SetDimensions(width, height)
@@ -92,44 +118,18 @@ func (t *TUITree) HandleResize(width, height int) {
 
 // rebuildRows flattens visible nodes based on expansion state and filters.
 func (t *TUITree) rebuildRows() {
-	var rows []*treeRow
 	if t.root == nil {
-		t.rows = rows
+		t.rows = nil
 		return
 	}
 
-	if t.filter != "" {
-		lowerFilter := strings.ToLower(t.filter)
-		var markAncestors func(n *lens.Node) bool
-		markAncestors = func(n *lens.Node) bool {
-			if n == nil {
-				return false
-			}
-			text := n.Name + " " + fmt.Sprintf("%v", n.Value) + " " + n.Note + " " + n.TypeName
-			selfMatch := strings.Contains(strings.ToLower(text), lowerFilter)
-			childMatch := false
-			for _, c := range n.Children {
-				if markAncestors(c) {
-					childMatch = true
-				}
-			}
-			if selfMatch || childMatch {
-				t.expandedState[n] = true
-				return true
-			}
-			return false
-		}
-		markAncestors(t.root)
-	}
-
+	var rows []*treeRow
 	t.walk(t.root, nil, "", 0, true, &rows)
 
 	if t.filter != "" {
-		lowerFilter := strings.ToLower(t.filter)
-		var filtered []*treeRow
+		filtered := rows[:0]
 		for _, r := range rows {
-			text := r.node.Name + " " + fmt.Sprintf("%v", r.node.Value) + " " + r.node.Note + " " + r.node.TypeName
-			if strings.Contains(strings.ToLower(text), lowerFilter) {
+			if t.visible[r.node] {
 				filtered = append(filtered, r)
 			}
 		}
@@ -154,6 +154,54 @@ func (t *TUITree) rebuildRows() {
 	if t.cursor < 0 {
 		t.cursor = 0
 	}
+}
+
+// applyFilter recomputes the matching nodes for the current filter, expands the
+// ancestors needed to reveal them, and records which rows stay visible.
+func (t *TUITree) applyFilter() {
+	t.matches = nil
+	t.matchSet = nil
+	t.visible = nil
+	if t.root == nil || t.filter == "" {
+		return
+	}
+
+	query := strings.ToLower(t.filter)
+	t.matchSet = make(map[*lens.Node]bool)
+	t.visible = make(map[*lens.Node]bool)
+
+	var mark func(n *lens.Node) bool
+	mark = func(n *lens.Node) bool {
+		if n == nil {
+			return false
+		}
+		selfMatch := nodeMatches(n, query)
+		if selfMatch {
+			t.matches = append(t.matches, n)
+			t.matchSet[n] = true
+		}
+		childMatch := false
+		for _, c := range n.Children {
+			if mark(c) {
+				childMatch = true
+			}
+		}
+		if !selfMatch && !childMatch {
+			return false
+		}
+		t.visible[n] = true
+		if len(n.Children) > 0 {
+			t.expandedState[n] = true
+		}
+		return true
+	}
+	mark(t.root)
+}
+
+// nodeMatches reports whether a node's label, value, note or type contains query.
+func nodeMatches(n *lens.Node, lowerQuery string) bool {
+	text := n.Name + " " + fmt.Sprintf("%v", n.Value) + " " + n.Note + " " + n.TypeName
+	return strings.Contains(strings.ToLower(text), lowerQuery)
 }
 
 func (t *TUITree) walk(n *lens.Node, parent *lens.Node, path string, depth int, isLast bool, rows *[]*treeRow) {
@@ -205,17 +253,35 @@ func (t *TUITree) MoveUp() {
 	}
 }
 
+// viewportRows is the number of tree rows that fit on screen, leaving room for
+// the header, the status line and the footer or search bar.
+func (t *TUITree) viewportRows() int {
+	visibleRows := t.height - 3
+	if visibleRows < 1 {
+		visibleRows = 1
+	}
+	return visibleRows
+}
+
+// ensureCursorVisible scrolls the viewport so the cursor row is on screen.
+func (t *TUITree) ensureCursorVisible() {
+	visibleRows := t.viewportRows()
+	if t.cursor < t.scrollOffset {
+		t.scrollOffset = t.cursor
+	}
+	if t.cursor >= t.scrollOffset+visibleRows {
+		t.scrollOffset = t.cursor - visibleRows + 1
+	}
+	if t.scrollOffset < 0 {
+		t.scrollOffset = 0
+	}
+}
+
 // MoveDown moves cursor one row down.
 func (t *TUITree) MoveDown() {
 	if t.cursor < len(t.rows)-1 {
 		t.cursor++
-		visibleRows := t.height - 3 // leave room for header & status bar
-		if visibleRows < 1 {
-			visibleRows = 1
-		}
-		if t.cursor >= t.scrollOffset+visibleRows {
-			t.scrollOffset = t.cursor - visibleRows + 1
-		}
+		t.ensureCursorVisible()
 	}
 }
 
@@ -229,15 +295,7 @@ func (t *TUITree) MoveTop() {
 func (t *TUITree) MoveBottom() {
 	if len(t.rows) > 0 {
 		t.cursor = len(t.rows) - 1
-		visibleRows := t.height - 3
-		if visibleRows < 1 {
-			visibleRows = 1
-		}
-		if t.cursor >= visibleRows {
-			t.scrollOffset = t.cursor - visibleRows + 1
-		} else {
-			t.scrollOffset = 0
-		}
+		t.ensureCursorVisible()
 	}
 }
 
@@ -318,20 +376,225 @@ func (t *TUITree) CollapseAll() {
 	t.statusMsg = "All nodes collapsed"
 }
 
-// SetFilter filters visible nodes by a search string.
+// SetFilter filters visible nodes by a search string. Matching nodes and the
+// ancestors that lead to them stay visible; non-matching branches collapse.
+// Clearing the query restores the expansion state and cursor from before the
+// search started.
 func (t *TUITree) SetFilter(q string) {
+	if q != "" && t.filter == "" {
+		t.savedExpanded = cloneExpandedState(t.expandedState)
+		t.savedCursor = t.selectedNode()
+	}
+
 	t.filter = q
+	t.matchIdx = -1
 	t.searchQuery = q
 	t.searchIndex = 0
 	t.searchMatches = nil
 	t.cursor = 0
 	t.scrollOffset = 0
-	t.rebuildRows()
-	if q != "" {
-		t.statusMsg = fmt.Sprintf("Filter: %q (%d matching)", q, len(t.rows))
-	} else {
-		t.statusMsg = "Filter cleared"
+
+	if q == "" {
+		t.matches = nil
+		t.matchSet = nil
+		t.visible = nil
+		t.restoreExpandedState()
+		t.rebuildRows()
+		if t.savedCursor != nil {
+			t.moveCursorTo(t.savedCursor)
+			t.savedCursor = nil
+		}
+		t.statusMsg = "Search cleared"
+		return
 	}
+
+	t.applyFilter()
+	t.rebuildRows()
+
+	switch len(t.matches) {
+	case 0:
+		t.statusMsg = fmt.Sprintf("Search %q: no matches", q)
+	case 1:
+		t.statusMsg = fmt.Sprintf("Search %q: 1 match — Enter: jump, Esc: clear", q)
+	default:
+		t.statusMsg = fmt.Sprintf("Search %q: %d matches — Enter: first, n/N: next/prev", q, len(t.matches))
+	}
+}
+
+// BeginSearch opens the interactive search input bar.
+func (t *TUITree) BeginSearch() {
+	t.searchMode = true
+	t.statusMsg = "Type to search; Enter: first match; Esc: clear"
+}
+
+// CommitSearch closes the search bar and jumps to the first match.
+func (t *TUITree) CommitSearch() {
+	t.searchMode = false
+	if t.filter == "" {
+		t.statusMsg = "Search cleared"
+		return
+	}
+	if len(t.matches) == 0 {
+		t.statusMsg = fmt.Sprintf("No matches for %q", t.filter)
+		return
+	}
+	t.jumpToMatch(0)
+}
+
+// NextMatch moves the cursor to the next search match, wrapping at the end.
+func (t *TUITree) NextMatch() {
+	t.stepMatch(1)
+}
+
+// PrevMatch moves the cursor to the previous search match, wrapping at the start.
+func (t *TUITree) PrevMatch() {
+	t.stepMatch(-1)
+}
+
+func (t *TUITree) stepMatch(delta int) {
+	if t.filter == "" {
+		t.statusMsg = "No active search — press / to search"
+		return
+	}
+	if len(t.matches) == 0 {
+		t.statusMsg = fmt.Sprintf("No matches for %q", t.filter)
+		return
+	}
+
+	next := 0
+	if t.matchIdx >= 0 {
+		next = (t.matchIdx + delta + len(t.matches)) % len(t.matches)
+	} else if delta < 0 {
+		next = len(t.matches) - 1
+	}
+	t.jumpToMatch(next)
+}
+
+func (t *TUITree) jumpToMatch(idx int) {
+	if idx < 0 || idx >= len(t.matches) {
+		return
+	}
+	target := t.matches[idx]
+	t.revealNode(target)
+	t.rebuildRows()
+	t.matchIdx = idx
+	if i := t.rowIndex(target); i >= 0 {
+		t.cursor = i
+		t.statusMsg = fmt.Sprintf("Match %d/%d: %s", idx+1, len(t.matches), t.rows[i].path)
+		t.ensureCursorVisible()
+	}
+}
+
+// revealNode expands every ancestor so that target is present in the rows.
+func (t *TUITree) revealNode(target *lens.Node) {
+	for _, n := range t.nodePath(target) {
+		if len(n.Children) > 0 {
+			t.expandedState[n] = true
+		}
+	}
+}
+
+// nodePath returns the chain of nodes from the root to target, inclusive.
+func (t *TUITree) nodePath(target *lens.Node) []*lens.Node {
+	var stack []*lens.Node
+	var find func(n *lens.Node) bool
+	find = func(n *lens.Node) bool {
+		if n == nil {
+			return false
+		}
+		stack = append(stack, n)
+		if n == target {
+			return true
+		}
+		for _, c := range n.Children {
+			if find(c) {
+				return true
+			}
+		}
+		stack = stack[:len(stack)-1]
+		return false
+	}
+	if !find(t.root) {
+		return nil
+	}
+	return stack
+}
+
+func (t *TUITree) rowIndex(node *lens.Node) int {
+	for i, r := range t.rows {
+		if r.node == node {
+			return i
+		}
+	}
+	return -1
+}
+
+func (t *TUITree) moveCursorTo(node *lens.Node) {
+	if i := t.rowIndex(node); i >= 0 {
+		t.cursor = i
+		t.ensureCursorVisible()
+	}
+}
+
+func (t *TUITree) selectedNode() *lens.Node {
+	if t.cursor >= 0 && t.cursor < len(t.rows) {
+		return t.rows[t.cursor].node
+	}
+	return nil
+}
+
+func cloneExpandedState(state map[*lens.Node]bool) map[*lens.Node]bool {
+	clone := make(map[*lens.Node]bool, len(state))
+	for n, expanded := range state {
+		clone[n] = expanded
+	}
+	return clone
+}
+
+func (t *TUITree) restoreExpandedState() {
+	if t.savedExpanded != nil {
+		t.expandedState = t.savedExpanded
+		t.savedExpanded = nil
+	}
+}
+
+// handleSearchKey processes input while the search bar is open.
+func (t *TUITree) handleSearchKey(key string) {
+	switch key {
+	case "enter":
+		t.CommitSearch()
+	case "esc":
+		t.searchMode = false
+		t.SetFilter("")
+	case "backspace":
+		t.searchBackspace()
+	case "space":
+		t.SetFilter(t.filter + " ")
+	case "ctrl+c":
+		t.quit = true
+	default:
+		if isPrintableKey(key) {
+			t.SetFilter(t.filter + key)
+		}
+	}
+}
+
+func (t *TUITree) searchBackspace() {
+	if t.filter == "" {
+		return
+	}
+	_, size := utf8.DecodeLastRuneInString(t.filter)
+	t.SetFilter(t.filter[:len(t.filter)-size])
+}
+
+// isPrintableKey reports whether key is a single printable character, so that
+// named keys such as "down" or "tab" are not typed into the search query.
+func isPrintableKey(key string) bool {
+	r, size := utf8.DecodeRuneInString(key)
+	if size == 0 || size != len(key) || r == utf8.RuneError {
+		return false
+	}
+	return r >= 0x20 && r != 0x7f
 }
 
 // SetSearch applies an interactive search query: it expands ancestors of
@@ -572,6 +835,12 @@ func (t *TUITree) HandleKey(key string) {
 	}
 
 	t.statusMsg = ""
+
+	if t.searchMode {
+		t.handleSearchKey(key)
+		return
+	}
+
 	switch key {
 	case "up", "k":
 		t.MoveUp()
@@ -605,8 +874,12 @@ func (t *TUITree) HandleKey(key string) {
 		if t.filter != "" || t.searchQuery != "" {
 			t.ClearSearch()
 		}
+	case "/":
+		t.BeginSearch()
 	default:
 		if strings.HasPrefix(key, "/") {
+			t.BeginSearch()
+			t.SetFilter(strings.TrimPrefix(key, "/"))
 			t.SetSearch(strings.TrimPrefix(key, "/"))
 		}
 	}
@@ -629,10 +902,7 @@ func (t *TUITree) Render() string {
 	// Header line
 	b.WriteString(p.Type + "=== " + t.valueType + " Explorer ===" + p.Reset + "\n")
 
-	visibleRows := t.height - 3
-	if visibleRows < 1 {
-		visibleRows = 1
-	}
+	visibleRows := t.viewportRows()
 
 	endIdx := t.scrollOffset + visibleRows
 	if endIdx > len(t.rows) {
@@ -674,9 +944,12 @@ func (t *TUITree) Render() string {
 		line.WriteString(indent)
 		line.WriteString(p.Dim + expandMarker + p.Reset)
 
-		if isSelected {
+		switch {
+		case isSelected:
 			line.WriteString(p.Change + label + p.Reset)
-		} else {
+		case t.matchSet[row.node]:
+			line.WriteString(p.Add + label + p.Reset)
+		default:
 			line.WriteString(p.Key + label + p.Reset)
 		}
 
@@ -713,6 +986,20 @@ func (t *TUITree) Render() string {
 		}
 	}
 	b.WriteString(p.Dim + "--- " + status + " ---" + p.Reset + "\n")
+
+	// Search input bar or the keyboard help line, always on the last row.
+	if t.searchMode {
+		b.WriteString(p.Type + "/" + p.Reset + t.filter + p.Change + "█" + p.Reset)
+		b.WriteString(p.Dim + "  [Enter: first match | Esc: clear]" + p.Reset + "\n")
+	} else if t.filter != "" {
+		position := "-"
+		if t.matchIdx >= 0 {
+			position = fmt.Sprintf("%d", t.matchIdx+1)
+		}
+		fmt.Fprintf(&b, "%s[n/N: next/prev match (%s/%d) | Esc: clear search | ↑/↓/j/k: nav | q: quit]%s\n",
+			p.Dim, position, len(t.matches), p.Reset)
+	} else {
+		b.WriteString(p.Dim + "[↑/↓/j/k: nav | Enter/Space: toggle | e: expand all | c: collapse all | /: search | q: quit]" + p.Reset + "\n")
 	b.WriteString(p.Dim + "[↑/↓/j/k: nav | Enter/Space: toggle | e: expand all | c: collapse all | /: search | n/N: matches | ?: help | i/v: inspector | q: quit]" + p.Reset + "\n")
 
 	if t.showInspector {
@@ -784,6 +1071,8 @@ func readKey(r *bufio.Reader) (string, error) {
 		return "space", nil
 	case '\t':
 		return "tab", nil
+	case 8, 127: // Ctrl+H and DEL: backspace in the search bar
+		return "backspace", nil
 	case 3: // Ctrl+C
 		return "ctrl+c", nil
 	case 27: // Escape or ANSI escape sequence
