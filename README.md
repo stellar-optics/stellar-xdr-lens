@@ -78,6 +78,26 @@ continues to color only terminal output, while `--color always` and
 style parameters produce an error. `NO_COLOR` remains honored in automatic
 mode.
 
+#### Clickable addresses
+
+In terminals that support [OSC 8](https://github.com/Alhadis/OSC8-Adoption)
+hyperlinks (iTerm2, Windows Terminal, Ghostty, Alacritty, kitty, WezTerm) the
+account and contract addresses in text output are clickable and open the
+matching Stellar Expert page:
+
+```console
+$ lens explain --file envelope.xdr            # links on the public network
+$ lens explain --file envelope.xdr --network testnet
+$ lens decode --network testnet "$XDR"        # link addresses in the tree
+```
+
+`--network` accepts `public` (the default for `explain`, also spelled
+`mainnet`) and `testnet`. Passing anything else to `decode` still means a
+network passphrase for `--txrep`, and leaves addresses unlinked. Hyperlinks
+follow the same policy as colour: `--color never`, piped output and `NO_COLOR`
+stay clean text, while `--color always` emits the escapes explicitly. JSON,
+CSV, YAML, TxRep, Markdown and HTML output never carry hyperlink sequences.
+
 ## Contributor validation
 
 The CLI is exercised by subprocess tests in `cmd/lens/e2e_test.go` against the
@@ -158,6 +178,13 @@ the amount, the source account and the claimants, and for
 balance locks: two base reserves for the entry plus one per claimant, at
 0.5 XLM each. This distinguishes a missing creator trustline from a claimant
 who cannot receive the asset, and it is computed entirely from the envelope.
+
+`payment` failures get a context line too. It names the destination, asset,
+issuer and amount, and the step that unblocks the payment: `CreateAccount` for a
+missing destination, `ChangeTrust` for a missing trustline, `SetTrustLineFlagsOp`
+for an unauthorized one. `clawback` and `clawback_claimable_balance` failures
+point at the issuer's `AUTH_CLAWBACK_ENABLED_FLAG`, which has to be in place
+before the trustline or claimable balance is created.
 
 The same detail appears as `context` in `--json` output and in the Markdown
 result cell, and it is resolved entirely from the decoded envelope — no network

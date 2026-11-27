@@ -16,6 +16,7 @@ type TreeFormatter struct {
 	palette  Palette
 	maxDepth int
 	showType bool
+	explorer string
 }
 
 // TreeOption configures a TreeFormatter.
@@ -35,6 +36,14 @@ func WithMaxDepth(d int) TreeOption {
 // WithTypeNames shows the originating XDR type alongside each struct node.
 func WithTypeNames(show bool) TreeOption {
 	return func(t *TreeFormatter) { t.showType = show }
+}
+
+// WithHyperlinks makes strkey addresses clickable in OSC 8 terminals, linking
+// them to the Stellar Expert network identified by base (see
+// ExplorerBaseURL). Links are emitted only when the palette is coloured, so
+// `--color never` and non-TTY output stay free of escape sequences.
+func WithHyperlinks(base string) TreeOption {
+	return func(t *TreeFormatter) { t.explorer = base }
 }
 
 // NewTreeFormatter returns a TreeFormatter. By default it renders without
@@ -134,7 +143,7 @@ func (t *TreeFormatter) scalar(n *lens.Node) string {
 	case nil:
 		b.WriteString(p.Dim + "(none)" + p.Reset)
 	case string:
-		b.WriteString(p.Str + val + p.Reset)
+		b.WriteString(p.Str + hyperlinkAddress(p, t.explorer, val) + p.Reset)
 	case bool:
 		b.WriteString(p.Num + fmt.Sprintf("%t", val) + p.Reset)
 	default:

@@ -40,7 +40,7 @@ func ExampleDetect() {
 
 	fmt.Printf("%d candidate types; preferred: %s\n", len(candidates), candidates[0].Type)
 	// Output:
-	// 4 candidate types; preferred: Memo
+	// 5 candidate types; preferred: Memo
 }
 
 func ExampleDecodeAs() {

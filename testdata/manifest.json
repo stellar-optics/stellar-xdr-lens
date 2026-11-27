@@ -41,7 +41,7 @@
     },
     "offer_entry": {
       "tx_hash": null,
-      "description": "synthetic DEX offer entry: sell 7.0000000 USDC:GAQSE…UAIOK for native XLM at 7/3 (= 2.3333333), offer id 42, passive flag",
+      "description": "synthetic DEX offer entry: sell 7.0000000 USDC:GAQSE\u2026UAIOK for native XLM at 7/3 (= 2.3333333), offer id 42, passive flag",
       "successful": true,
       "operation_count": 0,
       "fee_bump": false,
@@ -158,7 +158,7 @@
       },
       "hot_archive_bucket_entry": {
         "type": "HotArchiveBucketEntry",
-        "description": "ARCHIVED arm of the hot archive bucket; byte-identical to BucketEntry on the wire — decode with an explicit --type."
+        "description": "ARCHIVED arm of the hot archive bucket; byte-identical to BucketEntry on the wire \u2014 decode with an explicit --type."
       },
       "scp_envelope": {
         "type": "ScpEnvelope",
@@ -398,7 +398,7 @@
       },
       "liquidity_pool_entry": {
         "type": "LiquidityPoolEntry",
-        "description": "Constant-product pool with the deterministic 'AAAA…' id, 0.3% fee, reserves 100000 XLM / 500000 USDC and 150 trustline holders."
+        "description": "Constant-product pool with the deterministic 'AAAA\u2026' id, 0.3% fee, reserves 100000 XLM / 500000 USDC and 150 trustline holders."
       },
       "stellar_value_votes": {
         "type": "StellarValue",
@@ -415,6 +415,30 @@
       "trustline_entry_v2": {
         "type": "TrustLineEntry",
         "description": "Pool-share trustline whose v1 ext nests a v2: liquidity pool use count 5."
+      },
+      "config_setting_id": {
+        "type": "ConfigSettingId",
+        "description": "ConfigSettingContractMaxSizeBytes (value 0)."
+      },
+      "operation_body": {
+        "type": "OperationBody",
+        "description": "Payment OperationBody: 100 XLM to a fixed account."
+      },
+      "claim_offer_atom": {
+        "type": "ClaimOfferAtom",
+        "description": "USDC/XLM DEX trade fixture."
+      },
+      "claim_offer_atom_v0": {
+        "type": "ClaimOfferAtomV0",
+        "description": "Legacy v0 trade record."
+      },
+      "ledger_entry_change_created": {
+        "type": "LedgerEntryChange",
+        "description": "Created change wrapping an AccountEntry."
+      },
+      "ledger_entry_change_updated": {
+        "type": "LedgerEntryChange",
+        "description": "Updated change wrapping an AccountEntry."
       }
     }
   }

@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/stellar/go-stellar-sdk/xdr"
 )
@@ -42,11 +43,14 @@ type xdrType struct {
 	priority int
 }
 
+// registryMu guards registry for concurrent access.
+var registryMu sync.RWMutex
+
 // registry lists every type that Detect will attempt, in registration order.
 //
-// To support a new XDR type, add an entry here. Detection, decoding, the
-// --type flag and all output formats pick it up automatically; no other file
-// needs to change. See docs/architecture.md.
+// To support a new XDR type, add an entry here or use RegisterType. Detection,
+// decoding, the --type flag and all output formats pick it up automatically; no
+// other file needs to change. See docs/architecture.md.
 var registry = []xdrType{
 	// Transaction-level types: what a developer is most often holding.
 	{"TransactionEnvelope", func() any { return new(xdr.TransactionEnvelope) }, 100},
@@ -129,6 +133,7 @@ var registry = []xdrType{
 	{"Claimant", func() any { return new(xdr.Claimant) }, 5},
 	{"ClaimPredicate", func() any { return new(xdr.ClaimPredicate) }, 5},
 	{"AccountEntry", func() any { return new(xdr.AccountEntry) }, 5},
+	{"LedgerEntryExtensionV1", func() any { return new(xdr.LedgerEntryExtensionV1) }, 5},
 	{"TrustLineEntry", func() any { return new(xdr.TrustLineEntry) }, 5},
 	{"TrustLineEntryExtensionV2", func() any { return new(xdr.TrustLineEntryExtensionV2) }, 5},
 	{"OfferEntry", func() any { return new(xdr.OfferEntry) }, 5},
@@ -138,17 +143,62 @@ var registry = []xdrType{
 	{"ContractCodeEntry", func() any { return new(xdr.ContractCodeEntry) }, 5},
 	{"ContractDataEntry", func() any { return new(xdr.ContractDataEntry) }, 5},
 	{"ConfigSettingEntry", func() any { return new(xdr.ConfigSettingEntry) }, 5},
+
+	// DEX trade execution records. ClaimOfferAtom appears inside operation
+	// results when offers cross; V0 is the legacy form with a raw ed25519 key.
+	{"ClaimOfferAtom", func() any { return new(xdr.ClaimOfferAtom) }, 16},
+	{"ClaimOfferAtomV0", func() any { return new(xdr.ClaimOfferAtomV0) }, 15},
+
+	// A single ledger-state transition emitted in transaction meta.
+	{"LedgerEntryChange", func() any { return new(xdr.LedgerEntryChange) }, 17},
+
+	// Enum and union building blocks. Both decode from exactly 4 bytes,
+	// so they must rank below Auth (priority 2) to keep pipe detection stable.
+	{"ConfigSettingId", func() any { return new(xdr.ConfigSettingId) }, 1},
+	{"OperationBody", func() any { return new(xdr.OperationBody) }, 1},
 }
 
 // TypeNames returns every registered XDR type name, sorted, for use in help
 // text, shell completion and the --type flag.
 func TypeNames() []string {
+	registryMu.RLock()
+	defer registryMu.RUnlock()
 	names := make([]string, 0, len(registry))
 	for _, t := range registry {
 		names = append(names, t.name)
 	}
 	sort.Strings(names)
 	return names
+}
+
+// RegisterType dynamically registers a new XDR type in a thread-safe manner.
+// It returns an error if name is empty or already registered.
+func RegisterType(name string, ctor func() any, priority int) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return fmt.Errorf("%w: type name must not be empty", ErrInvalidArgument)
+	}
+	if ctor == nil {
+		return fmt.Errorf("%w: constructor must not be nil", ErrInvalidArgument)
+	}
+	registryMu.Lock()
+	defer registryMu.Unlock()
+	for _, t := range registry {
+		if t.name == name {
+			return fmt.Errorf("%w: type %q is already registered", ErrInvalidArgument, name)
+		}
+	}
+	registry = append(registry, xdrType{name: name, new: ctor, priority: priority})
+	return nil
+}
+
+// registryEntries returns a snapshot of the current registry.
+func registryEntries() []xdrType {
+	registryMu.RLock()
+	defer registryMu.RUnlock()
+	out := make([]xdrType, len(registry))
+	copy(out, registry)
+	return out
 }
 
 // normalizeInput trims whitespace and tolerates the URL-safe base64 alphabet,
@@ -221,7 +271,7 @@ func Detect(payload string) ([]Candidate, error) {
 	}
 
 	var out []Candidate
-	for _, t := range registry {
+	for _, t := range registryEntries() {
 		v, decErr := decodeInto(t, payload)
 		if decErr != nil {
 			continue
@@ -286,7 +336,7 @@ func DecodeAs(payload, typeName string) (*Value, error) {
 	if payload == "" {
 		return nil, ErrEmptyInput
 	}
-	for _, t := range registry {
+	for _, t := range registryEntries() {
 		if strings.EqualFold(t.name, typeName) {
 			if _, err := base64.StdEncoding.DecodeString(payload); err != nil {
 				return nil, fmt.Errorf("%w: %w", ErrInvalidBase64, err)

@@ -18,6 +18,13 @@ import (
 // The context option bounds how much surrounding tree is shown around each
 // change; equal context lines are dimmed. Colour is applied only after column
 // padding, so escape sequences never disturb the layout.
+//
+// A replaced line is not coloured as a whole. The formatter finds the longest
+// common prefix and suffix of the two cells and applies the AddInline /
+// RemoveInline palette styles to the run of characters between them, so the
+// exact substring that changed stands out in a long value. The inline style is
+// layered inside the row style and the row style is re-applied afterwards, so
+// the rest of the cell keeps its usual colour.
 type SideBySideFormatter struct {
 	width     int
 	context   int
@@ -134,22 +141,97 @@ func (f *SideBySideFormatter) writeRow(b *strings.Builder, row sideRow, column i
 	p := f.palette
 
 	left := padCell(row.left, column)
+	right := padCell(row.right, column)
+
+	// Only a row that replaces one value with another has an intra-line span
+	// worth isolating; a pure insert or delete is already fully covered by
+	// the row style.
+	leftSpan, rightSpan := inlineSpan{}, inlineSpan{}
+	if row.leftChanged && row.rightChanged {
+		leftSpan, rightSpan = changedSpans(left, right)
+	}
+
 	switch {
 	case row.leftChanged:
-		left = p.Remove + left + p.Reset
+		left = styleCell(left, p.Remove, p.RemoveInline, leftSpan, p.Reset)
 	case p.Dim != "":
 		left = p.Dim + left + p.Reset
 	}
 
-	right := padCell(row.right, column)
 	switch {
 	case row.rightChanged:
-		right = p.Add + right + p.Reset
+		right = styleCell(right, p.Add, p.AddInline, rightSpan, p.Reset)
 	case p.Dim != "":
 		right = p.Dim + right + p.Reset
 	}
 
 	fmt.Fprintf(b, "%s | %s\n", left, right)
+}
+
+// inlineSpan is the half-open rune range of a cell that differs from its
+// counterpart.
+type inlineSpan struct {
+	start int
+	end   int
+}
+
+// changedSpans returns the rune range of each cell that lies outside the
+// longest common prefix and suffix of the two cells. Comparing the padded
+// cells keeps the shared trailing padding out of the highlighted run.
+func changedSpans(left, right string) (inlineSpan, inlineSpan) {
+	l := []rune(left)
+	r := []rune(right)
+
+	prefix := 0
+	for prefix < len(l) && prefix < len(r) && l[prefix] == r[prefix] {
+		prefix++
+	}
+
+	suffix := 0
+	for suffix < len(l)-prefix && suffix < len(r)-prefix &&
+		l[len(l)-1-suffix] == r[len(r)-1-suffix] {
+		suffix++
+	}
+
+	return inlineSpan{start: prefix, end: len(l) - suffix},
+		inlineSpan{start: prefix, end: len(r) - suffix}
+}
+
+// styleCell wraps a cell in the row style and, when the span is non-empty,
+// layers the inline style over the changed characters. The row style is
+// re-applied after the inline reset so the tail of the cell keeps its colour.
+// With an empty inline style (the no-colour palette) the cell is simply
+// wrapped in the row style, as before.
+func styleCell(cell, rowStyle, inlineStyle string, span inlineSpan, reset string) string {
+	if inlineStyle == "" || span.end <= span.start {
+		return rowStyle + cell + reset
+	}
+
+	runes := []rune(cell)
+	start, end := span.start, span.end
+	if start < 0 {
+		start = 0
+	}
+	if end > len(runes) {
+		end = len(runes)
+	}
+	if end <= start {
+		return rowStyle + cell + reset
+	}
+
+	var b strings.Builder
+	b.WriteString(rowStyle)
+	b.WriteString(string(runes[:start]))
+	if rowStyle != "" {
+		b.WriteString(reset)
+	}
+	b.WriteString(inlineStyle)
+	b.WriteString(string(runes[start:end]))
+	b.WriteString(reset)
+	b.WriteString(rowStyle)
+	b.WriteString(string(runes[end:]))
+	b.WriteString(reset)
+	return b.String()
 }
 
 func (f *SideBySideFormatter) fromLabelOf(v *lens.Value) string {

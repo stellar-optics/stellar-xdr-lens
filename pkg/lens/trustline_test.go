@@ -312,3 +312,266 @@ func TestTrustLineFlagsRendering(t *testing.T) {
 		})
 	}
 }
+
+const (
+	paymentTestDestination = "GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFSHONUCEOASW7QC7OX2H"
+	paymentTestIssuer      = "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN"
+)
+
+func paymentTestOp(t *testing.T, asset xdr.Asset) *xdr.PaymentOp {
+	t.Helper()
+	destination, err := xdr.AddressToMuxedAccount(paymentTestDestination)
+	if err != nil {
+		t.Fatalf("AddressToMuxedAccount() error = %v", err)
+	}
+	return &xdr.PaymentOp{Destination: destination, Asset: asset, Amount: 125 * amount.One}
+}
+
+func TestDiagnosePaymentFailureCreditAsset(t *testing.T) {
+	t.Parallel()
+
+	usdc := xdr.MustNewCreditAsset("USDC", paymentTestIssuer)
+
+	tests := []struct {
+		name string
+		code xdr.PaymentResultCode
+		want []string
+	}{
+		{
+			name: "underfunded names the shortfall",
+			code: xdr.PaymentResultCodePaymentUnderfunded,
+			want: []string{"125.0000000 USDC", paymentTestIssuer, "selling liabilities"},
+		},
+		{
+			name: "source without trustline",
+			code: xdr.PaymentResultCodePaymentSrcNoTrust,
+			want: []string{"source account", "USDC", paymentTestIssuer, "ChangeTrust"},
+		},
+		{
+			name: "source not authorized",
+			code: xdr.PaymentResultCodePaymentSrcNotAuthorized,
+			want: []string{"source account", "USDC", paymentTestIssuer, "AUTHORIZED_FLAG", "SetTrustLineFlagsOp"},
+		},
+		{
+			name: "missing destination needs CreateAccount",
+			code: xdr.PaymentResultCodePaymentNoDestination,
+			want: []string{paymentTestDestination, "not been created on-chain", "CreateAccount", "at least 1 XLM", "USDC:" + paymentTestIssuer},
+		},
+		{
+			name: "missing trustline names asset and issuer",
+			code: xdr.PaymentResultCodePaymentNoTrust,
+			want: []string{paymentTestDestination, "USDC", paymentTestIssuer, "recipient must submit a ChangeTrust"},
+		},
+		{
+			name: "unauthorized names the issuer flag",
+			code: xdr.PaymentResultCodePaymentNotAuthorized,
+			want: []string{paymentTestDestination, paymentTestIssuer, "AUTH_REQUIRED_FLAG", "SetTrustLineFlagsOp"},
+		},
+		{
+			name: "line full names limit and liabilities",
+			code: xdr.PaymentResultCodePaymentLineFull,
+			want: []string{paymentTestDestination, "125.0000000 USDC", "trustline limit", "buying liabilities", "ChangeTrust"},
+		},
+		{
+			name: "missing issuer names the issuer",
+			code: xdr.PaymentResultCodePaymentNoIssuer,
+			want: []string{paymentTestIssuer, "USDC", "does not exist"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := lens.DiagnosePaymentFailure(paymentTestOp(t, usdc), tc.code)
+			for _, want := range tc.want {
+				if !strings.Contains(got, want) {
+					t.Errorf("diagnosis = %q, want it to contain %q", got, want)
+				}
+			}
+		})
+	}
+}
+
+func TestDiagnosePaymentFailureNativeAsset(t *testing.T) {
+	t.Parallel()
+
+	native := xdr.Asset{Type: xdr.AssetTypeAssetTypeNative}
+
+	tests := []struct {
+		name    string
+		code    xdr.PaymentResultCode
+		want    []string
+		notWant []string
+	}{
+		{
+			name: "underfunded mentions the reserve",
+			code: xdr.PaymentResultCodePaymentUnderfunded,
+			want: []string{"125.0000000 XLM", "minimum reserve"},
+		},
+		{
+			name:    "missing destination needs no trustline",
+			code:    xdr.PaymentResultCodePaymentNoDestination,
+			want:    []string{paymentTestDestination, "125.0000000 XLM", "CreateAccount", "at least 1 XLM"},
+			notWant: []string{"trustline"},
+		},
+		{
+			name:    "line full refers to liabilities, not a trustline",
+			code:    xdr.PaymentResultCodePaymentLineFull,
+			want:    []string{paymentTestDestination, "125.0000000 XLM", "buying liabilities"},
+			notWant: []string{"trustline"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := lens.DiagnosePaymentFailure(paymentTestOp(t, native), tc.code)
+			for _, want := range tc.want {
+				if !strings.Contains(got, want) {
+					t.Errorf("diagnosis = %q, want it to contain %q", got, want)
+				}
+			}
+			for _, notWant := range tc.notWant {
+				if strings.Contains(got, notWant) {
+					t.Errorf("diagnosis = %q, must not mention %q", got, notWant)
+				}
+			}
+		})
+	}
+}
+
+func TestDiagnosePaymentFailureMalformed(t *testing.T) {
+	t.Parallel()
+
+	usdc := xdr.MustNewCreditAsset("USDC", paymentTestIssuer)
+
+	zeroAmount := paymentTestOp(t, usdc)
+	zeroAmount.Amount = 0
+	if got := lens.DiagnosePaymentFailure(zeroAmount, xdr.PaymentResultCodePaymentMalformed); !strings.Contains(got, "positive amount") {
+		t.Errorf("zero amount diagnosis = %q, want it to require a positive amount", got)
+	}
+
+	badAsset := paymentTestOp(t, xdr.Asset{Type: xdr.AssetTypeAssetTypeCreditAlphanum4})
+	if got := lens.DiagnosePaymentFailure(badAsset, xdr.PaymentResultCodePaymentMalformed); !strings.Contains(got, "not a valid asset") {
+		t.Errorf("bad asset diagnosis = %q, want it to name the asset", got)
+	}
+
+	if got := lens.DiagnosePaymentFailure(paymentTestOp(t, usdc), xdr.PaymentResultCodePaymentMalformed); got != "" {
+		t.Errorf("well-formed operation diagnosis = %q, want empty", got)
+	}
+}
+
+func TestDiagnosePaymentFailureHasNothingToAdd(t *testing.T) {
+	t.Parallel()
+
+	native := xdr.Asset{Type: xdr.AssetTypeAssetTypeNative}
+	usdc := xdr.MustNewCreditAsset("USDC", paymentTestIssuer)
+
+	if got := lens.DiagnosePaymentFailure(nil, xdr.PaymentResultCodePaymentNoTrust); got != "" {
+		t.Errorf("nil operation diagnosis = %q, want empty", got)
+	}
+	if got := lens.DiagnosePaymentFailure(paymentTestOp(t, usdc), xdr.PaymentResultCodePaymentSuccess); got != "" {
+		t.Errorf("success diagnosis = %q, want empty", got)
+	}
+	// XLM has no trustlines or issuer, so these codes cannot apply to it.
+	for _, code := range []xdr.PaymentResultCode{
+		xdr.PaymentResultCodePaymentSrcNoTrust,
+		xdr.PaymentResultCodePaymentSrcNotAuthorized,
+		xdr.PaymentResultCodePaymentNoTrust,
+		xdr.PaymentResultCodePaymentNotAuthorized,
+		xdr.PaymentResultCodePaymentNoIssuer,
+	} {
+		if got := lens.DiagnosePaymentFailure(paymentTestOp(t, native), code); got != "" {
+			t.Errorf("native %s diagnosis = %q, want empty", code, got)
+		}
+	}
+}
+
+// TestDiagnosePaymentFailureResolvesMuxedDestination checks a muxed destination
+// is reported as the G... account that has to be created or hold the trustline.
+func TestDiagnosePaymentFailureResolvesMuxedDestination(t *testing.T) {
+	t.Parallel()
+
+	op := paymentTestOp(t, xdr.MustNewCreditAsset("USDC", paymentTestIssuer))
+	base := op.Destination.ToAccountId()
+	op.Destination = xdr.MuxedAccount{
+		Type:     xdr.CryptoKeyTypeKeyTypeMuxedEd25519,
+		Med25519: &xdr.MuxedAccountMed25519{Id: 7, Ed25519: *base.Ed25519},
+	}
+
+	got := lens.DiagnosePaymentFailure(op, xdr.PaymentResultCodePaymentNoTrust)
+	if !strings.Contains(got, paymentTestDestination) {
+		t.Errorf("diagnosis = %q, want the underlying account %s", got, paymentTestDestination)
+	}
+
+	op.Destination = xdr.MuxedAccount{Type: xdr.CryptoKeyTypeKeyTypeMuxedEd25519}
+	if got := lens.DiagnosePaymentFailure(op, xdr.PaymentResultCodePaymentNoTrust); !strings.Contains(got, "(unknown)") {
+		t.Errorf("diagnosis = %q, want a placeholder for the missing account", got)
+	}
+}
+
+// TestExplainPairAttachesPaymentContext runs each failure through the real
+// envelope and result pairing, including a round trip through XDR.
+func TestExplainPairAttachesPaymentContext(t *testing.T) {
+	t.Parallel()
+
+	usdc := xdr.MustNewCreditAsset("USDC", paymentTestIssuer)
+
+	tests := []struct {
+		name         string
+		code         xdr.PaymentResultCode
+		wantConstant string
+		want         []string
+	}{
+		{
+			name:         "no destination",
+			code:         xdr.PaymentResultCodePaymentNoDestination,
+			wantConstant: "PaymentResultCodePaymentNoDestination",
+			want:         []string{paymentTestDestination, "CreateAccount"},
+		},
+		{
+			name:         "no trust",
+			code:         xdr.PaymentResultCodePaymentNoTrust,
+			wantConstant: "PaymentResultCodePaymentNoTrust",
+			want:         []string{paymentTestDestination, "USDC", paymentTestIssuer, "ChangeTrust"},
+		},
+		{
+			name:         "not authorized",
+			code:         xdr.PaymentResultCodePaymentNotAuthorized,
+			wantConstant: "PaymentResultCodePaymentNotAuthorized",
+			want:         []string{paymentTestIssuer, "AUTH_REQUIRED_FLAG", "SetTrustLineFlagsOp"},
+		},
+		{
+			name:         "line full",
+			code:         xdr.PaymentResultCodePaymentLineFull,
+			wantConstant: "PaymentResultCodePaymentLineFull",
+			want:         []string{paymentTestDestination, "trustline limit"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			generic := lens.ExplainCode(tc.wantConstant)
+			got := explainSingleOperation(t,
+				xdr.OperationBody{Type: xdr.OperationTypePayment, PaymentOp: paymentTestOp(t, usdc)},
+				xdr.OperationResultTr{Type: xdr.OperationTypePayment, PaymentResult: &xdr.PaymentResult{Code: tc.code}},
+			)
+
+			if got.Constant != tc.wantConstant {
+				t.Errorf("Constant = %q, want %q", got.Constant, tc.wantConstant)
+			}
+			if got.Summary != generic.Summary {
+				t.Errorf("Summary = %q, want the generic %q", got.Summary, generic.Summary)
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(got.Context, want) {
+					t.Errorf("Context = %q, want it to contain %q", got.Context, want)
+				}
+			}
+		})
+	}
+}

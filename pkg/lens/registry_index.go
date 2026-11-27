@@ -55,6 +55,8 @@ type TypeInfo struct {
 // which keeps the index usable without decoding anything and keeps the
 // offline-first property: no fixtures or network access are involved.
 func RegistryIndex() []TypeInfo {
+	registryMu.RLock()
+	defer registryMu.RUnlock()
 	infos := make([]TypeInfo, 0, len(registry))
 	for _, t := range registry {
 		doc := typeDocs[t.name]
@@ -211,6 +213,18 @@ var typeDocs = map[string]typeDoc{
 		"The V2 trustline extension, including its liquidity pool use count."},
 	"TtlEntry": {CategoryStateArchival,
 		"The time-to-live record for a Soroban ledger entry."},
+	"ClaimOfferAtom": {CategoryTransaction,
+		"A DEX trade execution record: the offer filled, seller, assets exchanged, and amounts."},
+	"ClaimOfferAtomV0": {CategoryTransaction,
+		"The legacy v0 form of a DEX trade execution record, using a raw ed25519 seller key."},
+	"ConfigSettingId": {CategoryPrimitive,
+		"A Soroban network configuration parameter identifier, naming one of the protocol's tunable settings."},
+	"LedgerEntryChange": {CategoryLedger,
+		"A single ledger-state transition emitted in transaction meta: created, updated, removed or restored."},
+	"LedgerEntryExtensionV1": {CategoryLedger,
+		"The protocol-14 ledger entry extension carrying the sponsor's account ID."},
+	"OperationBody": {CategoryTransaction,
+		"The type-discriminated body of an operation, without its source account wrapper."},
 }
 
 // minWireSizeOf estimates the smallest encoded size of the type behind a

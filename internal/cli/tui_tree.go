@@ -48,6 +48,29 @@ type TUITree struct {
 	out           io.Writer
 	quit          bool
 	statusMsg     string
+	valueType        string
+	root             *lens.Node
+	expandedState    map[*lens.Node]bool
+	rows             []*treeRow
+	cursor           int
+	scrollOffset     int
+	height           int
+	width            int
+	filter           string
+	searchMode       bool
+	searchBuffer     string
+	searchQuery      string
+	searchMatches    []int
+	searchIndex      int
+	showHelp         bool
+	helpVisible      bool
+	showInspector    bool
+	inspectorVisible bool
+	palette          format.Palette
+	in               io.Reader
+	out              io.Writer
+	quit             bool
+	statusMsg        string
 }
 
 // NewTUITree initializes an interactive tree explorer for value.
@@ -88,6 +111,12 @@ func (t *TUITree) SetDimensions(width, height int) {
 }
 
 // rebuildRows flattens visible nodes based on expansion state and the active filter.
+// HandleResize updates dimensions on terminal resize.
+func (t *TUITree) HandleResize(width, height int) {
+	t.SetDimensions(width, height)
+}
+
+// rebuildRows flattens visible nodes based on expansion state and filters.
 func (t *TUITree) rebuildRows() {
 	if t.root == nil {
 		t.rows = nil
@@ -108,6 +137,17 @@ func (t *TUITree) rebuildRows() {
 	}
 
 	t.rows = rows
+	if t.searchQuery != "" {
+		t.searchMatches = t.searchMatches[:0]
+		for i := range t.rows {
+			t.searchMatches = append(t.searchMatches, i)
+		}
+		if len(t.searchMatches) == 0 {
+			t.searchIndex = 0
+		} else if t.searchIndex >= len(t.searchMatches) {
+			t.searchIndex = 0
+		}
+	}
 	if t.cursor >= len(t.rows) {
 		t.cursor = len(t.rows) - 1
 	}
@@ -348,6 +388,9 @@ func (t *TUITree) SetFilter(q string) {
 
 	t.filter = q
 	t.matchIdx = -1
+	t.searchQuery = q
+	t.searchIndex = 0
+	t.searchMatches = nil
 	t.cursor = 0
 	t.scrollOffset = 0
 
@@ -554,8 +597,243 @@ func isPrintableKey(key string) bool {
 	return r >= 0x20 && r != 0x7f
 }
 
+// SetSearch applies an interactive search query: it expands ancestors of
+// matching nodes and moves the cursor to the first match.
+func (t *TUITree) SetSearch(q string) {
+	t.searchMode = false
+	t.searchBuffer = q
+	t.SetFilter(q)
+	if q != "" && len(t.searchMatches) > 0 {
+		t.searchIndex = 0
+		t.cursor = t.searchMatches[0]
+		t.visibleScrollToCursor()
+	}
+	if q != "" {
+		t.statusMsg = fmt.Sprintf("Search: %q (%d matches)", q, len(t.searchMatches))
+	} else {
+		t.statusMsg = "Search cleared"
+	}
+}
+
+// Search is an alias for SetSearch.
+func (t *TUITree) Search(q string) { t.SetSearch(q) }
+
+// StartSearch enters interactive search input mode.
+func (t *TUITree) StartSearch() {
+	t.searchMode = true
+	t.searchBuffer = t.searchQuery
+	t.statusMsg = "Search: " + t.searchBuffer
+}
+
+// EnterSearch is an alias for StartSearch.
+func (t *TUITree) EnterSearch() { t.StartSearch() }
+
+// BeginSearch is an alias for StartSearch.
+func (t *TUITree) BeginSearch() { t.StartSearch() }
+
+// CancelSearch exits interactive search input mode without changing results.
+func (t *TUITree) CancelSearch() {
+	t.searchMode = false
+	t.statusMsg = "Search cancelled"
+}
+
+// ExitSearch is an alias for CancelSearch.
+func (t *TUITree) ExitSearch() { t.CancelSearch() }
+
+// EndSearch is an alias for CancelSearch.
+func (t *TUITree) EndSearch() { t.CancelSearch() }
+
+// ClearSearch clears the active search query and filter.
+func (t *TUITree) ClearSearch() {
+	t.searchMode = false
+	t.searchBuffer = ""
+	t.SetFilter("")
+}
+
+// NextMatch moves the cursor to the next search match (wrapping).
+func (t *TUITree) NextMatch() {
+	if len(t.searchMatches) == 0 {
+		if t.searchQuery != "" {
+			t.rebuildRows()
+		}
+		if len(t.searchMatches) == 0 {
+			return
+		}
+	}
+	t.searchIndex++
+	if t.searchIndex >= len(t.searchMatches) {
+		t.searchIndex = 0
+	}
+	t.cursor = t.searchMatches[t.searchIndex]
+	t.visibleScrollToCursor()
+	if t.searchQuery != "" {
+		t.statusMsg = fmt.Sprintf("Search: %q (%d/%d)", t.searchQuery, t.searchIndex+1, len(t.searchMatches))
+	}
+}
+
+// NextSearchMatch is an alias for NextMatch.
+func (t *TUITree) NextSearchMatch() { t.NextMatch() }
+
+// NextResult is an alias for NextMatch.
+func (t *TUITree) NextResult() { t.NextMatch() }
+
+// PrevMatch moves the cursor to the previous search match (wrapping).
+func (t *TUITree) PrevMatch() {
+	if len(t.searchMatches) == 0 {
+		if t.searchQuery != "" {
+			t.rebuildRows()
+		}
+		if len(t.searchMatches) == 0 {
+			return
+		}
+	}
+	t.searchIndex--
+	if t.searchIndex < 0 {
+		t.searchIndex = len(t.searchMatches) - 1
+	}
+	t.cursor = t.searchMatches[t.searchIndex]
+	t.visibleScrollToCursor()
+	if t.searchQuery != "" {
+		t.statusMsg = fmt.Sprintf("Search: %q (%d/%d)", t.searchQuery, t.searchIndex+1, len(t.searchMatches))
+	}
+}
+
+// PrevSearchMatch is an alias for PrevMatch.
+func (t *TUITree) PrevSearchMatch() { t.PrevMatch() }
+
+// PreviousMatch is an alias for PrevMatch.
+func (t *TUITree) PreviousMatch() { t.PrevMatch() }
+
+// PreviousResult is an alias for PrevMatch.
+func (t *TUITree) PreviousResult() { t.PrevMatch() }
+
+// SearchMatches returns the row indices of all current search matches.
+func (t *TUITree) SearchMatches() []int {
+	out := make([]int, len(t.searchMatches))
+	copy(out, t.searchMatches)
+	return out
+}
+
+// MatchedRows is an alias for SearchMatches.
+func (t *TUITree) MatchedRows() []int { return t.SearchMatches() }
+
+// MatchCount returns the number of current search matches.
+func (t *TUITree) MatchCount() int { return len(t.searchMatches) }
+
+// CurrentMatchIndex returns the index within searchMatches of the current match.
+func (t *TUITree) CurrentMatchIndex() int { return t.searchIndex }
+
+// IsSearchMode reports whether the TUI is accepting search input.
+func (t *TUITree) IsSearchMode() bool { return t.searchMode }
+
+// ToggleHelp toggles the keybindings help overlay.
+func (t *TUITree) ToggleHelp() {
+	t.showHelp = !t.showHelp
+	t.helpVisible = t.showHelp
+	if t.showHelp {
+		t.statusMsg = "Help overlay"
+	} else {
+		t.statusMsg = "Help hidden"
+	}
+}
+
+// ShowHelp shows the help overlay.
+func (t *TUITree) ShowHelp() { t.showHelp = true; t.helpVisible = true }
+
+// HideHelp hides the help overlay.
+func (t *TUITree) HideHelp() { t.showHelp = false; t.helpVisible = false }
+
+// HelpVisible reports whether help overlay is visible.
+func (t *TUITree) HelpVisible() bool { return t.showHelp }
+
+// IsHelpVisible is an alias.
+func (t *TUITree) IsHelpVisible() bool { return t.showHelp }
+
+// ToggleInspector toggles the detail inspector sidebar.
+func (t *TUITree) ToggleInspector() {
+	t.showInspector = !t.showInspector
+	t.inspectorVisible = t.showInspector
+	if t.showInspector {
+		t.statusMsg = "Inspector"
+	} else {
+		t.statusMsg = "Inspector hidden"
+	}
+}
+
+// ShowInspector shows the inspector sidebar.
+func (t *TUITree) ShowInspector() { t.showInspector = true; t.inspectorVisible = true }
+
+// HideInspector hides the inspector sidebar.
+func (t *TUITree) HideInspector() { t.showInspector = false; t.inspectorVisible = false }
+
+// InspectorVisible reports whether inspector sidebar is visible.
+func (t *TUITree) InspectorVisible() bool { return t.showInspector }
+
+// IsInspectorVisible is an alias.
+func (t *TUITree) IsInspectorVisible() bool { return t.showInspector }
+
+// SearchBuffer returns the current search input buffer.
+func (t *TUITree) SearchBuffer() string { return t.searchBuffer }
+
+// SearchQuery returns the active search query.
+func (t *TUITree) SearchQuery() string { return t.searchQuery }
+
+func (t *TUITree) visibleScrollToCursor() {
+	visibleRows := t.height - 3
+	if visibleRows < 1 {
+		visibleRows = 1
+	}
+	if t.cursor < t.scrollOffset {
+		t.scrollOffset = t.cursor
+	}
+	if t.cursor >= t.scrollOffset+visibleRows {
+		t.scrollOffset = t.cursor - visibleRows + 1
+	}
+}
+
 // HandleKey processes a single user key stroke.
 func (t *TUITree) HandleKey(key string) {
+	// Interactive search input mode.
+	if t.searchMode {
+		t.statusMsg = ""
+		switch key {
+		case "enter":
+			t.SetSearch(t.searchBuffer)
+			return
+		case "esc":
+			t.CancelSearch()
+			t.ClearSearch()
+			return
+		case "backspace":
+			if len(t.searchBuffer) > 0 {
+				t.searchBuffer = t.searchBuffer[:len(t.searchBuffer)-1]
+			}
+			t.searchQuery = t.searchBuffer
+			t.filter = t.searchBuffer
+			t.searchIndex = 0
+			t.rebuildRows()
+			if len(t.searchMatches) > 0 {
+				t.jumpToFirstMatch()
+			}
+			t.statusMsg = "Search: " + t.searchBuffer
+			return
+		default:
+			if len(key) == 1 {
+				t.searchBuffer += key
+				t.searchQuery = t.searchBuffer
+				t.filter = t.searchBuffer
+				t.searchIndex = 0
+				t.rebuildRows()
+				if len(t.searchMatches) > 0 {
+					t.jumpToFirstMatch()
+				}
+				t.statusMsg = fmt.Sprintf("Search: %s (%d matches)", t.searchBuffer, len(t.searchMatches))
+				return
+			}
+		}
+		return
+	}
+
 	t.statusMsg = ""
 
 	if t.searchMode {
@@ -584,11 +862,17 @@ func (t *TUITree) HandleKey(key string) {
 		t.NextMatch()
 	case "N":
 		t.PrevMatch()
+	case "?":
+		t.ToggleHelp()
+	case "i", "v":
+		t.ToggleInspector()
+	case "/":
+		t.StartSearch()
 	case "q", "ctrl+c":
 		t.quit = true
 	case "esc":
-		if t.filter != "" {
-			t.SetFilter("")
+		if t.filter != "" || t.searchQuery != "" {
+			t.ClearSearch()
 		}
 	case "/":
 		t.BeginSearch()
@@ -596,8 +880,18 @@ func (t *TUITree) HandleKey(key string) {
 		if strings.HasPrefix(key, "/") {
 			t.BeginSearch()
 			t.SetFilter(strings.TrimPrefix(key, "/"))
+			t.SetSearch(strings.TrimPrefix(key, "/"))
 		}
 	}
+}
+
+func (t *TUITree) jumpToFirstMatch() {
+	if len(t.searchMatches) == 0 {
+		return
+	}
+	t.searchIndex = 0
+	t.cursor = t.searchMatches[0]
+	t.visibleScrollToCursor()
 }
 
 // Render returns the current screen display.
@@ -706,6 +1000,34 @@ func (t *TUITree) Render() string {
 			p.Dim, position, len(t.matches), p.Reset)
 	} else {
 		b.WriteString(p.Dim + "[↑/↓/j/k: nav | Enter/Space: toggle | e: expand all | c: collapse all | /: search | q: quit]" + p.Reset + "\n")
+	b.WriteString(p.Dim + "[↑/↓/j/k: nav | Enter/Space: toggle | e: expand all | c: collapse all | /: search | n/N: matches | ?: help | i/v: inspector | q: quit]" + p.Reset + "\n")
+
+	if t.showInspector {
+		b.WriteString(p.Dim + "--- Inspector ---" + p.Reset + "\n")
+		if t.cursor >= 0 && t.cursor < len(t.rows) {
+			cur := t.rows[t.cursor]
+			fmt.Fprintf(&b, "Path: %s\n", cur.path)
+			fmt.Fprintf(&b, "Type: %s\n", cur.node.TypeName)
+			fmt.Fprintf(&b, "Kind: %v\n", cur.node.Kind)
+			valStr := fmt.Sprintf("%v", cur.node.Value)
+			fmt.Fprintf(&b, "Value: %s (len=%d)\n", valStr, len(valStr))
+			if cur.node.Note != "" {
+				fmt.Fprintf(&b, "Note: %s\n", cur.node.Note)
+			}
+		} else {
+			b.WriteString("No node selected\n")
+		}
+	}
+
+	if t.showHelp {
+		b.WriteString(p.Dim + "--- Help Overlay ---" + p.Reset + "\n")
+		b.WriteString("j/k or arrows: navigate\n")
+		b.WriteString("Enter/Space/Right/l: toggle node\n")
+		b.WriteString("Left/h: collapse or parent\n")
+		b.WriteString("e: expand all | c: collapse all\n")
+		b.WriteString("/: search | n/N: next/prev match\n")
+		b.WriteString("?: toggle help | i/v: inspector\n")
+		b.WriteString("q/Ctrl+C: quit\n")
 	}
 
 	return b.String()
