@@ -115,6 +115,13 @@ func convertNode(n *lens.Node, annotate bool) any {
 		}
 		return out
 
+	case lens.KindBytes:
+		// Value is already a hex string; fall through to the default rendering.
+		if annotate && n.Note != "" {
+			return map[string]any{"value": n.Value, "display": n.Note}
+		}
+		return n.Value
+
 	default:
 		if annotate && n.Note != "" {
 			return map[string]any{"value": n.Value, "display": n.Note}

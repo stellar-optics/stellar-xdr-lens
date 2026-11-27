@@ -381,7 +381,7 @@ func (c *CompactFormatter) collectNodePairs(n *lens.Node, prefix string, parts *
 	}
 
 	switch n.Kind {
-	case lens.KindScalar:
+	case lens.KindScalar, lens.KindBytes:
 		key := prefix
 		if key == "" {
 			key = n.Name

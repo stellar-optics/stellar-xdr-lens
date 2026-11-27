@@ -72,6 +72,20 @@ func RegistryIndex() []TypeInfo {
 	return infos
 }
 
+// TypesByCategory returns all registered types in the given category, sorted by
+// name. An empty category returns an empty slice (not all types). Category
+// strings are the Category* constants defined in this file.
+func TypesByCategory(category string) []TypeInfo {
+	all := RegistryIndex()
+	out := make([]TypeInfo, 0, len(all))
+	for _, info := range all {
+		if info.Category == category {
+			out = append(out, info)
+		}
+	}
+	return out
+}
+
 // typeDoc is the curated documentation attached to a registered type.
 type typeDoc struct {
 	category    string
@@ -177,6 +191,8 @@ var typeDocs = map[string]typeDoc{
 		"A surveyor's signed command to start collecting time-sliced statistics."},
 	"SignedTimeSlicedSurveyStopCollectingMessage": {CategoryOverlay,
 		"A surveyor's signed command to stop collecting time-sliced statistics."},
+	"Signer": {CategoryPrimitive,
+		"An account co-signer: a key (ed25519, pre-auth or hash-x) paired with its signing weight."},
 	"SignerKey": {CategoryPrimitive,
 		"A signer: an ed25519, pre-auth transaction, hash-x or signed-payload key."},
 	"SorobanAuthorizationEntry": {CategorySoroban,

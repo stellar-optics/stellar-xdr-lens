@@ -1,6 +1,7 @@
 package lens
 
 import (
+	"fmt"
 	"reflect"
 	"strings"
 
@@ -45,4 +46,70 @@ func trustLineFlagNote(rv reflect.Value) (string, bool) {
 		return "", false
 	}
 	return strings.Join(names, " | "), true
+}
+
+const (
+	flagAuthorized = uint32(xdr.TrustLineFlagsAuthorizedFlag)
+	flagMaintain   = uint32(xdr.TrustLineFlagsAuthorizedToMaintainLiabilitiesFlag)
+	flagClawback   = uint32(xdr.TrustLineFlagsTrustlineClawbackEnabledFlag)
+)
+
+// ClassifyFlagTransition describes the security implication of a trustline
+// flags change from oldFlags to newFlags. The returned string is intended
+// for display in a diff annotation.
+//
+// Recognized transitions (non-exhaustive):
+//   - Freeze: authorized → unauthorized (fully revoked)
+//   - Restricted: authorized → maintain_liabilities only
+//   - Granted: any state → authorized
+//   - ClawbackEnabled / ClawbackDisabled: clawback bit flip
+//   - Unchanged: same effective flags
+func ClassifyFlagTransition(oldFlags, newFlags uint32) string {
+	if oldFlags == newFlags {
+		return "unchanged"
+	}
+
+	oldAuth := oldFlags&flagAuthorized != 0
+	newAuth := newFlags&flagAuthorized != 0
+	oldMaintain := oldFlags&flagMaintain != 0
+	newMaintain := newFlags&flagMaintain != 0
+	oldClaw := oldFlags&flagClawback != 0
+	newClaw := newFlags&flagClawback != 0
+
+	// Authorization transitions (most security-relevant, checked first).
+	if oldAuth && !newAuth && !newMaintain {
+		return "freeze: trustline fully revoked (AUTHORIZED → UNAUTHORIZED)"
+	}
+	if oldAuth && !newAuth && newMaintain {
+		return "restricted: downgraded to maintain_liabilities only (AUTHORIZED → AUTHORIZED_TO_MAINTAIN_LIABILITIES)"
+	}
+	if !oldAuth && newAuth {
+		return "granted: trustline authorized"
+	}
+	if !oldMaintain && newMaintain && !newAuth {
+		return "restricted: authorized_to_maintain_liabilities granted without full authorization"
+	}
+	if oldMaintain && !newMaintain && !newAuth {
+		return "freeze: maintain_liabilities flag removed"
+	}
+
+	// Clawback transitions.
+	if !oldClaw && newClaw {
+		return "clawback_enabled: issuer may now claw back this trustline"
+	}
+	if oldClaw && !newClaw {
+		return "clawback_disabled: clawback capability removed"
+	}
+
+	// Generic fallback with bit-level description.
+	added := newFlags &^ oldFlags
+	removed := oldFlags &^ newFlags
+	var parts []string
+	if added != 0 {
+		parts = append(parts, fmt.Sprintf("flags added: %s", strings.Join(trustLineFlagNames(xdr.Uint32(added)), " | ")))
+	}
+	if removed != 0 {
+		parts = append(parts, fmt.Sprintf("flags removed: %s", strings.Join(trustLineFlagNames(xdr.Uint32(removed)), " | ")))
+	}
+	return strings.Join(parts, "; ")
 }

@@ -229,6 +229,53 @@ func TestFilterCanProduceEqualResult(t *testing.T) {
 	}
 }
 
+// TestPathFilterRegexSyntax covers issue #284: /regex/ delimited pattern syntax.
+func TestPathFilterRegexSyntax(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		include []string
+		path    string
+		want    bool
+	}{
+		{"regex matches exact", []string{`/^Result\.Code$/`}, "Result.Code", true},
+		{"regex misses", []string{`/^Result\.Code$/`}, "FeeCharged", false},
+		{"regex partial match", []string{`/Code/`}, "Result.Code", true},
+		{"regex partial match other", []string{`/Code/`}, "Result.InnerCode", true},
+		{"regex not match", []string{`/^Operations/`}, "Result.Code", false},
+		{"regex wildcard index", []string{`/Operations\[\d+\]\.Body/`}, "Operations[3].Body", true},
+		{"regex wildcard index miss", []string{`/Operations\[\d+\]\.Body/`}, "Operations[3].Source", false},
+		{"regex anchored prefix", []string{`/^V1\./`}, "V1.Tx.SeqNum", true},
+		{"regex anchored prefix miss", []string{`/^V1\./`}, "FeeBump.Tx.SeqNum", false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			filter, err := lens.NewPathFilter(tc.include, nil)
+			if err != nil {
+				t.Fatalf("NewPathFilter() error = %v", err)
+			}
+			if got := filter.Matches(tc.path); got != tc.want {
+				t.Errorf("Matches(%q) = %v, want %v", tc.path, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestPathFilterRegexRejectsMalformed(t *testing.T) {
+	t.Parallel()
+
+	_, err := lens.NewPathFilter([]string{`/[invalid/`}, nil)
+	if err == nil {
+		t.Fatal("NewPathFilter() error = nil, want an error for a malformed regex")
+	}
+	if !errors.Is(err, lens.ErrInvalidArgument) {
+		t.Errorf("error = %v, want it to wrap ErrInvalidArgument", err)
+	}
+}
+
 func changePaths(changes []lens.Change) string {
 	parts := make([]string, 0, len(changes))
 	for _, c := range changes {

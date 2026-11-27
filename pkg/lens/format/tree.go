@@ -104,6 +104,9 @@ func (t *TreeFormatter) writeNode(w io.Writer, n *lens.Node, prefix string, last
 	case lens.KindScalar:
 		line.WriteString(": ")
 		line.WriteString(t.scalar(n))
+	case lens.KindBytes:
+		line.WriteString(": ")
+		line.WriteString(t.scalar(n))
 	case lens.KindList:
 		line.WriteString(p.Dim)
 		fmt.Fprintf(&line, "  [%d]", len(n.Children))
@@ -120,7 +123,7 @@ func (t *TreeFormatter) writeNode(w io.Writer, n *lens.Node, prefix string, last
 		return fmt.Errorf("format: write node: %w", err)
 	}
 
-	if n.Kind == lens.KindScalar || len(n.Children) == 0 {
+	if n.Kind == lens.KindScalar || n.Kind == lens.KindBytes || len(n.Children) == 0 {
 		return nil
 	}
 	if t.maxDepth > 0 && depth >= t.maxDepth {

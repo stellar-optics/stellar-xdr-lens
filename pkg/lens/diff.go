@@ -329,6 +329,22 @@ func diffNodesWithOptions(a, b *Node, path string, out *[]Change, options DiffOp
 			})
 		}
 
+	case KindBytes:
+		// KindBytes nodes carry hex strings. First try direct value equality
+		// (handles empty and identical representations), then fall back to
+		// binary normalization so hex/base64 encoding differences are not
+		// reported as semantic changes.
+		if !sameScalarWithOptions(a, b, options) && !nodesBinaryEqual(a, b) {
+			*out = append(*out, Change{
+				Path:       path,
+				Op:         ChangeModified,
+				Before:     leafValue(a),
+				After:      leafValue(b),
+				BeforeNote: a.Note,
+				AfterNote:  b.Note,
+			})
+		}
+
 	case KindList:
 		if options.UnorderedSigners && isSignerCollection(signerCollectionName(path, a, b)) {
 			diffMultisetLists(a, b, path, out)
@@ -358,6 +374,12 @@ func diffStructsWithOptions(a, b *Node, path string, out *[]Change, options Diff
 	// Special handling for LedgerEntry: classify state transitions (created, updated, deleted).
 	if isLedgerEntryStruct(a, b) {
 		diffLedgerEntryTransition(a, b, path, out, options)
+		return
+	}
+
+	// Special handling for TrustLineEntry: annotate Flags changes with security classification.
+	if isTrustLineEntryStruct(a, b) {
+		diffTrustLineEntryWithFlags(a, b, path, out, options)
 		return
 	}
 
@@ -549,6 +571,60 @@ func diffLedgerEntryTransition(a, b *Node, path string, out *[]Change, options D
 
 	// Append the detailed changes
 	*out = append(*out, detailedChanges...)
+}
+
+// isTrustLineEntryStruct reports whether the nodes represent a TrustLineEntry.
+func isTrustLineEntryStruct(a, b *Node) bool {
+	if a == nil || b == nil {
+		return false
+	}
+	return a.TypeName == "TrustLineEntry" && b.TypeName == "TrustLineEntry"
+}
+
+// diffTrustLineEntryWithFlags performs a normal field-by-field diff of a
+// TrustLineEntry, then appends a flag-transition annotation whenever the
+// Flags field changes.
+func diffTrustLineEntryWithFlags(a, b *Node, path string, out *[]Change, options DiffOptions) {
+	diffStructsWithOptionsFallback(a, b, path, out, options)
+
+	// Annotate any Flags change with the security classification.
+	aFlags := extractTrustLineFlags(a)
+	bFlags := extractTrustLineFlags(b)
+	if aFlags == nil || bFlags == nil || *aFlags == *bFlags {
+		return
+	}
+	classification := ClassifyFlagTransition(*aFlags, *bFlags)
+	flagsPath := join(path, "Flags")
+	for i := range *out {
+		if (*out)[i].Path == flagsPath && (*out)[i].Op == ChangeModified {
+			if (*out)[i].AfterNote != "" {
+				(*out)[i].AfterNote += "; " + classification
+			} else {
+				(*out)[i].AfterNote = classification
+			}
+			return
+		}
+	}
+}
+
+// extractTrustLineFlags returns the Flags value from a TrustLineEntry node.
+func extractTrustLineFlags(n *Node) *uint32 {
+	if n == nil {
+		return nil
+	}
+	for _, child := range n.Children {
+		if child.Name == "Flags" && child.Kind == KindScalar {
+			switch v := child.Value.(type) {
+			case uint64:
+				u := uint32(v)
+				return &u
+			case int64:
+				u := uint32(v)
+				return &u
+			}
+		}
+	}
+	return nil
 }
 
 // classifyLedgerEntryTransition determines whether a LedgerEntry was created, updated, or deleted.
@@ -1164,10 +1240,12 @@ func nodesBinaryEqual(a, b *Node) bool {
 		return false
 	}
 
-	// Case 1: Both are scalar strings (one hex, one base64, or hex case diff)
+	// Case 1: Both are string-valued binary nodes (KindScalar or KindBytes) —
+	// one hex, one base64, or hex with case differences.
 	sA, okSA := a.Value.(string)
 	sB, okSB := b.Value.(string)
-	if okSA && okSB && a.Kind == KindScalar && b.Kind == KindScalar {
+	isStringBinary := func(n *Node) bool { return n.Kind == KindScalar || n.Kind == KindBytes }
+	if okSA && okSB && isStringBinary(a) && isStringBinary(b) {
 		bHexA, isHexA := bytesFromHex(sA)
 		bHexB, isHexB := bytesFromHex(sB)
 		bB64A, isB64A := bytesFromBase64(sA)
@@ -1236,6 +1314,8 @@ func leafValue(n *Node) any {
 	}
 	switch n.Kind {
 	case KindScalar:
+		return n.Value
+	case KindBytes:
 		return n.Value
 	case KindList:
 		return fmt.Sprintf("[%d item(s)]", len(n.Children))

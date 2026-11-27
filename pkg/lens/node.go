@@ -21,6 +21,11 @@ const (
 	KindStruct
 	// KindList is an ordered sequence of values.
 	KindList
+	// KindBytes is a leaf binary value whose Value is []byte. Using a distinct
+	// kind allows the differ to normalize representations (hex, base64, raw
+	// byte slices) before comparing, so that encoding differences are not
+	// reported as semantic changes.
+	KindBytes
 )
 
 func (k Kind) String() string {
@@ -31,6 +36,8 @@ func (k Kind) String() string {
 		return "struct"
 	case KindList:
 		return "list"
+	case KindBytes:
+		return "bytes"
 	default:
 		return "unknown"
 	}
@@ -114,7 +121,7 @@ func (n *Node) String() string {
 		return "<nil>"
 	}
 	switch n.Kind {
-	case KindScalar:
+	case KindScalar, KindBytes:
 		if n.Value == nil {
 			return n.Note
 		}
@@ -309,7 +316,10 @@ func buildNode(name string, rv reflect.Value, depth int) *Node {
 
 	case reflect.Slice, reflect.Array:
 		// Byte sequences are hashes, signatures and keys. Rendering them as
-		// a list of 32 integers is useless, so they become hex scalars.
+		// a list of 32 integers is useless, so they become KindBytes nodes
+		// whose Value carries the hex-encoded string. KindBytes distinguishes
+		// binary fields from arbitrary scalars so the differ can normalise
+		// cross-encoding comparisons (hex vs base64 vs raw bytes) in one place.
 		if rv.Type().Elem().Kind() == reflect.Uint8 {
 			if rv.Kind() == reflect.Slice && rv.IsNil() {
 				return nil
@@ -317,7 +327,7 @@ func buildNode(name string, rv reflect.Value, depth int) *Node {
 			value, note := renderByteSequence(rv)
 			return &Node{
 				Name:     name,
-				Kind:     KindScalar,
+				Kind:     KindBytes,
 				TypeName: typeName,
 				Value:    value,
 				Note:     note,

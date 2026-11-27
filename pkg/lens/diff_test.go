@@ -623,6 +623,60 @@ func TestDiffBinaryAlignedLists(t *testing.T) {
 	}
 }
 
+// TestKindBytesNodeTagging covers issue #290: binary nodes are tagged with
+// KindBytes so the differ normalises hex/base64 representations.
+func TestKindBytesNodeTagging(t *testing.T) {
+	t.Parallel()
+
+	// Nodes produced by buildNode for a []byte field should be KindBytes.
+	hexLeft := &lens.Value{
+		Type: "BinaryRecord",
+		Node: &lens.Node{
+			Kind: lens.KindStruct,
+			Children: []*lens.Node{
+				{Name: "Hash", Kind: lens.KindBytes, Value: "deadbeef"},
+			},
+		},
+	}
+	// Same bytes encoded as base64 — must compare equal despite different encoding.
+	b64Right := &lens.Value{
+		Type: "BinaryRecord",
+		Node: &lens.Node{
+			Kind: lens.KindStruct,
+			Children: []*lens.Node{
+				{Name: "Hash", Kind: lens.KindBytes, Value: "3q2+7w=="},
+			},
+		},
+	}
+
+	res, err := lens.Diff(hexLeft, b64Right)
+	if err != nil {
+		t.Fatalf("Diff() error = %v", err)
+	}
+	if !res.Equal() {
+		t.Errorf("KindBytes hex vs base64 diff reported %d change(s): %+v",
+			len(res.Changes), res.Changes)
+	}
+
+	// Two KindBytes nodes with different content must be reported as modified.
+	differentRight := &lens.Value{
+		Type: "BinaryRecord",
+		Node: &lens.Node{
+			Kind: lens.KindStruct,
+			Children: []*lens.Node{
+				{Name: "Hash", Kind: lens.KindBytes, Value: "cafebabe"},
+			},
+		},
+	}
+	res2, err := lens.Diff(hexLeft, differentRight)
+	if err != nil {
+		t.Fatalf("Diff() error = %v", err)
+	}
+	if res2.Equal() {
+		t.Error("KindBytes diff with different content reported equality, want modification")
+	}
+}
+
 func TestDiffNumericThreshold(t *testing.T) {
 	t.Parallel()
 
