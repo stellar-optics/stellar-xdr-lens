@@ -282,7 +282,7 @@ func attachResult(s *Summary, res *xdr.TransactionResult, ops []xdr.Operation, s
 					switch op.Body.Type {
 					case xdr.OperationTypePathPaymentStrictReceive,
 						xdr.OperationTypePathPaymentStrictSend:
-						if diag := DiagnosePathPaymentSlippage(op, i, opRes); diag != nil {
+						if diag := withPathPaymentFailureDetail(DiagnosePathPaymentSlippage(op, i, opRes), op, i, opRes, &reason); diag != nil {
 							s.Operations[i].PathPayment = diag
 							if !reason.Success && diag.Hint != "" {
 								reason.Hint = diag.Hint
@@ -405,6 +405,11 @@ func deepenOperationFailure(source string, op xdr.Operation, r Reason) Reason {
 		if body, ok := op.Body.GetRestoreFootprintOp(); ok {
 			return deepenRestoreFootprintFailure(body, r)
 		}
+	case strings.HasPrefix(r.Constant, "CreateAccountResultCode"):
+		return deepenCreateAccountFailure(op, r)
+	case strings.HasPrefix(r.Constant, "ManageSellOfferResultCode"),
+		strings.HasPrefix(r.Constant, "ManageBuyOfferResultCode"):
+		return deepenManageOfferFailure(op, r)
 	case strings.HasPrefix(r.Constant, "ManageDataResultCode"):
 		return withOperationContext(r, op, source)
 	case strings.HasPrefix(r.Constant, "CreateClaimableBalanceResultCode"):
@@ -1710,6 +1715,10 @@ type PathPaymentSlippageDiagnosis struct {
 	Summary        string           `json:"summary"`
 	Explanation    string           `json:"explanation"`
 	Hint           string           `json:"hint"`
+	// StrictReceive carries the route and limits of a failed strict-receive payment.
+	StrictReceive *PathPaymentDiagnosis `json:"strictReceive,omitempty"`
+	// StrictSend carries the route and limits of a failed strict-send payment.
+	StrictSend *PathPaymentStrictSendDiagnosis `json:"strictSend,omitempty"`
 }
 
 func (d *PathPaymentSlippageDiagnosis) String() string {
