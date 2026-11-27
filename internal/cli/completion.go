@@ -78,13 +78,11 @@ func staticChoices() map[string]map[string][]string {
 			"network": networkFlagValues,
 		},
 		"explain": {
-			"format": {"sarif"},
+			"format":  {"sarif"},
+			"network": explorerNetworkFlagValues,
 		},
 		"asset": {
 			"network": networkFlagValues,
-		},
-		"explain": {
-			"network": explorerNetworkFlagValues,
 		},
 		"diff": {
 			"format": {"text", "json", "json-patch", "unified", "side-by-side", "stats"},
