@@ -30,6 +30,7 @@ func newExplainCmd(g *globalFlags, stdout io.Writer, stdin io.Reader) *cobra.Com
 		checkExpiry bool
 		refTimeStr  string
 		formatName  string
+		network     string
 	)
 
 	cmd := &cobra.Command{
@@ -205,6 +206,7 @@ lumen buying liabilities behind dest_full.`,
 				f := format.NewSummaryFormatter(
 					format.WithSummaryPalette(palette),
 					format.WithVerbose(verbose),
+					format.WithSummaryHyperlinks(explorerBaseURL(network)),
 				)
 				if err := f.Format(stdout, summary); err != nil {
 					return err
@@ -306,6 +308,8 @@ lumen buying liabilities behind dest_full.`,
 		"optional reference timestamp (RFC 3339 or Unix seconds) for --check-expiry")
 	cmd.Flags().StringVar(&formatName, "format", "",
 		`output format: "sarif" emits SARIF 2.1.0 for GitHub Code Scanning and GitLab Security`)
+	cmd.Flags().StringVar(&network, "network", "public",
+		`Stellar Expert network for clickable address links: "public" or "testnet" (empty disables)`)
 
 	return cmd
 }

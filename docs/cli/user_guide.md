@@ -123,7 +123,7 @@ Operands can be base64 strings, file paths, or `-` for `stdin`.
 | `--unified` | Unified diff format (like `diff -u`). |
 | `--side-by-side`| Two-column terminal diff. |
 | `--stats` | Numeric breakdown of changes (additions, deletions, modifications). |
-| `--summary` | Compact single-line summary of differences. |
+| `--summary` | Table of change counts by top-level field path (same as `--format summary`). |
 | `--mask-paths`, `--mask-path` | Exclude paths from diff comparison entirely (prevents false positive exits). |
 | `--exclude-paths`, `--ignore-path` | Suppress changes from output display. |
 | `--diff-threshold` | Numerical tolerance: suppress numeric differences below delta. |
@@ -208,6 +208,7 @@ $ lens explain <envelope> [flags]
 | `--format sarif` | Emit SARIF 2.1.0 for GitHub Code Scanning or GitLab Security. |
 | `--json` | Emit diagnostic report as structured JSON. |
 | `--verbose`, `-v` | Include protocol constants alongside explanations. |
+| `--network` | Stellar Expert network for clickable address links: `public` (default) or `testnet`; empty disables links. |
 
 #### Walkthrough Examples
 

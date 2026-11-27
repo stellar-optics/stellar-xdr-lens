@@ -1,7 +1,9 @@
 package lens
 
 import (
+	"encoding/base64"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/stellar/go-stellar-sdk/strkey"
@@ -136,6 +138,221 @@ func TestBuildTransactionEnvelopeFromJSON(t *testing.T) {
 	}
 	if envStrict.Type != xdr.EnvelopeTypeEnvelopeTypeTx {
 		t.Fatalf("expected V1 envelope in strict")
+	}
+}
+
+func TestBuildPaymentOp(t *testing.T) {
+	t.Parallel()
+
+	const issuer = "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN"
+	const dest = "GCJNHFXJEQEY54NPKU4DBMT5WOBJUHMYSFBDAQF4OMTEGJN4BQU7ZST6"
+
+	muxedAccount := xdr.MuxedAccount{
+		Type: xdr.CryptoKeyTypeKeyTypeMuxedEd25519,
+		Med25519: &xdr.MuxedAccountMed25519{
+			Id:      7,
+			Ed25519: *xdr.MustAddress(dest).Ed25519,
+		},
+	}
+	muxed := muxedAccount.Address()
+
+	tests := []struct {
+		name       string
+		spec       map[string]any
+		wantAsset  xdr.AssetType
+		wantCode   string
+		wantAmount int64
+		wantMuxed  bool
+	}{
+		{
+			name:       "amount defaults to a native asset",
+			spec:       map[string]any{"destination": dest, "amount": "10.5"},
+			wantAsset:  xdr.AssetTypeAssetTypeNative,
+			wantAmount: 105000000,
+		},
+		{
+			name:       "explicit native asset",
+			spec:       map[string]any{"destination": dest, "amount": "0.0000001", "asset": "native"},
+			wantAsset:  xdr.AssetTypeAssetTypeNative,
+			wantAmount: 1,
+		},
+		{
+			name: "issued asset object",
+			spec: map[string]any{
+				"destination": dest,
+				"amount":      "100.5",
+				"asset":       map[string]any{"code": "USDC", "issuer": issuer},
+			},
+			wantAsset:  xdr.AssetTypeAssetTypeCreditAlphanum4,
+			wantCode:   "USDC",
+			wantAmount: 1005000000,
+		},
+		{
+			name:       "muxed destination",
+			spec:       map[string]any{"destination": muxed, "amount": 10},
+			wantAsset:  xdr.AssetTypeAssetTypeNative,
+			wantAmount: 10,
+			wantMuxed:  true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			op, err := buildPaymentOp(tc.spec)
+			if err != nil {
+				t.Fatalf("buildPaymentOp() error = %v", err)
+			}
+			if int64(op.Amount) != tc.wantAmount {
+				t.Errorf("Amount = %d, want %d", op.Amount, tc.wantAmount)
+			}
+			if op.Asset.Type != tc.wantAsset {
+				t.Errorf("Asset.Type = %v, want %v", op.Asset.Type, tc.wantAsset)
+			}
+			if tc.wantCode != "" {
+				if op.Asset.AlphaNum4 == nil {
+					t.Fatalf("Asset.AlphaNum4 is nil for a code asset")
+				}
+				if got := strings.TrimRight(string(op.Asset.AlphaNum4.AssetCode[:]), "\x00"); got != tc.wantCode {
+					t.Errorf("Asset code = %q, want %q", got, tc.wantCode)
+				}
+			}
+			gotMuxed := op.Destination.Type == xdr.CryptoKeyTypeKeyTypeMuxedEd25519
+			if gotMuxed != tc.wantMuxed {
+				t.Errorf("Destination muxed = %v, want %v", gotMuxed, tc.wantMuxed)
+			}
+		})
+	}
+}
+
+func TestBuildPaymentOpRejectsInvalidSpecs(t *testing.T) {
+	t.Parallel()
+
+	const dest = "GCJNHFXJEQEY54NPKU4DBMT5WOBJUHMYSFBDAQF4OMTEGJN4BQU7ZST6"
+	const badChecksum = "GA2JRQOF6EA3HQWDCEDBPPMLYPJCFLDDGYZLEQGMS5SOBQIB3BAFHVAX"
+
+	tests := []struct {
+		name string
+		spec map[string]any
+		want string
+	}{
+		{name: "nil spec", spec: nil, want: "destination"},
+		{name: "missing destination", spec: map[string]any{"amount": 1}, want: "destination"},
+		{name: "blank destination", spec: map[string]any{"destination": "  ", "amount": 1}, want: "destination"},
+		{name: "invalid destination", spec: map[string]any{"destination": badChecksum, "amount": 1}, want: "destination"},
+		{name: "missing amount", spec: map[string]any{"destination": dest}, want: "amount"},
+		{name: "unparseable amount", spec: map[string]any{"destination": dest, "amount": "ten"}, want: "amount"},
+		{
+			name: "asset without issuer",
+			spec: map[string]any{"destination": dest, "amount": 1, "asset": map[string]any{"code": "USDC"}},
+			want: "asset",
+		},
+		{
+			name: "asset with invalid issuer",
+			spec: map[string]any{"destination": dest, "amount": 1, "asset": map[string]any{"code": "USDC", "issuer": badChecksum}},
+			want: "asset",
+		},
+		{name: "unparseable asset", spec: map[string]any{"destination": dest, "amount": 1, "asset": "USDC"}, want: "asset"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			op, err := buildPaymentOp(tc.spec)
+			if err == nil {
+				t.Fatalf("buildPaymentOp() = %+v, want an error", op)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("error = %q, want it to mention %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestBuildTransactionEnvelopeFromJSONIntuitivePayment(t *testing.T) {
+	t.Parallel()
+
+	const issuer = "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN"
+	const dest = "GCJNHFXJEQEY54NPKU4DBMT5WOBJUHMYSFBDAQF4OMTEGJN4BQU7ZST6"
+
+	template := `{
+		"source_account": "GA2JRQOF6EA3HQWDCEDBPPMLYPJCFLDDGYZLEQGMS5SOBQIB3BAFHVAW",
+		"fee": 100,
+		"sequence": 1,
+		"operations": [{
+			"type": "payment",
+			"destination": "` + dest + `",
+			"amount": "10.5",
+			"asset": {"code": "USDC", "issuer": "` + issuer + `"}
+		}]
+	}`
+
+	env, err := BuildTransactionEnvelopeFromJSONStrict([]byte(template))
+	if err != nil {
+		t.Fatalf("BuildTransactionEnvelopeFromJSONStrict() error = %v", err)
+	}
+	if env.V1 == nil || len(env.V1.Tx.Operations) != 1 {
+		t.Fatalf("envelope has no payment operation: %+v", env)
+	}
+
+	paymentOp := env.V1.Tx.Operations[0].Body.PaymentOp
+	if paymentOp == nil {
+		t.Fatal("operation body is not a PaymentOp")
+	}
+	if int64(paymentOp.Amount) != 105000000 {
+		t.Errorf("amount = %d, want 105000000 stroops", paymentOp.Amount)
+	}
+	if paymentOp.Asset.Type != xdr.AssetTypeAssetTypeCreditAlphanum4 {
+		t.Fatalf("asset type = %v, want alphanum4", paymentOp.Asset.Type)
+	}
+	if got := strings.TrimRight(string(paymentOp.Asset.AlphaNum4.AssetCode[:]), "\x00"); got != "USDC" {
+		t.Errorf("asset code = %q, want USDC", got)
+	}
+
+	// Round-trip the built envelope through the decoder: the decoded amount
+	// and asset must match the intuitive input.
+	raw, err := env.MarshalBinary()
+	if err != nil {
+		t.Fatalf("MarshalBinary() error = %v", err)
+	}
+	value, err := Decode(base64.StdEncoding.EncodeToString(raw))
+	if err != nil {
+		t.Fatalf("Decode() error = %v", err)
+	}
+	amountNode := value.Node.Find("V1.Tx.Operations[0].Body.PaymentOp.Amount")
+	if amountNode == nil {
+		t.Fatal("decoded tree has no payment amount")
+	}
+	if got := amountNode.String(); !strings.Contains(got, "105000000") {
+		t.Errorf("decoded amount = %q, want 105000000 stroops", got)
+	}
+	assetNode := value.Node.Find("V1.Tx.Operations[0].Body.PaymentOp.Asset")
+	if assetNode == nil {
+		t.Fatal("decoded tree has no payment asset")
+	}
+	if rendered := assetNode.String(); !strings.Contains(rendered, "USDC") || !strings.Contains(rendered, issuer) {
+		t.Errorf("decoded asset = %q, want it to name USDC and the issuer", rendered)
+	}
+}
+
+func TestBuildTransactionEnvelopeStrictRejectsInvalidPayment(t *testing.T) {
+	t.Parallel()
+
+	template := `{
+		"source_account": "GA2JRQOF6EA3HQWDCEDBPPMLYPJCFLDDGYZLEQGMS5SOBQIB3BAFHVAW",
+		"fee": 100,
+		"sequence": 1,
+		"operations": [{
+			"type": "payment",
+			"destination": "GA2JRQOF6EA3HQWDCEDBPPMLYPJCFLDDGYZLEQGMS5SOBQIB3BAFHVAX",
+			"amount": "10.5"
+		}]
+	}`
+
+	if _, err := BuildTransactionEnvelopeFromJSONStrict([]byte(template)); err == nil {
+		t.Fatal("strict build accepted an invalid payment destination")
 	}
 }
 
@@ -599,5 +816,118 @@ func TestBuildTransactionV0AndFeeBumpErrors(t *testing.T) {
 	}
 	if _, err := BuildTransactionEnvelope(s); err == nil {
 		t.Errorf("expected error on invalid signature hex")
+	}
+}
+
+func TestBuildLiquidityPoolDepositOp(t *testing.T) {
+	validAccount := "GA2JRQOF6EA3HQWDCEDBPPMLYPJCFLDDGYZLEQGMS5SOBQIB3BAFHVAW"
+	poolID := "a3d4b8c1e2f5a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6"
+
+	spec := &TxSpec{
+		SourceAccount: validAccount,
+		Sequence:      1,
+		Fee:           100,
+		Operations: []OperationSpec{
+			{
+				Type:       "liquidity_pool_deposit",
+				PoolID:     poolID,
+				MaxAmountA: "10",
+				MaxAmountB: "20",
+				MinPrice:   "0.5",
+				MaxPrice:   "2",
+			},
+		},
+	}
+
+	env, err := BuildTransactionEnvelope(spec)
+	if err != nil {
+		t.Fatalf("BuildTransactionEnvelope liquidity_pool_deposit: %v", err)
+	}
+	if env.Type != xdr.EnvelopeTypeEnvelopeTypeTx {
+		t.Fatalf("expected V1 envelope")
+	}
+	op := env.V1.Tx.Operations[0]
+	if op.Body.Type != xdr.OperationTypeLiquidityPoolDeposit {
+		t.Fatalf("expected LiquidityPoolDeposit, got %v", op.Body.Type)
+	}
+	depositOp := op.Body.LiquidityPoolDepositOp
+	if depositOp == nil {
+		t.Fatal("LiquidityPoolDepositOp is nil")
+	}
+	if depositOp.MaxAmountA != 10 {
+		t.Errorf("MaxAmountA = %d, want 10", depositOp.MaxAmountA)
+	}
+	if depositOp.MaxAmountB != 20 {
+		t.Errorf("MaxAmountB = %d, want 20", depositOp.MaxAmountB)
+	}
+	if eq, err := depositOp.MinPrice.TryEqual(xdr.Price{N: 1, D: 2}); err != nil || !eq {
+		t.Errorf("MinPrice = %v, want 0.5000000 (1/2)", depositOp.MinPrice)
+	}
+	if eq, err := depositOp.MaxPrice.TryEqual(xdr.Price{N: 2, D: 1}); err != nil || !eq {
+		t.Errorf("MaxPrice = %v, want 2.0000000 (2/1)", depositOp.MaxPrice)
+	}
+}
+
+func TestBuildLiquidityPoolWithdrawOp(t *testing.T) {
+	validAccount := "GA2JRQOF6EA3HQWDCEDBPPMLYPJCFLDDGYZLEQGMS5SOBQIB3BAFHVAW"
+	poolID := "a3d4b8c1e2f5a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6"
+
+	spec := &TxSpec{
+		SourceAccount: validAccount,
+		Sequence:      1,
+		Fee:           100,
+		Operations: []OperationSpec{
+			{
+				Type:       "liquidity_pool_withdraw",
+				PoolID:     poolID,
+				Shares:     "5",
+				MinAmountA: "1",
+				MinAmountB: "2",
+			},
+		},
+	}
+
+	env, err := BuildTransactionEnvelope(spec)
+	if err != nil {
+		t.Fatalf("BuildTransactionEnvelope liquidity_pool_withdraw: %v", err)
+	}
+	op := env.V1.Tx.Operations[0]
+	if op.Body.Type != xdr.OperationTypeLiquidityPoolWithdraw {
+		t.Fatalf("expected LiquidityPoolWithdraw, got %v", op.Body.Type)
+	}
+	withdrawOp := op.Body.LiquidityPoolWithdrawOp
+	if withdrawOp == nil {
+		t.Fatal("LiquidityPoolWithdrawOp is nil")
+	}
+	if withdrawOp.Amount != 5 {
+		t.Errorf("Amount (shares) = %d, want 5", withdrawOp.Amount)
+	}
+	if withdrawOp.MinAmountA != 1 {
+		t.Errorf("MinAmountA = %d, want 1", withdrawOp.MinAmountA)
+	}
+	if withdrawOp.MinAmountB != 2 {
+		t.Errorf("MinAmountB = %d, want 2", withdrawOp.MinAmountB)
+	}
+}
+
+func TestBuildLiquidityPoolDepositInvalidPoolID(t *testing.T) {
+	validAccount := "GA2JRQOF6EA3HQWDCEDBPPMLYPJCFLDDGYZLEQGMS5SOBQIB3BAFHVAW"
+	spec := &TxSpec{
+		SourceAccount: validAccount,
+		Sequence:      1,
+		Fee:           100,
+		Operations: []OperationSpec{
+			{
+				Type:       "liquidity_pool_deposit",
+				PoolID:     "not-a-valid-pool-id",
+				MaxAmountA: "10",
+				MaxAmountB: "20",
+				MinPrice:   "1",
+				MaxPrice:   "2",
+			},
+		},
+	}
+	if _, err := BuildTransactionEnvelope(spec); err == nil {
+		t.Error("expected error for invalid pool_id")
 	}
 }

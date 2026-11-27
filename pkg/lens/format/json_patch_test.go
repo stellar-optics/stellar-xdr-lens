@@ -2,9 +2,12 @@ package format_test
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/stellar/go-stellar-sdk/xdr"
 
 	"github.com/stellar-optics/stellar-xdr-lens/pkg/lens"
 	"github.com/stellar-optics/stellar-xdr-lens/pkg/lens/format"
@@ -212,6 +215,133 @@ func TestJSONPatchPointerEscaping(t *testing.T) {
 	}
 	if ops[0].Op != "add" {
 		t.Errorf("op = %q, want add", ops[0].Op)
+	}
+}
+
+// TestJSONPatchMoveForReorderedOperations checks the RFC 6902 semantics of a
+// reordered operation list: each shifted element is a move whose from pointer
+// names its old index and whose path names its new one, and no add/remove pair
+// is emitted in its place.
+func TestJSONPatchMoveForReorderedOperations(t *testing.T) {
+	t.Parallel()
+
+	bump := func(to int64) xdr.Operation {
+		return xdr.Operation{Body: xdr.OperationBody{
+			Type:           xdr.OperationTypeBumpSequence,
+			BumpSequenceOp: &xdr.BumpSequenceOp{BumpTo: xdr.SequenceNumber(to)},
+		}}
+	}
+	envelope := func(ops []xdr.Operation) *lens.Value {
+		raw, err := xdr.TransactionEnvelope{
+			Type: xdr.EnvelopeTypeEnvelopeTypeTx,
+			V1: &xdr.TransactionV1Envelope{
+				Tx: xdr.Transaction{
+					SourceAccount: xdr.MustMuxedAddress("GAPB7YMUQ6MPQ23PTFDNBZP7HGGTZPI2DT5JJURUOIXNPLGHW2O3WYXZ"),
+					Fee:           100,
+					SeqNum:        1,
+					Cond:          xdr.Preconditions{Type: xdr.PreconditionTypePrecondNone},
+					Memo:          xdr.Memo{Type: xdr.MemoTypeMemoNone},
+					Operations:    ops,
+					Ext:           xdr.TransactionExt{V: 0},
+				},
+			},
+		}.MarshalBinary()
+		if err != nil {
+			t.Fatalf("MarshalBinary() error = %v", err)
+		}
+		v, err := lens.Decode(base64.StdEncoding.EncodeToString(raw))
+		if err != nil {
+			t.Fatalf("Decode() error = %v", err)
+		}
+		return v
+	}
+
+	left := envelope([]xdr.Operation{bump(1), bump(2)})
+	right := envelope([]xdr.Operation{bump(2), bump(1)})
+	diff, err := lens.Diff(left, right)
+	if err != nil {
+		t.Fatalf("Diff() error = %v", err)
+	}
+
+	var reordered int
+	for _, change := range diff.Changes {
+		if change.Op == lens.ChangeReordered {
+			reordered++
+		}
+	}
+	if reordered == 0 {
+		t.Fatalf("diff reported no reordered changes: %+v", diff.Changes)
+	}
+
+	ops := format.NewJSONPatchFormatter().Operations(diff)
+	moves := make(map[string]string, len(ops))
+	for _, op := range ops {
+		switch op.Op {
+		case "move":
+			if op.From == "" {
+				t.Errorf("move operation has no from pointer: %+v", op)
+			}
+			if op.Value != nil {
+				t.Errorf("move operation carries a value: %+v", op)
+			}
+			moves[op.Path] = op.From
+		case "add", "remove":
+			t.Errorf("reordering emitted an add/remove pair: %+v", op)
+		}
+	}
+
+	want := map[string]string{
+		"/V1/Tx/Operations/0": "/V1/Tx/Operations/1",
+		"/V1/Tx/Operations/1": "/V1/Tx/Operations/0",
+	}
+	if len(moves) != len(want) {
+		t.Fatalf("move operations = %v, want %v", moves, want)
+	}
+	for path, from := range want {
+		if moves[path] != from {
+			t.Errorf("move %q from = %q, want %q", path, moves[path], from)
+		}
+	}
+
+	// The pointers must have the RFC 6901 shape and must round-trip through
+	// the JSON encoding used on the wire.
+	var buf bytes.Buffer
+	if err := format.NewJSONPatchFormatter().Format(&buf, diff); err != nil {
+		t.Fatalf("Format() error = %v", err)
+	}
+	var decoded []map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &decoded); err != nil {
+		t.Fatalf("patch is not a JSON array: %v\n%s", err, buf.String())
+	}
+	for _, op := range decoded {
+		if op["op"] != "move" {
+			continue
+		}
+		for _, key := range []string{"from", "path"} {
+			pointer, ok := op[key].(string)
+			if !ok || !strings.HasPrefix(pointer, "/") {
+				t.Errorf("move %s = %v, want a non-empty JSON Pointer", key, op[key])
+			}
+		}
+	}
+}
+
+func TestJSONPatchMoveWithoutIndexFallsBackToPath(t *testing.T) {
+	t.Parallel()
+
+	diff := &lens.DiffResult{
+		LeftType:  "T",
+		RightType: "T",
+		Changes: []lens.Change{
+			{Path: "Ops", Op: lens.ChangeReordered, Before: 1, After: 0},
+		},
+	}
+	ops := format.NewJSONPatchFormatter().Operations(diff)
+	if len(ops) != 1 || ops[0].Op != "move" {
+		t.Fatalf("Operations() = %+v, want one move", ops)
+	}
+	if ops[0].From != "/Ops" || ops[0].Path != "/Ops" {
+		t.Errorf("move = %+v, want from and path /Ops", ops[0])
 	}
 }
 

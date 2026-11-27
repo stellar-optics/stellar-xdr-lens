@@ -258,6 +258,81 @@ func TestCompactFormatterV0Envelope(t *testing.T) {
 	}
 }
 
+func TestFormatDiffStatsTable(t *testing.T) {
+	t.Parallel()
+
+	stats := lens.SummarizeChanges("TransactionEnvelope", "TransactionEnvelope", []lens.Change{
+		{Path: "Result.Code", Op: lens.ChangeModified},
+		{Path: "Result.Code", Op: lens.ChangeTypeChanged},
+		{Path: "Signatures", Op: lens.ChangeAdded},
+		{Path: "V1.Tx.Operations[0]", Op: lens.ChangeReordered},
+	})
+
+	table := format.FormatDiffStatsTable(&stats)
+	lines := strings.Split(strings.TrimRight(table, "\n"), "\n")
+	if len(lines) != 6 {
+		t.Fatalf("table has %d rows, want header, divider, three data rows and totals:\n%s", len(lines), table)
+	}
+
+	for _, heading := range []string{"SECTION", "ADDED", "REMOVED", "MODIFIED", "REORDERED", "TOTAL"} {
+		if !strings.Contains(lines[0], heading) {
+			t.Errorf("header %q does not contain %q", lines[0], heading)
+		}
+	}
+
+	// Sections keep the order they first appear in the diff.
+	if !strings.HasPrefix(strings.TrimSpace(lines[2]), "Result") {
+		t.Errorf("first data row = %q, want Result", lines[2])
+	}
+	if !strings.HasPrefix(strings.TrimSpace(lines[3]), "Signatures") {
+		t.Errorf("second data row = %q, want Signatures", lines[3])
+	}
+	if !strings.HasPrefix(strings.TrimSpace(lines[4]), "V1") {
+		t.Errorf("third data row = %q, want V1", lines[4])
+	}
+
+	// Result holds one modification and one type change, both reported as
+	// MODIFIED; added and reordered stay in their own columns.
+	fields := strings.Fields(lines[2])
+	if len(fields) != 6 {
+		t.Fatalf("data row fields = %v, want six columns", fields)
+	}
+	want := []string{"Result", "0", "0", "2", "0", "2"}
+	for i := range want {
+		if fields[i] != want[i] {
+			t.Errorf("row field %d = %q, want %q (row %q)", i, fields[i], want[i], lines[2])
+		}
+	}
+
+	// The TOTAL row aggregates every section.
+	totals := strings.Fields(lines[5])
+	wantTotals := []string{"TOTAL", "1", "0", "2", "1", "4"}
+	for i := range wantTotals {
+		if totals[i] != wantTotals[i] {
+			t.Errorf("total field %d = %q, want %q (row %q)", i, totals[i], wantTotals[i], lines[5])
+		}
+	}
+
+	// Rows stay aligned: every line is the same display width.
+	for _, line := range lines {
+		if len([]rune(line)) != len([]rune(lines[0])) {
+			t.Errorf("row width = %d, want %d: %q", len([]rune(line)), len([]rune(lines[0])), line)
+		}
+	}
+}
+
+func TestFormatDiffStatsTableEmpty(t *testing.T) {
+	t.Parallel()
+
+	if got := format.FormatDiffStatsTable(nil); got != "no differences\n" {
+		t.Errorf("FormatDiffStatsTable(nil) = %q, want no differences", got)
+	}
+	empty := lens.SummarizeChanges("A", "A", nil)
+	if got := format.FormatDiffStatsTable(&empty); got != "no differences\n" {
+		t.Errorf("FormatDiffStatsTable(empty) = %q, want no differences", got)
+	}
+}
+
 func TestCompactFormatterErrors(t *testing.T) {
 	f := format.NewCompactFormatter()
 	if err := f.Format(&bytes.Buffer{}, nil); err == nil {

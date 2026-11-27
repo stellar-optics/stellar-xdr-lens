@@ -110,6 +110,14 @@ type OperationSpec struct {
 	Auth            []any  `json:"auth,omitempty"`
 	LedgerKey       any    `json:"ledger_key,omitempty"`
 	ExtendTo        any    `json:"extend_to,omitempty"`
+	PoolID          string `json:"pool_id,omitempty"`
+	MaxAmountA      any    `json:"max_amount_a,omitempty"`
+	MaxAmountB      any    `json:"max_amount_b,omitempty"`
+	MinPrice        any    `json:"min_price,omitempty"`
+	MaxPrice        any    `json:"max_price,omitempty"`
+	Shares          any    `json:"shares,omitempty"`
+	MinAmountA      any    `json:"min_amount_a,omitempty"`
+	MinAmountB      any    `json:"min_amount_b,omitempty"`
 }
 
 // BuildTransactionEnvelopeFromJSON parses JSON bytes and constructs a TransactionEnvelope.
@@ -571,25 +579,17 @@ func buildOperation(op OperationSpec) (xdr.Operation, error) {
 	typ := strings.ToLower(strings.TrimSpace(op.Type))
 	switch typ {
 	case "payment":
-		dest, err := CoerceMuxedAccount(op.Destination)
+		paymentOp, err := buildPaymentOp(map[string]any{
+			"destination": op.Destination,
+			"amount":      op.Amount,
+			"asset":       op.Asset,
+		})
 		if err != nil {
-			return operation, fmt.Errorf("payment destination: %w", err)
-		}
-		ast, err := CoerceAsset(op.Asset)
-		if err != nil {
-			ast = xdr.Asset{Type: xdr.AssetTypeAssetTypeNative}
-		}
-		amt, err := CoerceAmount(op.Amount)
-		if err != nil {
-			return operation, fmt.Errorf("payment amount: %w", err)
+			return operation, err
 		}
 		operation.Body = xdr.OperationBody{
-			Type: xdr.OperationTypePayment,
-			PaymentOp: &xdr.PaymentOp{
-				Destination: dest,
-				Asset:       ast,
-				Amount:      xdr.Int64(amt),
-			},
+			Type:      xdr.OperationTypePayment,
+			PaymentOp: paymentOp,
 		}
 		return operation, nil
 
@@ -791,9 +791,126 @@ func buildOperation(op OperationSpec) (xdr.Operation, error) {
 		}
 		return operation, nil
 
+	case "liquidity_pool_deposit":
+		poolHash, err := CoerceHash(op.PoolID)
+		if err != nil {
+			return operation, fmt.Errorf("liquidity_pool_deposit pool_id: %w", err)
+		}
+		poolID := xdr.PoolId(poolHash)
+		maxAmtA, err := CoerceAmount(op.MaxAmountA)
+		if err != nil {
+			return operation, fmt.Errorf("liquidity_pool_deposit max_amount_a: %w", err)
+		}
+		maxAmtB, err := CoerceAmount(op.MaxAmountB)
+		if err != nil {
+			return operation, fmt.Errorf("liquidity_pool_deposit max_amount_b: %w", err)
+		}
+		minPrice, err := CoercePrice(op.MinPrice)
+		if err != nil {
+			return operation, fmt.Errorf("liquidity_pool_deposit min_price: %w", err)
+		}
+		maxPrice, err := CoercePrice(op.MaxPrice)
+		if err != nil {
+			return operation, fmt.Errorf("liquidity_pool_deposit max_price: %w", err)
+		}
+		operation.Body = xdr.OperationBody{
+			Type: xdr.OperationTypeLiquidityPoolDeposit,
+			LiquidityPoolDepositOp: &xdr.LiquidityPoolDepositOp{
+				LiquidityPoolId: poolID,
+				MaxAmountA:      xdr.Int64(maxAmtA),
+				MaxAmountB:      xdr.Int64(maxAmtB),
+				MinPrice:        minPrice,
+				MaxPrice:        maxPrice,
+			},
+		}
+		return operation, nil
+
+	case "liquidity_pool_withdraw":
+		poolHash, err := CoerceHash(op.PoolID)
+		if err != nil {
+			return operation, fmt.Errorf("liquidity_pool_withdraw pool_id: %w", err)
+		}
+		poolID := xdr.PoolId(poolHash)
+		shares, err := CoerceAmount(op.Shares)
+		if err != nil {
+			return operation, fmt.Errorf("liquidity_pool_withdraw shares: %w", err)
+		}
+		minAmtA, err := CoerceAmount(op.MinAmountA)
+		if err != nil {
+			return operation, fmt.Errorf("liquidity_pool_withdraw min_amount_a: %w", err)
+		}
+		minAmtB, err := CoerceAmount(op.MinAmountB)
+		if err != nil {
+			return operation, fmt.Errorf("liquidity_pool_withdraw min_amount_b: %w", err)
+		}
+		operation.Body = xdr.OperationBody{
+			Type: xdr.OperationTypeLiquidityPoolWithdraw,
+			LiquidityPoolWithdrawOp: &xdr.LiquidityPoolWithdrawOp{
+				LiquidityPoolId: poolID,
+				Amount:          xdr.Int64(shares),
+				MinAmountA:      xdr.Int64(minAmtA),
+				MinAmountB:      xdr.Int64(minAmtB),
+			},
+		}
+		return operation, nil
+
 	default:
 		return operation, fmt.Errorf("%w: unsupported operation type %q", ErrInvalidTxSpec, op.Type)
 	}
+}
+
+// buildPaymentOp builds an xdr.PaymentOp from the intuitive JSON template
+// `lens encode` accepts:
+//
+//	{"type": "payment", "destination": "G...", "amount": "10.5",
+//	 "asset": {"code": "USDC", "issuer": "G..."}}
+//
+// The destination is a G... account or an M... muxed address. The amount
+// accepts a human decimal ("10.5" becomes 105000000 stroops) as well as an
+// integer stroop count. The asset is "native" or a code/issuer object and
+// defaults to native when omitted. An asset that cannot be parsed is an error
+// rather than a silent fall back to native, so a typo in an issuer cannot
+// change the meaning of the operation.
+func buildPaymentOp(spec map[string]any) (*xdr.PaymentOp, error) {
+	if spec == nil {
+		return nil, fmt.Errorf("%w: payment operation requires 'destination'", ErrInvalidTxSpec)
+	}
+
+	destination := spec["destination"]
+	if destination == nil {
+		return nil, fmt.Errorf("%w: payment operation requires 'destination'", ErrInvalidTxSpec)
+	}
+	if text, ok := destination.(string); ok && strings.TrimSpace(text) == "" {
+		return nil, fmt.Errorf("%w: payment operation requires 'destination'", ErrInvalidTxSpec)
+	}
+	dest, err := CoerceMuxedAccount(destination)
+	if err != nil {
+		return nil, fmt.Errorf("payment destination: %w", err)
+	}
+
+	amount := spec["amount"]
+	if amount == nil {
+		return nil, fmt.Errorf("%w: payment operation requires 'amount'", ErrInvalidTxSpec)
+	}
+	stroops, err := CoerceAmount(amount)
+	if err != nil {
+		return nil, fmt.Errorf("payment amount: %w", err)
+	}
+
+	asset := xdr.Asset{Type: xdr.AssetTypeAssetTypeNative}
+	if raw, ok := spec["asset"]; ok && raw != nil {
+		parsed, err := CoerceAsset(raw)
+		if err != nil {
+			return nil, fmt.Errorf("payment asset: %w", err)
+		}
+		asset = parsed
+	}
+
+	return &xdr.PaymentOp{
+		Destination: dest,
+		Asset:       asset,
+		Amount:      xdr.Int64(stroops),
+	}, nil
 }
 
 func buildSignatures(specs []SignatureSpec) ([]xdr.DecoratedSignature, error) {

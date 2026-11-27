@@ -267,6 +267,76 @@ func TestRedactValueRequiresValue(t *testing.T) {
 	}
 }
 
+func TestRedactAddress(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "empty", in: "", want: ""},
+		{name: "short", in: "abc", want: "***"},
+		{name: "exactly eight", in: "abcdefgh", want: "********"},
+		{name: "nine characters", in: "abcdefghi", want: "abcd...fghi"},
+		{
+			name: "account",
+			in:   "GA3FJ5QJQ6MPQ23PTFDNBZP7HGGTZPI2DT5JJURUOIXNPLGHW2O3WXYZ",
+			want: "GA3F...WXYZ",
+		},
+		{
+			name: "contract",
+			in:   "CBGSBKYMYO6OMGHQXXNOBRGVUDFUDVC2XLC3SXON5R2SNXILR7XCKKY3",
+			want: "CBGS...KKY3",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := lens.RedactAddress(tc.in); got != tc.want {
+				t.Errorf("RedactAddress(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestRedactAddresses(t *testing.T) {
+	t.Parallel()
+
+	account := "GAPB7YMUQ6MPQ23PTFDNBZP7HGGTZPI2DT5JJURUOIXNPLGHW2O3WYXZ"
+	contract := "CBGSBKYMYO6OMGHQXXNOBRGVUDFUDVC2XLC3SXON5R2SNXILR7XCKKY3"
+	muxed := "M" + strings.Repeat("A", 68)
+	hexHash := "9e9dfcffc2a451db2125c09ea8fa17e88af14fd044dee19f0453106ee5aab2df"
+
+	input := strings.Join([]string{
+		"source=" + account,
+		"contract=" + contract,
+		"muxed=" + muxed,
+		"hash=" + hexHash,
+		"short=GABC",
+		"json=\"" + account + "\"",
+	}, "\n")
+	got := lens.RedactAddresses(input)
+
+	for _, full := range []string{account, contract, muxed} {
+		if strings.Contains(got, full) {
+			t.Errorf("redacted output still contains %q:\n%s", full, got)
+		}
+	}
+	for _, want := range []string{
+		"GAPB...WYXZ",
+		"CBGS...KKY3",
+		"MAAA...AAAA",
+		hexHash,
+		"short=GABC",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("redacted output does not contain %q:\n%s", want, got)
+		}
+	}
+}
+
 func TestRedactionDisabledByDefault(t *testing.T) {
 	t.Parallel()
 

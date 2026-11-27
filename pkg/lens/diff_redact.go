@@ -3,6 +3,7 @@ package lens
 import (
 	"fmt"
 	"path"
+	"regexp"
 	"strings"
 )
 
@@ -207,6 +208,67 @@ func RedactValue(v *Value, p RedactionPolicy) (*Value, []string, error) {
 	var paths []string
 	node := redactNode(v.Node, p, "", &paths)
 	return &Value{Type: v.Type, Node: node}, paths, nil
+}
+
+// RedactAddress masks the interior of a Stellar strkey address while keeping
+// the first and last four characters, so an address remains recognizable to
+// its owner in a shared log without being usable or searchable in full:
+//
+//	GA3FJ5...WXYZ  ->  GA3F...WXYZ
+//
+// Strings of eight characters or fewer are masked entirely, since preserving
+// both ends would reveal the whole value. RedactAddress is a pure string
+// transform: callers that want to redact a stream of formatted output should
+// use RedactAddresses, which recognizes address-shaped tokens.
+func RedactAddress(addr string) string {
+	runes := []rune(addr)
+	if len(runes) == 0 {
+		return ""
+	}
+	if len(runes) <= 8 {
+		return strings.Repeat("*", len(runes))
+	}
+	return string(runes[:4]) + RedactedAddressMarker + string(runes[len(runes)-4:])
+}
+
+// RedactedAddressMarker separates the visible ends of a redacted address.
+const RedactedAddressMarker = "..."
+
+// strkeyAddressPattern finds runs of base32 characters that start with a
+// Stellar strkey version byte. Candidate length is validated separately, so an
+// unrelated uppercase identifier is left alone.
+var strkeyAddressPattern = regexp.MustCompile(`[GCMSTLXB][A-Z2-7]{20,}`)
+
+// RedactAddresses replaces every Stellar strkey address in text with its
+// masked form. It is the stream-level counterpart of RedactAddress and is what
+// the CLI's --redact-addresses flag applies to formatted output, so text, JSON
+// and tree formatters all get the same treatment.
+func RedactAddresses(text string) string {
+	return strkeyAddressPattern.ReplaceAllStringFunc(text, func(token string) string {
+		if !isStrkeyAddress(token) {
+			return token
+		}
+		return RedactAddress(token)
+	})
+}
+
+// isStrkeyAddress reports whether token has the exact length of a Stellar
+// strkey for its version byte. Checking the length avoids masking arbitrary
+// long uppercase strings that merely resemble an address.
+func isStrkeyAddress(token string) bool {
+	if token == "" {
+		return false
+	}
+	switch token[0] {
+	case 'G', 'C', 'S', 'T', 'X', 'L':
+		return len(token) == 56
+	case 'M':
+		return len(token) == 69
+	case 'B':
+		return len(token) == 72
+	default:
+		return false
+	}
 }
 
 // RedactionPolicyFromNames builds a policy from category names, which is how

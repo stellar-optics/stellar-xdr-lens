@@ -480,11 +480,24 @@ func validateOperationDetails(val any, path string) error {
 
 	switch typ {
 	case "payment":
-		if _, ok := m["destination"]; !ok {
+		destination, ok := m["destination"]
+		if !ok {
 			return fmt.Errorf("payment operation requires 'destination'")
 		}
-		if _, ok := m["amount"]; !ok {
+		if err := ValidateAccountAddress(destination, path+".destination"); err != nil {
+			return err
+		}
+		amount, ok := m["amount"]
+		if !ok {
 			return fmt.Errorf("payment operation requires 'amount'")
+		}
+		if _, err := CoerceAmount(amount); err != nil {
+			return fmt.Errorf("payment amount: %w", err)
+		}
+		if asset, ok := m["asset"]; ok && asset != nil {
+			if _, err := CoerceAsset(asset); err != nil {
+				return fmt.Errorf("payment asset: %w", err)
+			}
 		}
 	case "create_account":
 		if _, ok := m["destination"]; !ok {

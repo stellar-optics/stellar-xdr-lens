@@ -292,3 +292,62 @@ func TestContractScAddressEnrichment(t *testing.T) {
 		t.Errorf("Address = %q, want %q", addr.Value, wantContractID)
 	}
 }
+
+func TestEnrichDiagnosticEventWithTimestamp(t *testing.T) {
+	t.Parallel()
+
+	const ledgerSeq = 50_000_000
+	const closeTime = int64(1_700_000_000) // 2023-11-14T22:13:20Z
+
+	event := xdr.DiagnosticEvent{InSuccessfulContractCall: true}
+	ts := lens.EnrichDiagnosticEventWithTimestamp(event, ledgerSeq, closeTime)
+	if ts == nil {
+		t.Fatal("EnrichDiagnosticEventWithTimestamp() returned nil for non-zero closeTime")
+	}
+	if ts.LedgerSeq != ledgerSeq {
+		t.Errorf("LedgerSeq = %d, want %d", ts.LedgerSeq, ledgerSeq)
+	}
+	if ts.CloseTime.Unix() != closeTime {
+		t.Errorf("CloseTime.Unix() = %d, want %d", ts.CloseTime.Unix(), closeTime)
+	}
+	if ts.Note == "" {
+		t.Error("Note must not be empty")
+	}
+	// Note must include both the RFC3339 timestamp and the ledger number.
+	if !strings.Contains(ts.Note, "2023-11-14") {
+		t.Errorf("Note %q should contain the date 2023-11-14", ts.Note)
+	}
+	if !strings.Contains(ts.Note, "50000000") {
+		t.Errorf("Note %q should contain the ledger sequence 50000000", ts.Note)
+	}
+	// String() must equal Note.
+	if s := ts.String(); s != ts.Note {
+		t.Errorf("String() = %q, want %q", s, ts.Note)
+	}
+}
+
+func TestEnrichDiagnosticEventWithTimestampZeroTime(t *testing.T) {
+	t.Parallel()
+
+	event := xdr.DiagnosticEvent{InSuccessfulContractCall: true}
+	ts := lens.EnrichDiagnosticEventWithTimestamp(event, 1234, 0)
+	if ts != nil {
+		t.Errorf("EnrichDiagnosticEventWithTimestamp() = %v, want nil for zero closeTime", ts)
+	}
+}
+
+func TestDiagnosticEventNodeHookSuccessful(t *testing.T) {
+	t.Parallel()
+
+	v, err := lens.DecodeAs(loadFixture(t, "diagnostic_event"), "DiagnosticEvent")
+	if err != nil {
+		t.Fatalf("DecodeAs() error = %v", err)
+	}
+	// The nodeHook should set a note reflecting the InSuccessfulContractCall flag.
+	if v.Node.Note == "" {
+		t.Error("root Node.Note must not be empty after nodeHook")
+	}
+	if !strings.Contains(v.Node.Note, "contract call") {
+		t.Errorf("Node.Note %q should describe the call outcome", v.Node.Note)
+	}
+}

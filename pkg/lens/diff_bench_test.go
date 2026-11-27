@@ -410,6 +410,89 @@ func BenchmarkDiffRedacted(b *testing.B) {
 	}
 }
 
+// longOperationArrayValue builds a transaction-shaped tree whose operation
+// array has size elements. Every element is identical except the scalar at
+// mutateAt, which models a large block where one operation changed. The name
+// of the list selects which diff path is exercised: "Operations" uses the
+// operation-specific matcher, while any other name goes through the generic
+// LCS aligner.
+func longOperationArrayValue(name string, size, mutateAt int) *lens.Value {
+	root := &lens.Node{Kind: lens.KindStruct, TypeName: "Transaction"}
+	ops := &lens.Node{Name: name, Kind: lens.KindList, TypeName: "Operation"}
+	ops.Children = make([]*lens.Node, size)
+	for i := range size {
+		amount := uint64(i + 1)
+		if i == mutateAt {
+			amount = 1 << 40
+		}
+		ops.Children[i] = &lens.Node{
+			Kind:     lens.KindStruct,
+			TypeName: "Operation",
+			Children: []*lens.Node{
+				{
+					Name:     "Body",
+					Kind:     lens.KindStruct,
+					TypeName: "OperationBody",
+					Children: []*lens.Node{
+						{Name: "Type", Kind: lens.KindScalar, TypeName: "OperationType", Value: "OperationTypePayment"},
+						{
+							Name:     "PaymentOp",
+							Kind:     lens.KindStruct,
+							TypeName: "PaymentOp",
+							Children: []*lens.Node{
+								{Name: "Destination", Kind: lens.KindScalar, TypeName: "MuxedAccount", Value: "GAPB...WYXZ"},
+								{Name: "Asset", Kind: lens.KindScalar, TypeName: "Asset", Value: "native"},
+								{Name: "Amount", Kind: lens.KindScalar, TypeName: "Int64", Value: amount},
+							},
+						},
+					},
+				},
+			},
+		}
+	}
+	root.Children = []*lens.Node{ops}
+	return &lens.Value{Type: "Transaction", Node: root}
+}
+
+// BenchmarkLCSDiffLongArrays measures the hash fast path on 500-element
+// arrays, which is the shape that made the O(N*M) LCS table expensive.
+//
+// Before the fast path every LCS cell compared complete subtrees, so a
+// 500-element array cost roughly 250,000 full operation walks. With memoized
+// digests a cell is a fixed-size hash comparison and an unchanged subtree is
+// skipped entirely, leaving only the changed element to walk in detail.
+func BenchmarkLCSDiffLongArrays(b *testing.B) {
+	const size = 500
+	options := lens.DiffOptions{AlignLists: true}
+
+	cases := []struct {
+		name string
+		list string
+	}{
+		{name: "GenericLCS", list: "History"},
+		{name: "OperationArray", list: "Operations"},
+	}
+
+	for _, tc := range cases {
+		left := longOperationArrayValue(tc.list, size, -1)
+		right := longOperationArrayValue(tc.list, size, size/2)
+
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				result, err := lens.DiffWithOptions(left, right, options)
+				if err != nil {
+					b.Fatal(err)
+				}
+				if len(result.Changes) == 0 {
+					b.Fatal("long arrays reported no changes")
+				}
+			}
+		})
+	}
+}
+
 // Ensure the fixtures used above stay large enough to be representative. A
 // fixture that shrinks to a few bytes would silently turn the benchmark into a
 // no-op; this test makes that drift visible.

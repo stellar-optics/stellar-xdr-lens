@@ -2,6 +2,7 @@ package lens
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
@@ -146,8 +147,9 @@ type DiffOptions struct {
 	// MaskPaths excludes changes matching glob-like patterns (e.g. *.Signatures, Tx.SeqNum)
 	// from diff evaluation (#126).
 	MaskPaths []string
-	// IgnorePaths is an alias for MaskPaths to suppress volatile fields in CI diffs (#345).
+	// IgnorePaths is an alias for MaskPaths to suppress volatile fields in CI diffs.
 	// Matching paths are omitted from diff evaluation entirely, so differences do not affect Equal().
+	// This is useful for suppressing volatile fields in CI diffs, such as sequence numbers.
 	IgnorePaths []string
 	// Mask excludes matching paths from diff evaluation entirely. Unlike
 	// Filter which only narrows output, masked paths are never compared,
@@ -163,6 +165,54 @@ type DiffOptions struct {
 	// differ only in those fields compare equal. The zero value redacts
 	// nothing and preserves the historical behavior. See diff_redact.go.
 	Redaction RedactionPolicy
+}
+
+// nodeHashCache memoizes SHA-256 digests of Node subtrees. A digest is built
+// once per node and shared by every comparison in an LCS table, so a table
+// cell first compares two fixed-size digests before falling back to a full
+// subtree walk. The cache is scoped to one alignment pass, so it needs no
+// locking and never observes a mutation from another goroutine.
+type nodeHashCache struct {
+	hashes map[*Node][sha256.Size]byte
+}
+
+func newNodeHashCache() *nodeHashCache {
+	return &nodeHashCache{hashes: make(map[*Node][sha256.Size]byte)}
+}
+
+// hash returns the content digest of n. The digest covers the node's kind,
+// name, type, scalar value, note and child digests, so two nodes with equal
+// digests are identical for the purposes of structural comparison (SHA-256
+// collisions aside).
+func (c *nodeHashCache) hash(n *Node) [sha256.Size]byte {
+	var zero [sha256.Size]byte
+	if n == nil {
+		return zero
+	}
+	if digest, ok := c.hashes[n]; ok {
+		return digest
+	}
+
+	h := sha256.New()
+	h.Write([]byte{byte(n.Kind)})
+	h.Write([]byte(n.TypeName))
+	h.Write([]byte{0})
+	h.Write([]byte(n.Name))
+	h.Write([]byte{0})
+	fmt.Fprintf(h, "%T:%v", n.Value, n.Value)
+	h.Write([]byte{0})
+	h.Write([]byte(n.Note))
+	h.Write([]byte{0})
+	fmt.Fprintf(h, "%d", len(n.Children))
+	for _, child := range n.Children {
+		childDigest := c.hash(child)
+		h.Write(childDigest[:])
+	}
+
+	var digest [sha256.Size]byte
+	copy(digest[:], h.Sum(nil))
+	c.hashes[n] = digest
+	return digest
 }
 
 // Equal reports whether the two values were structurally identical.
@@ -240,7 +290,6 @@ func diffNodesWithOptions(a, b *Node, path string, out *[]Change, options DiffOp
 	if options.Mask != nil && !options.Mask.Empty() && options.Mask.Matches(path) {
 		return
 	}
-
 	switch {
 	case a == nil && b == nil:
 		return
@@ -845,7 +894,30 @@ func diffListsWithOptions(a, b *Node, path string, out *[]Change, options DiffOp
 	}
 }
 
+// diffAlignedLists aligns two sequences with a longest-common-subsequence
+// table. Each cell first compares memoized SHA-256 digests of the candidate
+// subtrees: a digest hit proves the subtrees are identical, so the cell is a
+// match without walking either element, and the traceback can skip an
+// identical pair outright. A digest miss falls back to the full, option-aware
+// comparison, so thresholds and hex/base64 normalization keep working exactly
+// as before.
 func diffAlignedLists(left, right []*Node, path string, out *[]Change, options DiffOptions) {
+	cache := newNodeHashCache()
+	leftDigests := make([][sha256.Size]byte, len(left))
+	for i := range left {
+		leftDigests[i] = cache.hash(left[i])
+	}
+	rightDigests := make([][sha256.Size]byte, len(right))
+	for j := range right {
+		rightDigests[j] = cache.hash(right[j])
+	}
+	equal := func(i, j int) bool {
+		if leftDigests[i] == rightDigests[j] {
+			return true
+		}
+		return sameNodeWithOptions(left[i], right[j], options)
+	}
+
 	rows, columns := len(left)+1, len(right)+1
 	lcs := make([][]int, rows)
 	for i := range rows {
@@ -853,7 +925,7 @@ func diffAlignedLists(left, right []*Node, path string, out *[]Change, options D
 	}
 	for i := len(left) - 1; i >= 0; i-- {
 		for j := len(right) - 1; j >= 0; j-- {
-			if sameNodeWithOptions(left[i], right[j], options) {
+			if equal(i, j) {
 				lcs[i][j] = 1 + lcs[i+1][j+1]
 			} else if lcs[i+1][j] > lcs[i][j+1] {
 				lcs[i][j] = lcs[i+1][j]
@@ -865,8 +937,12 @@ func diffAlignedLists(left, right []*Node, path string, out *[]Change, options D
 
 	i, j := 0, 0
 	for i < len(left) && j < len(right) {
-		if sameNodeWithOptions(left[i], right[j], options) {
-			diffNodesWithOptions(left[i], right[j], path+"["+strconv.Itoa(j)+"]", out, options)
+		if equal(i, j) {
+			// Identical digest means there is nothing to report and no
+			// reason to descend; a semantic-only match still needs the walk.
+			if leftDigests[i] != rightDigests[j] {
+				diffNodesWithOptions(left[i], right[j], path+"["+strconv.Itoa(j)+"]", out, options)
+			}
 			i++
 			j++
 		} else if lcs[i][j+1] >= lcs[i+1][j] {
@@ -912,10 +988,26 @@ func sameScalarWithOptions(a, b *Node, options DiffOptions) bool {
 		threshold = options.DiffThreshold
 	}
 
-	// 1. Direct scalar value and note match
+	// 1. Direct scalar value and note match. The formatted comparison is
+	// only needed when the dynamic types differ (int 5 versus uint 5); for
+	// equal primitive types, a DeepEqual miss already proves the values
+	// differ, and skipping the format keeps the mismatch path allocation
+	// free — which matters inside an LCS table. NaN is the one float value
+	// whose Go form repeats for different bit patterns, so it is handled
+	// explicitly to preserve the historical result.
 	if a.Note == b.Note {
-		if reflect.DeepEqual(a.Value, b.Value) || fmt.Sprintf("%v", a.Value) == fmt.Sprintf("%v", b.Value) {
+		if reflect.DeepEqual(a.Value, b.Value) {
 			return true
+		}
+		if reflect.TypeOf(a.Value) != reflect.TypeOf(b.Value) {
+			if fmt.Sprintf("%v", a.Value) == fmt.Sprintf("%v", b.Value) {
+				return true
+			}
+		}
+		if av, ok := a.Value.(float64); ok {
+			if bv, ok := b.Value.(float64); ok && math.IsNaN(av) && math.IsNaN(bv) {
+				return true
+			}
 		}
 	}
 
@@ -1646,6 +1738,12 @@ func analyzeAccountQuorum(left, right *Value, leftNode, rightNode *Node, changes
 	}
 	if len(analysis.Warnings) > 0 {
 		*warnings = append(*warnings, analysis.Warnings...)
+	}
+	if leftEntry != nil && rightEntry != nil {
+		flagDiff := DiffAccountFlags(xdr.AccountFlags(leftEntry.Flags), xdr.AccountFlags(rightEntry.Flags))
+		if !flagDiff.Equal() {
+			*warnings = append(*warnings, flagDiff.Warnings...)
+		}
 	}
 }
 

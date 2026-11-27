@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"strings"
 
+	"github.com/stellar/go-stellar-sdk/amount"
 	"github.com/stellar/go-stellar-sdk/xdr"
 )
 
@@ -62,6 +63,146 @@ func (t *TrustlineFailure) DiagnosticReport() string {
 	fmt.Fprintf(&b, "\n  Summary:       %s\n", t.Summary)
 	fmt.Fprintf(&b, "  Hint:          %s\n", t.Hint)
 	return b.String()
+}
+
+// paymentResultCodes lists the payment failures DiagnosePaymentFailure explains,
+// so a Reason's constant name can be resolved back to its typed code.
+var paymentResultCodes = [...]xdr.PaymentResultCode{
+	xdr.PaymentResultCodePaymentMalformed,
+	xdr.PaymentResultCodePaymentUnderfunded,
+	xdr.PaymentResultCodePaymentSrcNoTrust,
+	xdr.PaymentResultCodePaymentSrcNotAuthorized,
+	xdr.PaymentResultCodePaymentNoDestination,
+	xdr.PaymentResultCodePaymentNoTrust,
+	xdr.PaymentResultCodePaymentNotAuthorized,
+	xdr.PaymentResultCodePaymentLineFull,
+	xdr.PaymentResultCodePaymentNoIssuer,
+}
+
+// deepenPaymentFailure attaches the operation-specific diagnosis of a failed
+// payment to r.Context, leaving the generic per-code summary and hint in place.
+func deepenPaymentFailure(o xdr.PaymentOp, r Reason) Reason {
+	for _, code := range paymentResultCodes {
+		if code.String() == r.Constant {
+			r.Context = DiagnosePaymentFailure(&o, code)
+			break
+		}
+	}
+	return r
+}
+
+// DiagnosePaymentFailure explains a failed payment using the destination, asset
+// and amount in the operation, and names the step that unblocks it.
+//
+// The diagnosis is built from the operation alone: no ledger state is read and
+// no network call is made. It returns "" when there is nothing specific to add:
+// for a nil operation, a successful code, or a trustline failure on an asset
+// that has no trustlines.
+func DiagnosePaymentFailure(op *xdr.PaymentOp, code xdr.PaymentResultCode) string {
+	if op == nil {
+		return ""
+	}
+	destination := paymentDestinationLabel(op.Destination)
+	sent := amount.String(op.Amount)
+	assetCode, issuer, isCredit := creditAssetParts(op.Asset)
+	native := op.Asset.Type == xdr.AssetTypeAssetTypeNative
+
+	switch code {
+	case xdr.PaymentResultCodePaymentMalformed:
+		switch {
+		case op.Amount <= 0:
+			return fmt.Sprintf("the payment amount is %s, but a payment must send a positive amount.", sent)
+		case !native && !isCredit:
+			return "the payment asset is not a valid asset: a credit asset needs a 1-12 character alphanumeric code and an issuer account."
+		}
+
+	case xdr.PaymentResultCodePaymentUnderfunded:
+		if native {
+			return fmt.Sprintf("the source account cannot spend %s XLM: the amount must fit within its balance after the minimum reserve and selling liabilities. Fund the account or lower the amount.", sent)
+		}
+		if isCredit {
+			return fmt.Sprintf("the source account cannot spend %s %s issued by %s: the amount must fit within its trustline balance after selling liabilities. Acquire more %s or lower the amount.",
+				sent, assetCode, issuer, assetCode)
+		}
+
+	case xdr.PaymentResultCodePaymentSrcNoTrust:
+		if isCredit {
+			return fmt.Sprintf("the source account has no trustline for %s issued by %s, so it cannot send %s %s. It must submit a ChangeTrust operation for %s:%s and hold a balance first.",
+				assetCode, issuer, sent, assetCode, assetCode, issuer)
+		}
+
+	case xdr.PaymentResultCodePaymentSrcNotAuthorized:
+		if isCredit {
+			return fmt.Sprintf("the source account's trustline for %s is not authorized, so it cannot send %s %s. Issuer %s must set AUTHORIZED_FLAG on that trustline with a SetTrustLineFlagsOp.",
+				assetCode, sent, assetCode, issuer)
+		}
+
+	case xdr.PaymentResultCodePaymentNoDestination:
+		text := fmt.Sprintf("destination account %s has not been created on-chain yet, so it cannot receive %s %s. Submit a CreateAccount operation funding it with at least 1 XLM, then retry the payment.",
+			destination, sent, paymentAssetLabel(assetCode, native))
+		if isCredit {
+			text += fmt.Sprintf(" The new account will also need a trustline for %s:%s before it can receive this asset.", assetCode, issuer)
+		}
+		return text
+
+	case xdr.PaymentResultCodePaymentNoTrust:
+		if isCredit {
+			return fmt.Sprintf("destination account %s has no trustline for %s issued by %s, so it cannot receive %s %s. The recipient must submit a ChangeTrust operation for %s:%s first, then the payment can be retried.",
+				destination, assetCode, issuer, sent, assetCode, assetCode, issuer)
+		}
+
+	case xdr.PaymentResultCodePaymentNotAuthorized:
+		if isCredit {
+			return fmt.Sprintf("destination account %s is not authorized to receive %s %s. Issuer %s controls this asset with AUTH_REQUIRED_FLAG, so a new trustline starts unauthorized, and an existing one can be revoked. The issuer must authorize the recipient's trustline by setting AUTHORIZED_FLAG with a SetTrustLineFlagsOp.",
+				destination, sent, assetCode, issuer)
+		}
+
+	case xdr.PaymentResultCodePaymentLineFull:
+		if native {
+			return fmt.Sprintf("receiving %s XLM would push destination account %s past the maximum balance its XLM buying liabilities allow. The recipient must cancel offers buying XLM, or the sender must lower the amount.",
+				sent, destination)
+		}
+		if isCredit {
+			return fmt.Sprintf("receiving %s %s would exceed what destination account %s can hold: its balance, buying liabilities and this payment must fit within its trustline limit for %s:%s. The recipient must raise the limit with ChangeTrust or cancel offers buying %s, or the sender must lower the amount.",
+				sent, assetCode, destination, assetCode, issuer, assetCode)
+		}
+
+	case xdr.PaymentResultCodePaymentNoIssuer:
+		if isCredit {
+			return fmt.Sprintf("issuer account %s for %s does not exist on this network. Check the asset's issuer and the network the transaction targets.", issuer, assetCode)
+		}
+	}
+	return ""
+}
+
+// paymentDestinationLabel names the account behind a payment destination. A
+// muxed destination resolves to its underlying G... account, because that is
+// the account that needs creating or holds the trustline.
+func paymentDestinationLabel(m xdr.MuxedAccount) string {
+	var key *xdr.Uint256
+	switch m.Type {
+	case xdr.CryptoKeyTypeKeyTypeEd25519:
+		key = m.Ed25519
+	case xdr.CryptoKeyTypeKeyTypeMuxedEd25519:
+		if m.Med25519 != nil {
+			key = &m.Med25519.Ed25519
+		}
+	}
+	if addr := accountKeyAddress(key); addr != "" {
+		return addr
+	}
+	return "(unknown)"
+}
+
+// paymentAssetLabel names the paid asset for prose that does not need its issuer.
+func paymentAssetLabel(assetCode string, native bool) string {
+	switch {
+	case native:
+		return "XLM"
+	case assetCode != "":
+		return assetCode
+	}
+	return "of the asset"
 }
 
 // DiagnoseTrustlineFailure diagnoses a trustline failure from an operation result.

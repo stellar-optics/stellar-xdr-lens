@@ -130,6 +130,235 @@ func TestPaletteForTheme(t *testing.T) {
 	}
 }
 
+func TestFormatHyperlink(t *testing.T) {
+	const text = "GAPB7YMUQ6MPQ23PTFDNBZP7HGGTZPI2DT5JJURUOIXNPLGHW2O3WYXZ"
+	const url = "https://stellar.expert/explorer/public/account/" + text
+
+	tests := []struct {
+		name string
+		text string
+		url  string
+		want string
+	}{
+		{
+			name: "OSC 8 sequence",
+			text: text,
+			url:  url,
+			want: "\x1b]8;;" + url + "\x1b\\" + text + "\x1b]8;;\x1b\\",
+		},
+		{name: "empty text is unchanged", text: "", url: url, want: ""},
+		{name: "empty url is unchanged", text: text, url: "", want: text},
+		{
+			name: "control characters in the url are refused",
+			text: text,
+			url:  "https://example.com/\x1b]8;;evil",
+			want: text,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := format.FormatHyperlink(tc.text, tc.url); got != tc.want {
+				t.Errorf("FormatHyperlink() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestExplorerBaseURL(t *testing.T) {
+	tests := []struct {
+		network string
+		want    string
+		ok      bool
+	}{
+		{network: "public", want: "https://stellar.expert/explorer/public", ok: true},
+		{network: "public ", want: "https://stellar.expert/explorer/public", ok: true},
+		{network: "mainnet", want: "https://stellar.expert/explorer/public", ok: true},
+		{network: "TESTNET", want: "https://stellar.expert/explorer/testnet", ok: true},
+		{network: ""},
+		{network: "futurenet"},
+		{network: "Test SDF Network ; September 2015"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.network, func(t *testing.T) {
+			got, ok := format.ExplorerBaseURL(tc.network)
+			if ok != tc.ok || got != tc.want {
+				t.Errorf("ExplorerBaseURL(%q) = (%q, %v), want (%q, %v)", tc.network, got, ok, tc.want, tc.ok)
+			}
+		})
+	}
+}
+
+func TestExplorerURLForAddress(t *testing.T) {
+	const base = "https://stellar.expert/explorer/testnet/"
+	const account = "GAPB7YMUQ6MPQ23PTFDNBZP7HGGTZPI2DT5JJURUOIXNPLGHW2O3WYXZ"
+	const contract = "CBGSBKYMYO6OMGHQXXNOBRGVUDFUDVC2XLC3SXON5R2SNXILR7XCKKY3"
+
+	tests := []struct {
+		name    string
+		address string
+		want    string
+		ok      bool
+	}{
+		{
+			name:    "account",
+			address: account,
+			want:    "https://stellar.expert/explorer/testnet/account/" + account,
+			ok:      true,
+		},
+		{
+			name:    "contract",
+			address: contract,
+			want:    "https://stellar.expert/explorer/testnet/contract/" + contract,
+			ok:      true,
+		},
+		{name: "not an address", address: "native"},
+		{name: "hex hash", address: strings.Repeat("ab", 32)},
+		{name: "empty"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := format.ExplorerURLForAddress(base, tc.address)
+			if ok != tc.ok || got != tc.want {
+				t.Errorf("ExplorerURLForAddress(%q) = (%q, %v), want (%q, %v)", tc.address, got, ok, tc.want, tc.ok)
+			}
+		})
+	}
+
+	if _, ok := format.ExplorerURLForAddress("", account); ok {
+		t.Error("ExplorerURLForAddress() with no base = ok, want no link")
+	}
+}
+
+// TestSummaryFormatterHyperlinks covers both halves of the acceptance
+// criteria: a coloured terminal gets clickable addresses, and `--color never`
+// (the palette PaletteForTheme returns for it) keeps the output clean text.
+func TestSummaryFormatterHyperlinks(t *testing.T) {
+	env := loadFixtureValue(t, "tx_failed.env.txt")
+	res := loadFixtureValue(t, "tx_failed.res.txt")
+	summary, err := lens.ExplainPair(env, res)
+	if err != nil {
+		t.Fatalf("ExplainPair() error = %v", err)
+	}
+	if summary.Source == "" {
+		t.Fatal("fixture summary has no source address to link")
+	}
+	const base = "https://stellar.expert/explorer/public"
+
+	t.Run("coloured terminal links the source", func(t *testing.T) {
+		var buf bytes.Buffer
+		f := format.NewSummaryFormatter(
+			format.WithSummaryPalette(format.PaletteForTheme(&buf, "always", format.ColorPalette)),
+			format.WithSummaryHyperlinks(base),
+		)
+		if err := f.Format(&buf, summary); err != nil {
+			t.Fatalf("Format() error = %v", err)
+		}
+		want := format.FormatHyperlink(summary.Source, base+"/account/"+summary.Source)
+		if !strings.Contains(buf.String(), want) {
+			t.Errorf("output does not contain the OSC 8 link %q:\n%s", want, buf.String())
+		}
+	})
+
+	t.Run("--color never suppresses links", func(t *testing.T) {
+		var buf bytes.Buffer
+		f := format.NewSummaryFormatter(
+			format.WithSummaryPalette(format.PaletteForTheme(&buf, "never", format.ColorPalette)),
+			format.WithSummaryHyperlinks(base),
+		)
+		if err := f.Format(&buf, summary); err != nil {
+			t.Fatalf("Format() error = %v", err)
+		}
+		if strings.Contains(buf.String(), "\x1b]8;;") {
+			t.Errorf("--color never output contains a hyperlink escape:\n%s", buf.String())
+		}
+		if strings.Contains(buf.String(), "\x1b[") {
+			t.Errorf("--color never output contains an escape sequence:\n%s", buf.String())
+		}
+		if !strings.Contains(buf.String(), summary.Source) {
+			t.Errorf("output lost the plain source address:\n%s", buf.String())
+		}
+	})
+
+	t.Run("no explorer leaves addresses plain", func(t *testing.T) {
+		var buf bytes.Buffer
+		f := format.NewSummaryFormatter(format.WithSummaryPalette(format.ColorPalette))
+		if err := f.Format(&buf, summary); err != nil {
+			t.Fatalf("Format() error = %v", err)
+		}
+		if strings.Contains(buf.String(), "\x1b]8;;") {
+			t.Errorf("output without an explorer contains a hyperlink escape:\n%s", buf.String())
+		}
+	})
+}
+
+// TestTreeFormatterHyperlinks checks the decoded tree, where public keys and
+// contract ids are rendered as strkey scalars.
+func TestTreeFormatterHyperlinks(t *testing.T) {
+	const base = "https://stellar.expert/explorer/testnet"
+
+	t.Run("accounts and contracts are linked", func(t *testing.T) {
+		value := loadFixtureValue(t, "tx_soroban.env.txt")
+
+		var plain, linked bytes.Buffer
+		if err := format.NewTreeFormatter(format.WithPalette(format.ColorPalette)).
+			Format(&plain, value); err != nil {
+			t.Fatalf("Format() error = %v", err)
+		}
+		if err := format.NewTreeFormatter(
+			format.WithPalette(format.ColorPalette),
+			format.WithHyperlinks(base),
+		).Format(&linked, value); err != nil {
+			t.Fatalf("Format() error = %v", err)
+		}
+
+		addresses := []string{
+			"GA2JRQOF6EA3HQWDCEDBPPMLYPJCFLDDGYZLEQGMS5SOBQIB3BAFHVAW",
+			"CBGSBKYMYO6OMGHQXXNOBRGVUDFUDVC2XLC3SXON5R2SNXILR7XCKKY3",
+		}
+		for _, addr := range addresses {
+			if !strings.Contains(plain.String(), addr) {
+				t.Fatalf("fixture tree does not contain %s", addr)
+			}
+			want := format.FormatHyperlink(addr, base+"/account/"+addr)
+			if addr[0] == 'C' {
+				want = format.FormatHyperlink(addr, base+"/contract/"+addr)
+			}
+			if !strings.Contains(linked.String(), want) {
+				t.Errorf("linked tree does not contain %q", want)
+			}
+		}
+	})
+
+	t.Run("non-TTY output stays clean", func(t *testing.T) {
+		value := loadFixtureValue(t, "tx_soroban.env.txt")
+		var buf bytes.Buffer
+		f := format.NewTreeFormatter(
+			format.WithPalette(format.PaletteForTheme(&buf, "auto", format.ColorPalette)),
+			format.WithHyperlinks(base),
+		)
+		if err := f.Format(&buf, value); err != nil {
+			t.Fatalf("Format() error = %v", err)
+		}
+		if strings.Contains(buf.String(), "\x1b]8;;") {
+			t.Errorf("piped output contains a hyperlink escape:\n%s", buf.String())
+		}
+	})
+}
+
+func loadFixtureValue(t *testing.T, name string) *lens.Value {
+	t.Helper()
+	path := filepath.Join("..", "..", "..", "testdata", name)
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading %s: %v", path, err)
+	}
+	value, err := lens.Decode(strings.TrimSpace(string(content)))
+	if err != nil {
+		t.Fatalf("decoding %s: %v", name, err)
+	}
+	return value
+}
+
 func TestThemePaletteFormatsCanonicalFixture(t *testing.T) {
 	setThemeDefaults(t, "light")
 	t.Setenv("LENS_THEME_LIGHT_KEY", "38;5;39")

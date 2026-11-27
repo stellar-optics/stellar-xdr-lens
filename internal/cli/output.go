@@ -1,10 +1,13 @@
 package cli
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+
+	"github.com/stellar-optics/stellar-xdr-lens/pkg/lens"
 )
 
 // outputSink routes command output according to the global --quiet and
@@ -16,6 +19,10 @@ type outputSink struct {
 	base   io.Writer
 	flags  *globalFlags
 	writer io.Writer
+	// buffer holds output while --redact-addresses is active. Addresses can
+	// straddle two formatter writes, so redaction is applied to the complete
+	// stream in Close rather than chunk by chunk.
+	buffer *bytes.Buffer
 
 	file      *os.File
 	tempPath  string
@@ -32,6 +39,12 @@ func newOutputSink(base io.Writer, flags *globalFlags) *outputSink {
 func (s *outputSink) Write(p []byte) (int, error) {
 	if s.err != nil {
 		return 0, s.err
+	}
+	if s.flags.redactAddresses {
+		if s.buffer == nil {
+			s.buffer = &bytes.Buffer{}
+		}
+		return s.buffer.Write(p)
 	}
 	if s.writer == nil {
 		if err := s.open(); err != nil {
@@ -84,6 +97,15 @@ func (s *outputSink) Close(success bool) error {
 		s.discard()
 		return s.err
 	}
+	if s.buffer != nil {
+		data := []byte(lens.RedactAddresses(s.buffer.String()))
+		s.buffer = nil
+		if err := s.flushBuffered(data, success); err != nil {
+			s.err = err
+			s.discard()
+			return err
+		}
+	}
 	if s.file == nil {
 		return nil
 	}
@@ -111,6 +133,27 @@ func (s *outputSink) Close(success bool) error {
 	}
 	s.tempPath = ""
 	return nil
+}
+
+// flushBuffered writes redacted output collected by Write. A successful
+// command writes its configured destination; a failed one still writes to
+// stdout (the unbuffered path has already emitted partial output there) but
+// discards an output file so a partial report never replaces a good one.
+func (s *outputSink) flushBuffered(data []byte, success bool) error {
+	if s.flags.quiet {
+		return nil
+	}
+	isFile := s.flags.output != "" && s.flags.output != stdinMarker
+	if isFile && !success {
+		return nil
+	}
+	if s.writer == nil {
+		if err := s.open(); err != nil {
+			return err
+		}
+	}
+	_, err := s.writer.Write(data)
+	return err
 }
 
 func (s *outputSink) discard() {
