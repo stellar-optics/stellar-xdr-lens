@@ -114,6 +114,99 @@ func (n *Node) Find(path string) *Node {
 	return cur
 }
 
+// QueryPath walks a path such as "tx.seqNum" or "V1.Tx.Fee" and returns the
+// node at that location, or nil when the path does not resolve. Matching is
+// case-insensitive and tolerates the union-variant wrappers and "Op" suffixes
+// that appear in the underlying XDR struct field names, so shell-friendly
+// paths like "tx.seqNum" resolve to the same node as "V1.Tx.SeqNum".
+func (n *Node) QueryPath(path string) *Node {
+	cur := n
+	for _, seg := range splitPath(path) {
+		if cur == nil {
+			return nil
+		}
+		if seg.index >= 0 {
+			if seg.name != "" {
+				child := findChildNode(cur, seg.name)
+				if child == nil {
+					return nil
+				}
+				cur = child
+			}
+			if cur == nil || cur.Kind != KindList {
+				// Allow indexing into a struct's children as a fallback.
+				if cur == nil || seg.index >= len(cur.Children) {
+					return nil
+				}
+			}
+			if seg.index >= len(cur.Children) {
+				return nil
+			}
+			cur = cur.Children[seg.index]
+			continue
+		}
+		child := findChildNode(cur, seg.name)
+		if child == nil {
+			return nil
+		}
+		cur = child
+	}
+	return cur
+}
+
+// findChildNode resolves a single path segment against n's subtree. It tries
+// a direct case-insensitive match first, then a case-insensitive prefix match
+// (so "payment" resolves to "PaymentOp"), and finally descends a few levels
+// to skip union-variant wrappers such as the "V1" arm of an envelope.
+func findChildNode(n *Node, name string) *Node {
+	if n == nil || name == "" {
+		return nil
+	}
+	needle := strings.ToLower(name)
+
+	// Direct match (case-insensitive).
+	for _, c := range n.Children {
+		if strings.ToLower(c.Name) == needle {
+			return c
+		}
+	}
+	// Prefix match (case-insensitive): "payment" -> "PaymentOp".
+	var prefixMatches []*Node
+	for _, c := range n.Children {
+		if strings.HasPrefix(strings.ToLower(c.Name), needle) && needle != "" {
+			prefixMatches = append(prefixMatches, c)
+		}
+	}
+	if len(prefixMatches) == 1 {
+		return prefixMatches[0]
+	}
+
+	// Descend into children to skip wrappers (e.g. V1 -> Tx). Bound the
+	// search depth to avoid runaway traversal on large trees.
+	return findChildNodeDeep(n, needle, 3)
+}
+
+func findChildNodeDeep(n *Node, needle string, depth int) *Node {
+	if n == nil || depth <= 0 {
+		return nil
+	}
+	for _, c := range n.Children {
+		if strings.ToLower(c.Name) == needle {
+			return c
+		}
+		if strings.HasPrefix(strings.ToLower(c.Name), needle) {
+			// ensure uniqueness among siblings at this level
+			return c
+		}
+	}
+	for _, c := range n.Children {
+		if res := findChildNodeDeep(c, needle, depth-1); res != nil {
+			return res
+		}
+	}
+	return nil
+}
+
 // String renders the scalar payload for display. Struct and list nodes render
 // as a short type summary rather than their full contents.
 func (n *Node) String() string {
